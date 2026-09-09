@@ -30,6 +30,7 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -71,6 +72,7 @@ import com.example.ticketassistant.data.TrainRepository
 import com.example.ticketassistant.notifications.TaskScheduler
 import com.example.ticketassistant.update.AppUpdate
 import com.example.ticketassistant.update.UpdateChecker
+import com.example.ticketassistant.update.UpdateProgress
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -102,6 +104,7 @@ class TicketViewModel : ViewModel() {
     val page = MutableStateFlow(Page.HOME)
     val update = MutableStateFlow<AppUpdate?>(null)
     val updateBusy = MutableStateFlow(false)
+    val updateProgress = MutableStateFlow<UpdateProgress?>(null)
     var from by mutableStateOf<Station?>(null)
     var to by mutableStateOf<Station?>(null)
     var date by mutableStateOf(LocalDate.now().plusDays(1).format(DateTimeFormatter.ISO_DATE))
@@ -167,9 +170,17 @@ class TicketViewModel : ViewModel() {
     fun installUpdate(context: android.content.Context) = viewModelScope.launch {
         val candidate = update.value ?: return@launch
         updateBusy.value = true
-        runCatching { UpdateChecker().downloadAndInstall(context, candidate) }
-            .onFailure { error.value = it.message ?: "更新失败，请稍后重试" }
-        updateBusy.value = false
+        updateProgress.value = UpdateProgress(0L, candidate.expectedSize ?: 0L, 1)
+        try {
+            UpdateChecker().downloadAndInstall(context, candidate) { progress ->
+                updateProgress.value = progress
+            }
+        } catch (failure: Throwable) {
+            error.value = failure.message ?: "更新失败，请稍后重试"
+        } finally {
+            updateBusy.value = false
+            updateProgress.value = null
+        }
     }
 }
 
@@ -184,6 +195,7 @@ private fun TicketApp(vm: TicketViewModel) {
     val error by vm.error.collectAsStateCompat()
     val update by vm.update.collectAsStateCompat()
     val updateBusy by vm.updateBusy.collectAsStateCompat()
+    val updateProgress by vm.updateProgress.collectAsStateCompat()
     androidx.compose.runtime.LaunchedEffect(Unit) { vm.restore(context) }
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner, vm) {
@@ -225,6 +237,20 @@ private fun TicketApp(vm: TicketViewModel) {
                     if (candidate.notes.isNotBlank()) {
                         Spacer(Modifier.height(8.dp))
                         Text(candidate.notes, style = MaterialTheme.typography.bodySmall)
+                    }
+                    if (updateBusy) {
+                        Spacer(Modifier.height(16.dp))
+                        val progress = updateProgress
+                        if (progress != null && progress.totalBytes > 0L) {
+                            val fraction = (progress.downloadedBytes.toFloat() / progress.totalBytes).coerceIn(0f, 1f)
+                            LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
+                            Spacer(Modifier.height(6.dp))
+                            Text("正在下载 ${"%.0f".format(fraction * 100)}% · 第 ${progress.attempt} 次尝试")
+                        } else {
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                            Spacer(Modifier.height(6.dp))
+                            Text("正在连接下载服务…")
+                        }
                     }
                 }
             },

@@ -6,7 +6,7 @@
 
 ## 发布流程
 
-每次代码更新递增 Android `versionCode`/`versionName`，构建 debug APK，并在 `caihexaing/-` 创建对应的 `v<versionName>` Release，上传 APK 资产。当前已发布版本为 `0.2.1`，待构建发布版本为 `0.2.2`。
+每次代码更新递增 Android `versionCode`/`versionName`，构建 debug APK，并在 `caihexaing/-` 创建对应的 `v<versionName>` Release，上传 APK 资产。当前已发布版本为 `0.2.2`，待构建发布版本为 `0.2.3`。
 
 ## 客户端行为
 

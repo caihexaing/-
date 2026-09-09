@@ -29,6 +29,12 @@ data class AppUpdate(
     val sha256: String? = null
 )
 
+data class UpdateProgress(
+    val downloadedBytes: Long,
+    val totalBytes: Long,
+    val attempt: Int
+)
+
 class UpdateDownloadException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
 class UpdateChecker {
@@ -66,7 +72,11 @@ class UpdateChecker {
         }
     }
 
-    suspend fun downloadAndInstall(context: Context, update: AppUpdate) = withContext(Dispatchers.IO) {
+    suspend fun downloadAndInstall(
+        context: Context,
+        update: AppUpdate,
+        onProgress: (UpdateProgress) -> Unit = {}
+    ) = withContext(Dispatchers.IO) {
         ensureInstallPermission(context)
         val directory = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
             ?: throw UpdateDownloadException("无法访问应用专用下载目录")
@@ -78,7 +88,7 @@ class UpdateChecker {
         var lastFailure: Throwable? = null
         repeat(MAX_DOWNLOAD_ATTEMPTS) { attempt ->
             try {
-                downloadWithManager(context, update, attempt, staging)
+                downloadWithManager(context, update, attempt, staging, onProgress)
                 validate(context, staging, update)
                 if (!staging.renameTo(target)) throw UpdateDownloadException("无法保存已下载的更新文件")
                 launchInstaller(context, target)
@@ -107,7 +117,8 @@ class UpdateChecker {
         context: Context,
         update: AppUpdate,
         attempt: Int,
-        destination: File
+        destination: File,
+        onProgress: (UpdateProgress) -> Unit
     ) = withContext(Dispatchers.IO) {
         val manager = context.getSystemService(DownloadManager::class.java)
             ?: throw UpdateDownloadException("系统下载服务不可用")
@@ -125,6 +136,7 @@ class UpdateChecker {
             val deadline = System.currentTimeMillis() + DOWNLOAD_TIMEOUT_MS
             while (System.currentTimeMillis() < deadline) {
                 val result = query(manager, id)
+                onProgress(UpdateProgress(result.downloadedBytes, result.totalBytes, attempt + 1))
                 when (result.status) {
                     DownloadManager.STATUS_SUCCESSFUL -> {
                         if (!destination.exists() || destination.length() == 0L) {
@@ -145,7 +157,12 @@ class UpdateChecker {
         }
     }
 
-    private data class DownloadResult(val status: Int, val reason: Int)
+    private data class DownloadResult(
+        val status: Int,
+        val reason: Int,
+        val downloadedBytes: Long,
+        val totalBytes: Long
+    )
 
     private fun query(manager: DownloadManager, id: Long): DownloadResult {
         val cursor: Cursor = manager.query(DownloadManager.Query().setFilterById(id))
@@ -154,7 +171,9 @@ class UpdateChecker {
             if (!it.moveToFirst()) throw UpdateDownloadException("系统下载任务不存在")
             return DownloadResult(
                 status = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS)),
-                reason = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
+                reason = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON)),
+                downloadedBytes = it.getLong(it.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)),
+                totalBytes = it.getLong(it.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
             )
         }
     }
