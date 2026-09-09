@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">行程助手</string>
+    <string name="accessibility_service_description">辅助识别官方 12306 页面；验证码、支付和异常页面由用户处理。</string>
+</resources>
