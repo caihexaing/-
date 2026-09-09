@@ -168,7 +168,7 @@ class TicketViewModel : ViewModel() {
         val candidate = update.value ?: return@launch
         updateBusy.value = true
         runCatching { UpdateChecker().downloadAndInstall(context, candidate) }
-            .onFailure { error.value = "更新下载失败：${it.message ?: "请稍后重试"}" }
+            .onFailure { error.value = it.message ?: "更新失败，请稍后重试" }
         updateBusy.value = false
     }
 }
