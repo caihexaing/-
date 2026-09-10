@@ -6,7 +6,7 @@
 
 `app/build/outputs/apk/debug/app-debug.apk`
 
-当前开发版本为 `0.2.3`（`versionCode` 5），支持 Android 8.0（API 26）及以上，目标 Android 16（API 36）。APK 包名为 `com.example.ticketassistant`，使用 Android Debug 证书签名，只适合作为私人侧载测试包。
+当前开发版本为 `0.2.4`（`versionCode` 6），支持 Android 8.0（API 26）及以上，目标 Android 16（API 36）。APK 包名为 `com.example.ticketassistant`，使用 Android Debug 证书签名，只适合作为私人侧载测试包。
 
 ## 构建
 
@@ -30,4 +30,4 @@ gradle assembleDebug
 
 查询接口会先初始化官方会话，再读取 `leftTicket/queryG` 返回的真实数据；网络失败或响应格式变化时显示错误，不以模拟车次兜底。
 
-开售闹钟会启动前台执行服务，读取本地任务、持久化一次性执行锁并唤起官方 App，在限定时长内观察页面。无障碍服务只识别登录、验证码、身份核验、候补和支付等需要人工接管的页面；无法识别或进入高风险页面会停止执行并通知用户，不绕过验证码、风控或支付。
+开售闹钟会启动前台执行服务，读取本地任务、持久化一次性执行锁并唤起官方 App，在限定时长内观察页面。当前版本不会自动查询、选席、选择乘车人或提交订单；无障碍服务只识别明确的登录、验证码、身份核验、候补和支付等需要人工接管的页面。遇到未知页面会停止并通知用户，不绕过验证码、风控或支付。

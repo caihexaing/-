@@ -18,13 +18,7 @@ class TicketAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event?.packageName?.toString() != OFFICIAL_PACKAGE) return
         val root = rootInActiveWindow ?: return
-        val text = root.textContent().lowercase()
-        val takeoverReason = when {
-            listOf("验证码", "滑块", "图形验证", "安全验证").any(text::contains) -> "官方 12306 要求验证码，请手动完成"
-            listOf("登录", "短信验证", "身份核验", "实名认证").any(text::contains) -> "官方 12306 需要登录或身份核验，请手动完成"
-            listOf("支付", "订单确认", "候补协议").any(text::contains) -> "已进入订单确认、候补或支付环节，请手动接管"
-            else -> null
-        }
+        val takeoverReason = takeoverReason(root.textContent())
         if (takeoverReason != null && System.currentTimeMillis() - lastSignalAt > 10_000L) {
             lastSignalAt = System.currentTimeMillis()
             TaskStore(this).updateStatus(TaskStatus.TAKEOVER)
@@ -61,5 +55,23 @@ class TicketAccessibilityService : AccessibilityService() {
         const val OFFICIAL_PACKAGE = "com.MobileTicket"
         private const val CHANNEL = "ticket_takeover"
         private const val NOTIFICATION_ID = 102
+    }
+}
+
+/**
+ * 判断页面是否明确要求用户接管。普通页面常带有“登录管理”等文案，不能仅凭“登录”二字误报。
+ */
+internal fun takeoverReason(text: String): String? {
+    val normalized = text.lowercase()
+    return when {
+        listOf("验证码", "滑块", "图形验证", "安全验证").any(normalized::contains) ->
+            "官方 12306 要求验证码，请手动完成"
+        listOf("请先登录", "登录后继续", "账号登录", "登录/注册", "会话已失效").any(normalized::contains) ->
+            "官方 12306 需要登录，请手动完成"
+        listOf("身份核验", "实名认证").any(normalized::contains) ->
+            "官方 12306 需要身份核验，请手动完成"
+        listOf("支付", "订单确认", "候补协议").any(normalized::contains) ->
+            "已进入订单确认、候补或支付环节，请手动接管"
+        else -> null
     }
 }

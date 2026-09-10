@@ -422,13 +422,28 @@ private fun ConfigureScreen(vm: TicketViewModel) {
 private fun TaskScreen(vm: TicketViewModel) {
     val context = LocalContext.current
     val task = vm.storedTask ?: return
-    Text("已启用任务", style = MaterialTheme.typography.titleLarge)
+    val statusText = when (task.status) {
+        TaskStatus.ENABLED -> "任务已启用，等待开售"
+        TaskStatus.PREPARING -> "正在准备并唤起官方 12306"
+        TaskStatus.SEARCHING -> "已进入观察阶段，请在官方 App 中操作"
+        TaskStatus.TAKEOVER -> "需要人工接管，请查看官方 App"
+        TaskStatus.PENDING_PAYMENT -> "已进入待支付订单，请在官方 App 完成后续操作"
+        TaskStatus.EXPIRED -> "任务已超时"
+        TaskStatus.DISABLED -> "任务已停用"
+        TaskStatus.DRAFT -> "任务草稿"
+    }
+    Text(statusText, style = MaterialTheme.typography.titleLarge)
     Spacer(Modifier.height(12.dp))
     Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp)) {
         Text("${task.date}  ${task.train.trainNo}", fontWeight = FontWeight.Bold)
         Text("${task.from.name} ${task.train.depart} → ${task.to.name} ${task.train.arrive}")
         Text("${task.seat} · ${task.passengerName} · 开售 ${task.saleTime}")
     } }
+    Spacer(Modifier.height(10.dp))
+    Text(
+        "当前版本只会在开售时唤起官方 12306 并观察页面，不会自动完成验证码、身份核验、最终下单或支付。请在官方 App 中手动完成购票。",
+        style = MaterialTheme.typography.bodySmall
+    )
     Spacer(Modifier.height(12.dp))
     Button(onClick = {
         val launcher = OfficialAppLauncher(context)
