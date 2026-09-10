@@ -9,15 +9,18 @@ import androidx.core.app.NotificationCompat
 import com.example.ticketassistant.R
 import com.example.ticketassistant.data.TaskStatus
 import com.example.ticketassistant.data.TaskStore
+import com.example.ticketassistant.data.TrainRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 class TicketAutomationService : Service() {
     private val scope = CoroutineScope(Dispatchers.Main + Job())
     private var stopJob: Job? = null
+    private var searchJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -35,26 +38,62 @@ class TicketAutomationService : Service() {
         }
         val store = TaskStore(this)
         if (phase == PHASE_PREPARE) store.updateStatus(TaskStatus.PREPARING)
-        if (phase == PHASE_SALE) {
-            val gate = PersistentSubmitGate(getSharedPreferences("submit_gate", MODE_PRIVATE), "${task.date}:${task.train.trainNo}")
-            if (!gate.tryAcquire()) {
-                stopSelfResult(startId)
-                return START_NOT_STICKY
-            }
-            store.updateStatus(TaskStatus.SEARCHING)
-        }
-        updateNotification(if (phase == PHASE_PREPARE) "已进入开售准备，正在唤起官方 12306" else "已到开售时间，正在官方 12306 中观察")
-        OfficialAppLauncher(this).launch().onFailure { message("无法打开官方 12306：${it.message ?: "请手动打开"}") }
-        if (phase == PHASE_SALE) {
-            stopJob?.cancel()
-            stopJob = scope.launch {
-                delay(task.maxRunMinutes.coerceIn(1, 120) * 60_000L)
+        if (phase == PHASE_SALE && task.status == TaskStatus.ENABLED) store.updateStatus(TaskStatus.PREPARING)
+        if (phase == PHASE_PREPARE) {
+            updateNotification("已进入开售准备，正在唤起官方 12306")
+            OfficialAppLauncher(this).launch().onFailure {
                 store.updateStatus(TaskStatus.TAKEOVER)
-                message("自动观察已结束，请接管官方 12306 完成验证码、核验和支付")
+                message("无法打开官方 12306：${it.message ?: "请手动打开"}")
+            }
+            return START_NOT_STICKY
+        }
+
+        updateNotification("已到开售时间，正在查询目标车次")
+        searchJob?.cancel()
+        stopJob?.cancel()
+        searchJob = scope.launch(Dispatchers.IO) {
+            val deadline = System.currentTimeMillis() + task.maxRunMinutes.coerceIn(1, 120) * 60_000L
+            var firstAttempt = true
+            while (isActive && System.currentTimeMillis() < deadline) {
+                val matched = runCatching {
+                    TrainRepository().query(task.date, task.from, task.to)
+                        .firstOrNull { it.matchesTask(task) }
+                }.getOrElse {
+                    null
+                }
+                if (matched != null) {
+                    launch(Dispatchers.Main) {
+                        store.updateStatus(TaskStatus.SEARCHING)
+                        updateNotification("已找到 ${task.train.trainNo}，正在打开官方 12306 辅助下单")
+                        OfficialAppLauncher(this@TicketAutomationService).launch().onFailure {
+                            store.updateStatus(TaskStatus.TAKEOVER)
+                            message("无法打开官方 12306：${it.message ?: "请手动打开"}")
+                        }
+                    }
+                    return@launch
+                }
+                launch(Dispatchers.Main) {
+                    updateNotification(if (firstAttempt) "正在查询目标车次 ${task.train.trainNo}" else "暂未发现目标车次，继续查询")
+                }
+                val nextDelay = if (firstAttempt) 3_000L else 8_000L
+                firstAttempt = false
+                delay(nextDelay)
+            }
+            launch(Dispatchers.Main) {
+                store.updateStatus(TaskStatus.EXPIRED)
+                message("在限定时间内未找到目标车次，任务已结束")
                 stopSelf()
             }
         }
         return START_NOT_STICKY
+    }
+
+    private fun com.example.ticketassistant.data.Train.matchesTask(task: com.example.ticketassistant.data.TicketTask): Boolean {
+        val seatValue = seats[task.seat].orEmpty().trim()
+        return trainNo.equals(task.train.trainNo, ignoreCase = true) &&
+            from == task.from.name && to == task.to.name &&
+            depart == task.train.depart && arrive == task.train.arrive &&
+            seatValue.isNotBlank() && seatValue !in setOf("无", "无票", "--", "*")
     }
 
     private fun updateNotification(text: String) {
@@ -76,6 +115,7 @@ class TicketAutomationService : Service() {
 
     override fun onDestroy() {
         stopJob?.cancel()
+        searchJob?.cancel()
         scope.coroutineContext[Job]?.cancel()
         super.onDestroy()
     }

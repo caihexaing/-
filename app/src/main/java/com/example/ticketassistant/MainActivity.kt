@@ -441,7 +441,7 @@ private fun TaskScreen(vm: TicketViewModel) {
     } }
     Spacer(Modifier.height(10.dp))
     Text(
-        "当前版本只会在开售时唤起官方 12306 并观察页面，不会自动完成验证码、身份核验、最终下单或支付。请在官方 App 中手动完成购票。",
+        "开售后会在官方 12306 中辅助选择目标车次、席别和唯一乘车人，并自动点击一次“提交订单”。验证码、身份核验、风控和支付必须由你手动完成。",
         style = MaterialTheme.typography.bodySmall
     )
     Spacer(Modifier.height(12.dp))
