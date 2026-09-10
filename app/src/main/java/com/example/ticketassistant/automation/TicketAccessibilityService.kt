@@ -20,8 +20,8 @@ class TicketAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event?.packageName?.toString() != OFFICIAL_PACKAGE) return
         val task = TaskStore(this).load() ?: return
-        if (!task.enabled || task.status != TaskStatus.SEARCHING) return
-        val key = "${task.date}:${task.train.trainNo}:${task.passengerName}"
+        if (!task.enabled || task.status !in setOf(TaskStatus.OBSERVING, TaskStatus.SEARCHING)) return
+        val key = "${task.taskId}:${task.saleDateTime}:${task.date}:${task.train.trainNo}"
         if (activeTaskKey != key) {
             activeTaskKey = key
             stage = Stage.SEARCH_RESULTS
@@ -33,8 +33,8 @@ class TicketAccessibilityService : AccessibilityService() {
             takeover(reason)
             return
         }
-        if (isPendingPaymentPage(text)) {
-            TaskStore(this).updateStatus(TaskStatus.PENDING_PAYMENT)
+        if (isVerifiedPendingPaymentPage(text, task)) {
+            TaskStore(this).updateStatus(TaskStatus.PENDING_PAYMENT, "已识别官方待支付页面")
             notify("已提交订单，请在官方 12306 待支付页面完成付款")
             stopService(android.content.Intent(this, TicketAutomationService::class.java))
             stage = Stage.DONE
@@ -81,7 +81,7 @@ class TicketAccessibilityService : AccessibilityService() {
         if (matches.size > 1) return PassengerResult.AMBIGUOUS
         if (!clickNodeOrParent(matches.first())) return PassengerResult.NOT_FOUND
         lastActionAt = System.currentTimeMillis()
-        findActionNode(root, listOf("确认", "下一步", "提交订单"))?.let { clickNodeOrParent(it) }
+        findActionNode(root, listOf("确认", "下一步"))?.let { clickNodeOrParent(it) }
         return PassengerResult.SELECTED
     }
 
@@ -93,7 +93,7 @@ class TicketAccessibilityService : AccessibilityService() {
         val submit = findActionNode(root, listOf("提交订单")) ?: return false
         val gate = PersistentSubmitGate(
             getSharedPreferences("submit_gate", MODE_PRIVATE),
-            "${task.date}:${task.train.trainNo}:${task.passengerName}"
+            "${task.taskId}:${task.saleDateTime}:${task.date}:${task.train.trainNo}"
         )
         if (!gate.tryAcquire()) {
             takeover("本任务已经尝试提交过订单，请到官方 12306 订单页核对结果")
@@ -110,7 +110,7 @@ class TicketAccessibilityService : AccessibilityService() {
     private fun takeover(reason: String) {
         if (stage == Stage.DONE) return
         stage = Stage.DONE
-        TaskStore(this).updateStatus(TaskStatus.TAKEOVER)
+        TaskStore(this).updateStatus(TaskStatus.TAKEOVER, "需要人工接管：$reason")
         stopService(android.content.Intent(this, TicketAutomationService::class.java))
         notify(reason)
     }
@@ -190,6 +190,16 @@ internal fun matchesToken(text: String, token: String): Boolean =
 internal fun isPendingPaymentPage(text: String): Boolean {
     val normalized = text.replace(" ", "").lowercase()
     return listOf("待支付", "待付款", "订单待支付", "未支付订单", "支付倒计时").any(normalized::contains)
+}
+
+internal fun isVerifiedPendingPaymentPage(text: String, task: com.example.ticketassistant.data.TicketTask): Boolean {
+    val normalized = text.replace(" ", "")
+    val hasPrice = Regex("(?:¥|￥)\\s*\\d+(?:\\.\\d{1,2})?").containsMatchIn(normalized)
+    return isPendingPaymentPage(text) &&
+        matchesToken(normalized, task.train.trainNo) &&
+        normalized.contains(task.seat) &&
+        normalized.contains(task.passengerName) &&
+        hasPrice
 }
 
 /** 普通菜单、订单说明和历史文案不能触发接管，必须是明确的安全验证/登录动作。 */

@@ -399,7 +399,7 @@ private fun ConfigureScreen(vm: TicketViewModel) {
     val train = vm.selectedTrain ?: return
     var seat by remember { mutableStateOf(train.seats.keys.firstOrNull().orEmpty()) }
     var name by remember { mutableStateOf("") }
-    var saleTime by remember { mutableStateOf("14:00") }
+    var saleDateTime by remember { mutableStateOf("") }
     var allowed by remember { mutableStateOf(false) }
     Text("配置任务", style = MaterialTheme.typography.titleLarge)
     Text("${train.trainNo}  ${train.from} ${train.depart} → ${train.to} ${train.arrive}")
@@ -407,7 +407,7 @@ private fun ConfigureScreen(vm: TicketViewModel) {
     Text("选择席别")
     train.seats.forEach { (label, availability) -> Row(modifier = Modifier.clickable { seat = label }, verticalAlignment = Alignment.CenterVertically) { RadioButton(selected = seat == label, onClick = { seat = label }); Text("$label（$availability）") } }
     OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("乘车人姓名（仅一名成人）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-    OutlinedTextField(value = saleTime, onValueChange = { saleTime = it }, label = { Text("开售时间（HH:mm）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+    OutlinedTextField(value = saleDateTime, onValueChange = { saleDateTime = it }, label = { Text("开售日期时间（yyyy-MM-dd HH:mm）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
     Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(allowed, { allowed = it }); Text("允许在开售时创建真实待支付订单") }
     Button(onClick = {
         val from = vm.from ?: run { vm.error.value = "请选择标准出发站"; return@Button }
@@ -421,15 +421,29 @@ private fun ConfigureScreen(vm: TicketViewModel) {
             vm.error.value = "乘车日期无效或早于今天"
             return@Button
         }
-        val sale = runCatching { LocalDateTime.parse("${vm.date} $saleTime", DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")) }.getOrNull()
-        if (sale == null || sale.atZone(ZoneId.of("Asia/Shanghai")).toInstant().isBefore(java.time.Instant.now())) {
-            vm.error.value = "开售时间已过去，请填写未来时间"
+        val sale = runCatching { LocalDateTime.parse(saleDateTime.trim(), DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")) }.getOrNull()
+        if (sale == null) {
+            vm.error.value = "开售日期时间格式应为 yyyy-MM-dd HH:mm，不能只填写时分"
             return@Button
         }
-        val task = TicketTask(vm.date, from, to, train, seat, name.trim(), saleTime, enabled = true, status = TaskStatus.ENABLED)
-        TaskStore(context).save(task); TaskScheduler(context).schedule(task); vm.storedTask = task; vm.page.value = Page.TASK
-    }, enabled = seat.isNotBlank() && name.isNotBlank() && saleTime.matches(Regex("(?:[01]\\d|2[0-3]):[0-5]\\d")) && allowed, modifier = Modifier.fillMaxWidth()) { Text("保存并启用唯一任务") }
-    Spacer(Modifier.height(8.dp)); Text("提交仅允许一次；无法识别页面、验证码、登录失效或字段不一致时会停止并要求你接管。", style = MaterialTheme.typography.bodySmall)
+        val task = TicketTask(
+            date = vm.date,
+            from = from,
+            to = to,
+            train = train,
+            seat = seat,
+            passengerName = name.trim(),
+            saleDateTime = saleDateTime.trim(),
+            saleTimeSource = com.example.ticketassistant.data.SaleTimeSource.USER_CONFIRMED,
+            enabled = true,
+            status = TaskStatus.ENABLED
+        )
+        TaskStore(context).save(task)
+        TaskScheduler(context).schedule(task)
+        vm.storedTask = TaskStore(context).load()
+        vm.page.value = Page.TASK
+    }, enabled = seat.isNotBlank() && name.isNotBlank() && saleDateTime.matches(Regex("\\d{4}-\\d{2}-\\d{2} (?:[01]\\d|2[0-3]):[0-5]\\d")) && allowed, modifier = Modifier.fillMaxWidth()) { Text("保存并启用唯一任务") }
+    Spacer(Modifier.height(8.dp)); Text("开售时间已过时会立即查询确认。提交仅允许一次；无法识别页面、验证码、登录失效或字段不一致时会停止并要求你接管。", style = MaterialTheme.typography.bodySmall)
 }
 
 @Composable
@@ -437,12 +451,13 @@ private fun TaskScreen(vm: TicketViewModel) {
     val context = LocalContext.current
     val task = vm.storedTask ?: return
     val statusText = when (task.status) {
-        TaskStatus.ENABLED -> "任务已启用，等待开售"
+        TaskStatus.ENABLED, TaskStatus.WAITING_FOR_SALE -> "任务已启用，等待开售"
         TaskStatus.PREPARING -> "正在准备并唤起官方 12306"
-        TaskStatus.SEARCHING -> "已进入观察阶段，请在官方 App 中操作"
+        TaskStatus.OBSERVING, TaskStatus.SEARCHING -> "已进入观察阶段，请在官方 App 中操作"
         TaskStatus.TAKEOVER -> "需要人工接管，请查看官方 App"
         TaskStatus.PENDING_PAYMENT -> "已进入待支付订单，请在官方 App 完成后续操作"
         TaskStatus.EXPIRED -> "任务已超时"
+        TaskStatus.RESULT_UNKNOWN -> "提交结果不明确，请到官方订单页核对"
         TaskStatus.DISABLED -> "任务已停用"
         TaskStatus.DRAFT -> "任务草稿"
     }
@@ -464,7 +479,7 @@ private fun TaskScreen(vm: TicketViewModel) {
     Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp)) {
         Text("${task.date}  ${task.train.trainNo}", fontWeight = FontWeight.Bold)
         Text("${task.from.name} ${task.train.depart} → ${task.to.name} ${task.train.arrive}")
-        Text("${task.seat} · ${task.passengerName} · 开售 ${task.saleTime}")
+        Text("${task.seat} · ${task.passengerName} · 开售 ${task.saleDateTime ?: "未知"}（${task.saleTimeSource.name}）")
     } }
     Spacer(Modifier.height(10.dp))
     Text(

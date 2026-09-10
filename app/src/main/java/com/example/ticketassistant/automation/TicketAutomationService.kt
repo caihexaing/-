@@ -21,6 +21,7 @@ class TicketAutomationService : Service() {
     private val scope = CoroutineScope(Dispatchers.Main + Job())
     private var stopJob: Job? = null
     private var searchJob: Job? = null
+    private var resultJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -38,7 +39,7 @@ class TicketAutomationService : Service() {
         }
         val store = TaskStore(this)
         if (phase == PHASE_PREPARE) store.updateStatus(TaskStatus.PREPARING, "已触发开售前准备")
-        if (phase == PHASE_SALE && task.status == TaskStatus.ENABLED) store.updateStatus(TaskStatus.PREPARING, "已触发开售查询")
+        if (phase == PHASE_SALE && task.status in setOf(TaskStatus.ENABLED, TaskStatus.WAITING_FOR_SALE, TaskStatus.PREPARING)) store.updateStatus(TaskStatus.PREPARING, "已触发开售查询")
         if (phase == PHASE_PREPARE) {
             store.recordEvent("准备阶段：正在唤起官方 12306")
             updateNotification("已进入开售准备，正在唤起官方 12306")
@@ -68,11 +69,21 @@ class TicketAutomationService : Service() {
                 }
                 if (matched != null) {
                     launch(Dispatchers.Main) {
-                        store.updateStatus(TaskStatus.SEARCHING, "已找到目标车次：${task.train.trainNo}")
+                        store.updateStatus(TaskStatus.OBSERVING, "已找到目标车次：${task.train.trainNo}")
                         updateNotification("已找到 ${task.train.trainNo}，正在打开官方 12306 辅助下单")
                         OfficialAppLauncher(this@TicketAutomationService).launch().onFailure {
                             store.updateStatus(TaskStatus.TAKEOVER, "官方 12306 打开失败", it.message)
                             message("无法打开官方 12306：${it.message ?: "请手动打开"}")
+                        }
+                        resultJob?.cancel()
+                        resultJob = scope.launch {
+                            delay(90_000L)
+                            val current = store.load()
+                            if (current?.taskId == task.taskId && current.status == TaskStatus.OBSERVING) {
+                                store.updateStatus(TaskStatus.RESULT_UNKNOWN, "订单提交结果未能确认，请到官方订单页核对")
+                                message("未能确认订单结果，请到官方 12306 的订单页核对；不会自动重试提交")
+                                stopSelf()
+                            }
                         }
                     }
                     return@launch
@@ -122,6 +133,7 @@ class TicketAutomationService : Service() {
     override fun onDestroy() {
         stopJob?.cancel()
         searchJob?.cancel()
+        resultJob?.cancel()
         scope.coroutineContext[Job]?.cancel()
         super.onDestroy()
     }

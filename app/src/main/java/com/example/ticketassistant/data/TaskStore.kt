@@ -18,12 +18,16 @@ class TaskStore(context: Context) {
     fun save(task: TicketTask) {
         val json = JSONObject().apply {
             put("date", task.date); put("fromName", task.from.name); put("fromCode", task.from.telecode)
+            put("taskId", task.taskId)
             put("fromCity", task.from.city); put("fromPinyin", task.from.pinyin)
             put("toName", task.to.name); put("toCode", task.to.telecode); put("toCity", task.to.city); put("toPinyin", task.to.pinyin)
             put("trainNo", task.train.trainNo)
             put("depart", task.train.depart); put("arrive", task.train.arrive); put("duration", task.train.duration)
             put("seatMap", JSONObject(task.train.seats))
-            put("seat", task.seat); put("passenger", crypto.encrypt(task.passengerName)); put("saleTime", task.saleTime)
+            put("seat", task.seat); put("passenger", crypto.encrypt(task.passengerName))
+            task.saleDateTime?.let { put("saleDateTime", it) }
+            put("saleTimeSource", task.saleTimeSource.name)
+            task.train.saleTime?.let { put("trainSaleTime", it) }
             put("enabled", task.enabled); put("status", task.status.name)
             task.lastEvent?.let { put("lastEvent", it) }
             task.lastEventAt?.let { put("lastEventAt", it) }
@@ -35,15 +39,38 @@ class TaskStore(context: Context) {
     fun load(): TicketTask? = runCatching {
         val j = JSONObject(prefs.getString(KEY, null) ?: return null)
         val seatMap = buildMap { val obj = j.optJSONObject("seatMap") ?: JSONObject(); obj.keys().forEach { key -> put(key, obj.optString(key)) } }
-        val train = Train(j.getString("trainNo"), j.getString("fromName"), j.getString("toName"), j.getString("depart"), j.getString("arrive"), j.optString("duration"), seatMap)
-        TicketTask(j.getString("date"), Station(j.getString("fromName"), j.getString("fromCode"), j.optString("fromCity"), j.optString("fromPinyin")), Station(j.getString("toName"), j.getString("toCode"), j.optString("toCity"), j.optString("toPinyin")), train, j.getString("seat"), crypto.decrypt(j.getString("passenger")), j.getString("saleTime"), enabled = j.optBoolean("enabled"), status = TaskStatus.valueOf(j.optString("status", TaskStatus.ENABLED.name)), lastEvent = j.optString("lastEvent").ifBlank { null }, lastEventAt = j.optLong("lastEventAt").takeIf { it > 0L }, lastError = j.optString("lastError").ifBlank { null })
+        val train = Train(j.getString("trainNo"), j.getString("fromName"), j.getString("toName"), j.getString("depart"), j.getString("arrive"), j.optString("duration"), seatMap, j.optString("trainSaleTime").ifBlank { null })
+        val saleDateTime = j.optString("saleDateTime").ifBlank { null }
+        val source = runCatching { SaleTimeSource.valueOf(j.optString("saleTimeSource", if (saleDateTime == null) SaleTimeSource.UNKNOWN.name else SaleTimeSource.USER_CONFIRMED.name)) }
+            .getOrDefault(SaleTimeSource.UNKNOWN)
+        val storedStatus = runCatching { TaskStatus.valueOf(j.optString("status", TaskStatus.ENABLED.name)) }.getOrDefault(TaskStatus.ENABLED)
+        val status = if (saleDateTime == null && storedStatus in setOf(
+                TaskStatus.ENABLED, TaskStatus.WAITING_FOR_SALE, TaskStatus.PREPARING, TaskStatus.OBSERVING, TaskStatus.SEARCHING
+            )) TaskStatus.DRAFT else storedStatus
+        val lastError = j.optString("lastError").ifBlank { null }
+        TicketTask(
+            taskId = j.optString("taskId").ifBlank { java.util.UUID.randomUUID().toString() },
+            date = j.getString("date"),
+            from = Station(j.getString("fromName"), j.getString("fromCode"), j.optString("fromCity"), j.optString("fromPinyin")),
+            to = Station(j.getString("toName"), j.getString("toCode"), j.optString("toCity"), j.optString("toPinyin")),
+            train = train,
+            seat = j.getString("seat"),
+            passengerName = crypto.decrypt(j.getString("passenger")),
+            saleDateTime = saleDateTime,
+            saleTimeSource = if (saleDateTime == null) SaleTimeSource.UNKNOWN else source,
+            enabled = saleDateTime != null && j.optBoolean("enabled", false),
+            status = status,
+            lastEvent = j.optString("lastEvent").ifBlank { null },
+            lastEventAt = j.optLong("lastEventAt").takeIf { it > 0L },
+            lastError = if (saleDateTime == null) lastError ?: "开售日期时间未知，请重新配置完整的 yyyy-MM-dd HH:mm" else lastError
+        )
     }.getOrNull()
 
     fun updateStatus(status: TaskStatus, event: String? = null, error: String? = null) {
         val task = load() ?: return
         save(task.copy(
             status = status,
-            enabled = status != TaskStatus.DISABLED && status != TaskStatus.EXPIRED,
+            enabled = status !in setOf(TaskStatus.DISABLED, TaskStatus.EXPIRED, TaskStatus.RESULT_UNKNOWN, TaskStatus.PENDING_PAYMENT),
             lastEvent = event ?: task.lastEvent,
             lastEventAt = if (event != null) System.currentTimeMillis() else task.lastEventAt,
             lastError = error

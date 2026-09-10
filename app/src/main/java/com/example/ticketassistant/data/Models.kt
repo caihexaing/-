@@ -14,13 +14,15 @@ data class Train(
 )
 
 data class TicketTask(
+    val taskId: String = java.util.UUID.randomUUID().toString(),
     val date: String,
     val from: Station,
     val to: Station,
     val train: Train,
     val seat: String,
     val passengerName: String,
-    val saleTime: String,
+    val saleDateTime: String?,
+    val saleTimeSource: SaleTimeSource = SaleTimeSource.UNKNOWN,
     val maxRunMinutes: Int = 120,
     val enabled: Boolean = true,
     val status: TaskStatus = TaskStatus.ENABLED,
@@ -29,4 +31,20 @@ data class TicketTask(
     val lastError: String? = null
 )
 
-enum class TaskStatus { DRAFT, ENABLED, PREPARING, SEARCHING, PENDING_PAYMENT, TAKEOVER, EXPIRED, DISABLED }
+enum class TaskStatus {
+    DRAFT,
+    ENABLED,
+    WAITING_FOR_SALE,
+    PREPARING,
+    OBSERVING,
+    SEARCHING,
+    TAKEOVER,
+    PENDING_PAYMENT,
+    RESULT_UNKNOWN,
+    EXPIRED,
+    DISABLED
+}
+
+enum class SaleTimeSource { OFFICIAL, USER_CONFIRMED, UNKNOWN }
+
+const val TASK_ZONE_ID = "Asia/Shanghai"
