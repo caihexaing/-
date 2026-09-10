@@ -15,6 +15,7 @@ class TaskAlarmReceiver : BroadcastReceiver() {
         val manager = context.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel(CHANNEL, "抢票提醒", NotificationManager.IMPORTANCE_HIGH))
         val phase = intent.getStringExtra(EXTRA_PHASE) ?: "开售"
+        com.example.ticketassistant.data.TaskStore(context).recordEvent("闹钟已触发：$phase")
         if (phase == TicketAutomationService.PHASE_PREPARE || phase == TicketAutomationService.PHASE_SALE) {
             val runner = Intent(context, TicketAutomationService::class.java).putExtra(TicketAutomationService.EXTRA_PHASE, phase)
             ContextCompat.startForegroundService(context, runner)

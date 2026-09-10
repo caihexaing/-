@@ -23,7 +23,10 @@ data class TicketTask(
     val saleTime: String,
     val maxRunMinutes: Int = 120,
     val enabled: Boolean = true,
-    val status: TaskStatus = TaskStatus.ENABLED
+    val status: TaskStatus = TaskStatus.ENABLED,
+    val lastEvent: String? = null,
+    val lastEventAt: Long? = null,
+    val lastError: String? = null
 )
 
 enum class TaskStatus { DRAFT, ENABLED, PREPARING, SEARCHING, PENDING_PAYMENT, TAKEOVER, EXPIRED, DISABLED }

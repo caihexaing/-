@@ -75,6 +75,7 @@ import com.example.ticketassistant.update.UpdateChecker
 import com.example.ticketassistant.update.UpdateProgress
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -159,6 +160,10 @@ class TicketViewModel : ViewModel() {
     }
     fun restore(context: android.content.Context) { storedTask = TaskStore(context).load(); if (storedTask != null) page.value = Page.TASK }
 
+    fun refreshTask(context: android.content.Context) {
+        storedTask = TaskStore(context).load()
+    }
+
     fun checkForUpdate(context: android.content.Context) = viewModelScope.launch {
         if (update.value != null || updateBusy.value) return@launch
         val current = context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "0.0.0"
@@ -197,10 +202,19 @@ private fun TicketApp(vm: TicketViewModel) {
     val updateBusy by vm.updateBusy.collectAsStateCompat()
     val updateProgress by vm.updateProgress.collectAsStateCompat()
     androidx.compose.runtime.LaunchedEffect(Unit) { vm.restore(context) }
+    androidx.compose.runtime.LaunchedEffect(page) {
+        while (page == Page.TASK) {
+            vm.refreshTask(context)
+            delay(1_000L)
+        }
+    }
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner, vm) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_START) vm.checkForUpdate(context)
+            if (event == Lifecycle.Event.ON_START) {
+                vm.refreshTask(context)
+                vm.checkForUpdate(context)
+            }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
@@ -433,6 +447,19 @@ private fun TaskScreen(vm: TicketViewModel) {
         TaskStatus.DRAFT -> "任务草稿"
     }
     Text(statusText, style = MaterialTheme.typography.titleLarge)
+    task.lastEvent?.let { eventText ->
+        val whenText = task.lastEventAt?.let {
+            java.time.Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault())
+                .format(DateTimeFormatter.ofPattern("MM-dd HH:mm:ss"))
+        }
+        Text(
+            if (whenText != null) "$eventText（$whenText）" else eventText,
+            style = MaterialTheme.typography.bodySmall
+        )
+    }
+    task.lastError?.let { errorText ->
+        Text("最近错误：$errorText", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+    }
     Spacer(Modifier.height(12.dp))
     Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp)) {
         Text("${task.date}  ${task.train.trainNo}", fontWeight = FontWeight.Bold)

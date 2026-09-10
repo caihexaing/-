@@ -25,6 +25,9 @@ class TaskStore(context: Context) {
             put("seatMap", JSONObject(task.train.seats))
             put("seat", task.seat); put("passenger", crypto.encrypt(task.passengerName)); put("saleTime", task.saleTime)
             put("enabled", task.enabled); put("status", task.status.name)
+            task.lastEvent?.let { put("lastEvent", it) }
+            task.lastEventAt?.let { put("lastEventAt", it) }
+            task.lastError?.let { put("lastError", it) }
         }
         prefs.edit().putString(KEY, json.toString()).apply()
     }
@@ -33,12 +36,23 @@ class TaskStore(context: Context) {
         val j = JSONObject(prefs.getString(KEY, null) ?: return null)
         val seatMap = buildMap { val obj = j.optJSONObject("seatMap") ?: JSONObject(); obj.keys().forEach { key -> put(key, obj.optString(key)) } }
         val train = Train(j.getString("trainNo"), j.getString("fromName"), j.getString("toName"), j.getString("depart"), j.getString("arrive"), j.optString("duration"), seatMap)
-        TicketTask(j.getString("date"), Station(j.getString("fromName"), j.getString("fromCode"), j.optString("fromCity"), j.optString("fromPinyin")), Station(j.getString("toName"), j.getString("toCode"), j.optString("toCity"), j.optString("toPinyin")), train, j.getString("seat"), crypto.decrypt(j.getString("passenger")), j.getString("saleTime"), enabled = j.optBoolean("enabled"), status = TaskStatus.valueOf(j.optString("status", TaskStatus.ENABLED.name)))
+        TicketTask(j.getString("date"), Station(j.getString("fromName"), j.getString("fromCode"), j.optString("fromCity"), j.optString("fromPinyin")), Station(j.getString("toName"), j.getString("toCode"), j.optString("toCity"), j.optString("toPinyin")), train, j.getString("seat"), crypto.decrypt(j.getString("passenger")), j.getString("saleTime"), enabled = j.optBoolean("enabled"), status = TaskStatus.valueOf(j.optString("status", TaskStatus.ENABLED.name)), lastEvent = j.optString("lastEvent").ifBlank { null }, lastEventAt = j.optLong("lastEventAt").takeIf { it > 0L }, lastError = j.optString("lastError").ifBlank { null })
     }.getOrNull()
 
-    fun updateStatus(status: TaskStatus) {
+    fun updateStatus(status: TaskStatus, event: String? = null, error: String? = null) {
         val task = load() ?: return
-        save(task.copy(status = status, enabled = status != TaskStatus.DISABLED && status != TaskStatus.EXPIRED))
+        save(task.copy(
+            status = status,
+            enabled = status != TaskStatus.DISABLED && status != TaskStatus.EXPIRED,
+            lastEvent = event ?: task.lastEvent,
+            lastEventAt = if (event != null) System.currentTimeMillis() else task.lastEventAt,
+            lastError = error
+        ))
+    }
+
+    fun recordEvent(event: String, error: String? = null) {
+        val task = load() ?: return
+        save(task.copy(lastEvent = event, lastEventAt = System.currentTimeMillis(), lastError = error))
     }
 
     fun clear() = prefs.edit().remove(KEY).apply()

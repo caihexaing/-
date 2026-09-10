@@ -37,17 +37,19 @@ class TicketAutomationService : Service() {
             return START_NOT_STICKY
         }
         val store = TaskStore(this)
-        if (phase == PHASE_PREPARE) store.updateStatus(TaskStatus.PREPARING)
-        if (phase == PHASE_SALE && task.status == TaskStatus.ENABLED) store.updateStatus(TaskStatus.PREPARING)
+        if (phase == PHASE_PREPARE) store.updateStatus(TaskStatus.PREPARING, "已触发开售前准备")
+        if (phase == PHASE_SALE && task.status == TaskStatus.ENABLED) store.updateStatus(TaskStatus.PREPARING, "已触发开售查询")
         if (phase == PHASE_PREPARE) {
+            store.recordEvent("准备阶段：正在唤起官方 12306")
             updateNotification("已进入开售准备，正在唤起官方 12306")
             OfficialAppLauncher(this).launch().onFailure {
-                store.updateStatus(TaskStatus.TAKEOVER)
+                store.updateStatus(TaskStatus.TAKEOVER, "官方 12306 打开失败", it.message)
                 message("无法打开官方 12306：${it.message ?: "请手动打开"}")
             }
             return START_NOT_STICKY
         }
 
+        store.recordEvent("开售阶段：开始查询目标车次")
         updateNotification("已到开售时间，正在查询目标车次")
         searchJob?.cancel()
         stopJob?.cancel()
@@ -55,24 +57,28 @@ class TicketAutomationService : Service() {
             val deadline = System.currentTimeMillis() + task.maxRunMinutes.coerceIn(1, 120) * 60_000L
             var firstAttempt = true
             while (isActive && System.currentTimeMillis() < deadline) {
-                val matched = runCatching {
+                val queryResult = runCatching {
                     TrainRepository().query(task.date, task.from, task.to)
-                        .firstOrNull { it.matchesTask(task) }
-                }.getOrElse {
-                    null
+                }
+                val matched = queryResult.getOrNull()?.firstOrNull { it.matchesTask(task) }
+                queryResult.exceptionOrNull()?.let { failure ->
+                    launch(Dispatchers.Main) {
+                        store.updateStatus(TaskStatus.SEARCHING, "查询失败，稍后重试", failure.message ?: failure.javaClass.simpleName)
+                    }
                 }
                 if (matched != null) {
                     launch(Dispatchers.Main) {
-                        store.updateStatus(TaskStatus.SEARCHING)
+                        store.updateStatus(TaskStatus.SEARCHING, "已找到目标车次：${task.train.trainNo}")
                         updateNotification("已找到 ${task.train.trainNo}，正在打开官方 12306 辅助下单")
                         OfficialAppLauncher(this@TicketAutomationService).launch().onFailure {
-                            store.updateStatus(TaskStatus.TAKEOVER)
+                            store.updateStatus(TaskStatus.TAKEOVER, "官方 12306 打开失败", it.message)
                             message("无法打开官方 12306：${it.message ?: "请手动打开"}")
                         }
                     }
                     return@launch
                 }
                 launch(Dispatchers.Main) {
+                    store.recordEvent(if (firstAttempt) "正在查询目标车次 ${task.train.trainNo}" else "暂未发现目标车次，继续查询")
                     updateNotification(if (firstAttempt) "正在查询目标车次 ${task.train.trainNo}" else "暂未发现目标车次，继续查询")
                 }
                 val nextDelay = if (firstAttempt) 3_000L else 8_000L
@@ -80,7 +86,7 @@ class TicketAutomationService : Service() {
                 delay(nextDelay)
             }
             launch(Dispatchers.Main) {
-                store.updateStatus(TaskStatus.EXPIRED)
+                store.updateStatus(TaskStatus.EXPIRED, "查询超时，未找到目标车次")
                 message("在限定时间内未找到目标车次，任务已结束")
                 stopSelf()
             }
