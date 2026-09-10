@@ -68,7 +68,10 @@ internal fun takeoverReason(text: String): String? {
             "官方 12306 要求验证码，请手动完成"
         listOf("请先登录", "登录后继续", "账号登录", "登录/注册", "会话已失效").any(normalized::contains) ->
             "官方 12306 需要登录，请手动完成"
-        listOf("身份核验", "实名认证").any(normalized::contains) ->
+        listOf(
+            "请完成身份核验", "需要身份核验", "身份核验未完成", "身份核验失败",
+            "请进行实名认证", "需要实名认证", "实名认证未完成", "实名认证失败"
+        ).any(normalized::contains) ->
             "官方 12306 需要身份核验，请手动完成"
         listOf("支付", "订单确认", "候补协议").any(normalized::contains) ->
             "已进入订单确认、候补或支付环节，请手动接管"

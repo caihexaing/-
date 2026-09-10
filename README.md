@@ -6,7 +6,7 @@
 
 `app/build/outputs/apk/debug/app-debug.apk`
 
-当前开发版本为 `0.2.4`（`versionCode` 6），支持 Android 8.0（API 26）及以上，目标 Android 16（API 36）。APK 包名为 `com.example.ticketassistant`，使用 Android Debug 证书签名，只适合作为私人侧载测试包。
+当前开发版本为 `0.2.5`（`versionCode` 7），支持 Android 8.0（API 26）及以上，目标 Android 16（API 36）。APK 包名为 `com.example.ticketassistant`，使用 Android Debug 证书签名，只适合作为私人侧载测试包。
 
 ## 构建
 
