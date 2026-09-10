@@ -1,11 +1,9 @@
 package com.example.ticketassistant.update
 
-import android.app.DownloadManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
-import android.database.Cursor
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -88,7 +86,7 @@ class UpdateChecker {
         var lastFailure: Throwable? = null
         repeat(MAX_DOWNLOAD_ATTEMPTS) { attempt ->
             try {
-                downloadWithManager(context, update, attempt, staging, onProgress)
+                downloadWithHttp(update, attempt, staging, onProgress)
                 validate(context, staging, update)
                 if (!staging.renameTo(target)) throw UpdateDownloadException("无法保存已下载的更新文件")
                 launchInstaller(context, target)
@@ -113,68 +111,42 @@ class UpdateChecker {
         throw UpdateDownloadException("请先允许本应用安装未知来源应用，然后再次点击立即更新")
     }
 
-    private suspend fun downloadWithManager(
-        context: Context,
+    private suspend fun downloadWithHttp(
         update: AppUpdate,
         attempt: Int,
         destination: File,
         onProgress: (UpdateProgress) -> Unit
     ) = withContext(Dispatchers.IO) {
-        val manager = context.getSystemService(DownloadManager::class.java)
-            ?: throw UpdateDownloadException("系统下载服务不可用")
-        val request = DownloadManager.Request(Uri.parse(update.downloadUrl))
-            .setTitle("行程助手更新 ${update.versionName}")
-            .setDescription("正在下载更新（第 ${attempt + 1}/$MAX_DOWNLOAD_ATTEMPTS 次）")
-            .setMimeType(APK_MIME_TYPE)
-            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-            .setAllowedOverMetered(true)
-            .setAllowedOverRoaming(true)
-            .setDestinationUri(Uri.fromFile(destination))
-        val id = manager.enqueue(request)
-        var completed = false
+        val connection = (URL(update.downloadUrl).openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = CONNECT_TIMEOUT_MS
+            readTimeout = READ_TIMEOUT_MS
+            instanceFollowRedirects = true
+            setRequestProperty("Accept", APK_MIME_TYPE)
+            setRequestProperty("User-Agent", "TicketAssistant/${update.versionName}")
+        }
         try {
-            val deadline = System.currentTimeMillis() + DOWNLOAD_TIMEOUT_MS
-            while (System.currentTimeMillis() < deadline) {
-                val result = query(manager, id)
-                onProgress(UpdateProgress(result.downloadedBytes, result.totalBytes, attempt + 1))
-                when (result.status) {
-                    DownloadManager.STATUS_SUCCESSFUL -> {
-                        if (!destination.exists() || destination.length() == 0L) {
-                            throw UpdateDownloadException("下载完成但更新文件为空")
-                        }
-                        completed = true
-                        return@withContext
-                    }
-                    DownloadManager.STATUS_FAILED -> {
-                        throw UpdateDownloadException("系统下载失败：${reasonText(result.reason)}")
+            if (connection.responseCode !in 200..299) {
+                throw UpdateDownloadException("GitHub 下载失败（HTTP ${connection.responseCode}）")
+            }
+            val totalBytes = connection.contentLengthLong
+            var downloadedBytes = 0L
+            onProgress(UpdateProgress(0L, totalBytes, attempt + 1))
+            destination.outputStream().buffered().use { output ->
+                connection.inputStream.buffered().use { input ->
+                    val buffer = ByteArray(64 * 1024)
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        if (count == 0) continue
+                        output.write(buffer, 0, count)
+                        downloadedBytes += count
+                        onProgress(UpdateProgress(downloadedBytes, totalBytes, attempt + 1))
                     }
                 }
-                delay(POLL_INTERVAL_MS)
             }
-            throw UpdateDownloadException("下载超时，请检查网络后重试")
         } finally {
-            if (!completed) manager.remove(id)
-        }
-    }
-
-    private data class DownloadResult(
-        val status: Int,
-        val reason: Int,
-        val downloadedBytes: Long,
-        val totalBytes: Long
-    )
-
-    private fun query(manager: DownloadManager, id: Long): DownloadResult {
-        val cursor: Cursor = manager.query(DownloadManager.Query().setFilterById(id))
-            ?: throw UpdateDownloadException("无法读取系统下载状态")
-        cursor.use {
-            if (!it.moveToFirst()) throw UpdateDownloadException("系统下载任务不存在")
-            return DownloadResult(
-                status = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS)),
-                reason = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON)),
-                downloadedBytes = it.getLong(it.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)),
-                totalBytes = it.getLong(it.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
-            )
+            connection.disconnect()
         }
     }
 
@@ -265,18 +237,6 @@ class UpdateChecker {
         )
     }
 
-    private fun reasonText(reason: Int): String = when (reason) {
-        DownloadManager.ERROR_CANNOT_RESUME -> "无法续传"
-        DownloadManager.ERROR_DEVICE_NOT_FOUND -> "存储设备不可用"
-        DownloadManager.ERROR_FILE_ALREADY_EXISTS -> "文件已存在"
-        DownloadManager.ERROR_FILE_ERROR -> "文件读写失败"
-        DownloadManager.ERROR_HTTP_DATA_ERROR -> "网络数据错误"
-        DownloadManager.ERROR_INSUFFICIENT_SPACE -> "存储空间不足"
-        DownloadManager.ERROR_TOO_MANY_REDIRECTS -> "重定向次数过多"
-        DownloadManager.ERROR_UNHANDLED_HTTP_CODE -> "服务器拒绝下载"
-        else -> "网络不稳定（代码 $reason）"
-    }
-
     internal fun isNewer(candidate: String, current: String): Boolean {
         fun parts(value: String) = value.removePrefix("v").split('.', '-', '+').map { it.toIntOrNull() ?: 0 }
         val candidateParts = parts(candidate)
@@ -295,8 +255,6 @@ class UpdateChecker {
         private const val CONNECT_TIMEOUT_MS = 20_000
         private const val READ_TIMEOUT_MS = 30_000
         private const val MAX_DOWNLOAD_ATTEMPTS = 3
-        private const val DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000L
-        private const val POLL_INTERVAL_MS = 750L
         private val RETRY_DELAYS_MS = longArrayOf(1_000L, 3_000L)
     }
 }
