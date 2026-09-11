@@ -2,7 +2,8 @@ package com.example.ticketassistant.automation
 
 enum class OfficialPageState {
     LAUNCHING, HOME_PAGE, SEARCH_RESULT, SEAT_SELECTION,
-    PASSENGER_SELECTION, ORDER_CONFIRM, PENDING_PAYMENT, POPUP, UNKNOWN
+    PASSENGER_SELECTION, ORDER_CONFIRM, PENDING_PAYMENT,
+    PROCESSING, SUBMIT_REJECTED, POPUP, UNKNOWN
 }
 
 internal fun detectOfficialPageState(text: String): OfficialPageState {
@@ -11,8 +12,18 @@ internal fun detectOfficialPageState(text: String): OfficialPageState {
         .containsMatchIn(normalized)
     if (listOf("公告", "活动", "优惠", "温馨提示").any(normalized::contains) &&
         listOf("关闭", "知道了", "暂不").any(normalized::contains)) return OfficialPageState.POPUP
+    val explicitSubmitFailure = listOf("提交失败", "订单失败", "无法提交", "重复订单", "已有未完成订单")
+        .any(normalized::contains)
+    val contextualSeatFailure = listOf("席位不足", "余票不足").any(normalized::contains) &&
+        listOf("提交", "订单确认").any(normalized::contains)
+    if (explicitSubmitFailure || contextualSeatFailure || listOf("网络异常", "网络错误").any(normalized::contains)) {
+        return OfficialPageState.SUBMIT_REJECTED
+    }
     if (listOf("订单确认", "提交订单").any(normalized::contains)) return OfficialPageState.ORDER_CONFIRM
     if (isPendingPaymentPage(text)) return OfficialPageState.PENDING_PAYMENT
+    if (listOf("提交中", "正在提交", "排队中", "订单处理中", "处理中").any(normalized::contains)) {
+        return OfficialPageState.PROCESSING
+    }
     if (listOf("席别", "商务座", "一等座", "二等座", "硬卧", "软卧").any(normalized::contains) &&
         listOf("预订", "下一步").any(normalized::contains)) return OfficialPageState.SEAT_SELECTION
     if (listOf("乘车人", "联系人").any(normalized::contains) &&

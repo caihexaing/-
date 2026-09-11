@@ -17,7 +17,25 @@ import com.example.ticketassistant.data.TaskTiming
 class TaskRestoreReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val task = TaskStore(context).load() ?: return
-        if (!task.enabled || task.status in setOf(TaskStatus.DISABLED, TaskStatus.EXPIRED, TaskStatus.RESULT_UNKNOWN, TaskStatus.PENDING_PAYMENT)) return
+        if (!task.enabled || task.status in setOf(TaskStatus.DISABLED, TaskStatus.EXPIRED, TaskStatus.RESULT_UNKNOWN, TaskStatus.PENDING_PAYMENT, TaskStatus.SUBMIT_REJECTED)) return
+        if (task.status in setOf(TaskStatus.SUBMIT_ACTION_SENT, TaskStatus.WAITING_SERVER_RESULT)) {
+            TaskStore(context).recordEvent("系统恢复完成：提交结果待人工核对，禁止自动重试")
+            notify(context, task.taskId, "提交结果待核对，请打开官方 12306 订单页确认", startExecution = false)
+            return
+        }
+        if (task.status in setOf(
+                TaskStatus.WAITING_OFFICIAL_PAGE,
+                TaskStatus.VALIDATING_SEARCH_RESULT,
+                TaskStatus.SELECTING_TRAIN_SEAT,
+                TaskStatus.SELECTING_PASSENGER,
+                TaskStatus.VALIDATING_ORDER,
+                TaskStatus.OBSERVING,
+                TaskStatus.SEARCHING
+            )) {
+            TaskStore(context).recordEvent("系统恢复完成：官方页面执行状态待核对，禁止自动重启点击")
+            notify(context, task.taskId, "官方页面执行状态待核对，请打开行程助手查看诊断", startExecution = false)
+            return
+        }
         if (task.saleState == SaleState.ALREADY_ON_SALE) {
             TaskStore(context).recordEvent("系统恢复完成：已开售任务等待你点击通知启动")
             notify(context, task.taskId, "目标车次已开售，点击通知开始执行", startExecution = true)

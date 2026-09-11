@@ -1,6 +1,11 @@
 package com.example.ticketassistant.automation
 
+import com.example.ticketassistant.data.Station
+import com.example.ticketassistant.data.TicketTask
+import com.example.ticketassistant.data.Train
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PageStateClassifierTest {
@@ -28,5 +33,29 @@ class PageStateClassifierTest {
 
     @Test fun `search results require result evidence rather than dates alone`() {
         assertEquals(OfficialPageState.SEARCH_RESULT, detectOfficialPageState("首页 查询车票 D5963 余票 二等座"))
+    }
+
+    @Test fun `processing and rejection pages are classified`() {
+        assertEquals(OfficialPageState.PROCESSING, detectOfficialPageState("订单处理中 请稍候"))
+        assertEquals(OfficialPageState.SUBMIT_REJECTED, detectOfficialPageState("提交失败 席位不足"))
+        assertEquals(OfficialPageState.SEARCH_RESULT, detectOfficialPageState("查询车票 D353 汉口 潜江 余票不足"))
+        assertEquals(OfficialPageState.SUBMIT_REJECTED, detectOfficialPageState("订单提交失败：余票不足"))
+        assertEquals(OfficialPageState.SUBMIT_REJECTED, detectOfficialPageState("订单确认 提交订单 余票不足"))
+    }
+
+    @Test fun `search context requires matching travel date and route`() {
+        val task = TicketTask(
+            date = "2026-09-19",
+            from = Station("汉口", "HKN"),
+            to = Station("潜江", "QJN"),
+            train = Train("D353", "汉口", "潜江", "07:25", "08:16", "00:51", emptyMap()),
+            seat = "二等座",
+            passengerName = "乘客",
+            saleDateTime = null
+        )
+        assertTrue(matchesSearchContext("查询车票 2026-09-19 汉口 潜江 D353 二等座 余票", task))
+        assertTrue(matchesSearchContext("查询车票 2026年9月19日 汉口 潜江 D353 二等座 余票", task))
+        assertFalse(matchesSearchContext("查询车票 2026-09-18 汉口 潜江 D353 二等座 余票", task))
+        assertFalse(matchesSearchContext("查询车票 2026-09-19 汉口 武昌 D353 二等座 余票", task))
     }
 }

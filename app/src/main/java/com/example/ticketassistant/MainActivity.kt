@@ -61,7 +61,10 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.example.ticketassistant.automation.AccessibilityServiceStatus
 import com.example.ticketassistant.automation.OfficialAppLauncher
+import com.example.ticketassistant.automation.PersistentSubmitGate
+import com.example.ticketassistant.automation.submitGateKey
 import com.example.ticketassistant.data.Station
 import com.example.ticketassistant.data.StationRepository
 import com.example.ticketassistant.data.TaskStatus
@@ -76,6 +79,7 @@ import com.example.ticketassistant.notifications.TaskScheduler
 import com.example.ticketassistant.update.AppUpdate
 import com.example.ticketassistant.update.UpdateChecker
 import com.example.ticketassistant.update.UpdateProgress
+import com.example.ticketassistant.diagnostics.DiagnosticExporter
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.delay
@@ -534,7 +538,15 @@ private fun TaskScreen(vm: TicketViewModel) {
     val statusText = when (task.status) {
         TaskStatus.ENABLED, TaskStatus.WAITING_FOR_SALE -> "任务已启用，等待开售"
         TaskStatus.PREPARING -> "正在准备并唤起官方 12306"
-        TaskStatus.OBSERVING, TaskStatus.SEARCHING -> "已进入观察阶段，请在官方 App 中操作"
+        TaskStatus.WAITING_OFFICIAL_PAGE, TaskStatus.OBSERVING -> "已发现余票，但尚未提交订单，等待官方页面操作"
+        TaskStatus.VALIDATING_SEARCH_RESULT -> "正在核对官方查询结果页"
+        TaskStatus.SELECTING_TRAIN_SEAT -> "正在定位目标车次和席别"
+        TaskStatus.SELECTING_PASSENGER -> "正在选择指定乘车人"
+        TaskStatus.VALIDATING_ORDER -> "正在核对订单确认页，尚未提交"
+        TaskStatus.SUBMIT_ACTION_SENT -> "已发送提交点击，等待官方结果"
+        TaskStatus.WAITING_SERVER_RESULT -> "正在等待官方确认，不会自动重复提交"
+        TaskStatus.SEARCHING -> "正在查询余票"
+        TaskStatus.SUBMIT_REJECTED -> "官方未创建订单"
         TaskStatus.TAKEOVER -> "需要人工接管，请查看官方 App"
         TaskStatus.PENDING_PAYMENT -> "已进入待支付订单，请在官方 App 完成后续操作"
         TaskStatus.EXPIRED -> "任务已超时"
@@ -557,6 +569,31 @@ private fun TaskScreen(vm: TicketViewModel) {
         Text("最近错误：$errorText", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
     }
     Spacer(Modifier.height(12.dp))
+    val accessibilityEnabled = AccessibilityServiceStatus.isEnabled(context)
+    val submitLocked = PersistentSubmitGate(
+        context.getSharedPreferences("submit_gate", android.content.Context.MODE_PRIVATE),
+        submitGateKey(task)
+    ).isLocked()
+    Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp)) {
+    Text("诊断状态", fontWeight = FontWeight.SemiBold)
+        Text("无障碍服务：${if (accessibilityEnabled) "已启用" else "未启用"}")
+        Text("最近官方页面：${task.lastPageState ?: "尚未收到页面事件"}")
+        Text("最近动作：${task.lastAction ?: "暂无"}")
+        val eventTime = task.lastAccessibilityEventAt?.let {
+            java.time.Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault())
+                .format(DateTimeFormatter.ofPattern("MM-dd HH:mm:ss"))
+        } ?: "暂无"
+        Text("最近事件：$eventTime（累计 ${task.accessibilityEventCount} 次）")
+        Text("提交锁：${if (submitLocked) "已锁定，禁止自动重试" else "未锁定"}")
+    } }
+    Spacer(Modifier.height(10.dp))
+    OutlinedButton(onClick = {
+        runCatching {
+            val report = DiagnosticExporter.export(context, task)
+            context.startActivity(Intent.createChooser(DiagnosticExporter.shareIntent(context, report), "分享脱敏诊断"))
+        }.onFailure { vm.error.value = "导出诊断失败：${it.message ?: "无法创建文件"}" }
+    }, modifier = Modifier.fillMaxWidth()) { Text("导出脱敏诊断") }
+    Spacer(Modifier.height(10.dp))
     Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp)) {
         Text("${task.date}  ${task.train.trainNo}", fontWeight = FontWeight.Bold)
         Text("${task.from.name} ${task.train.depart} → ${task.to.name} ${task.train.arrive}")
@@ -564,7 +601,7 @@ private fun TaskScreen(vm: TicketViewModel) {
     } }
     Spacer(Modifier.height(10.dp))
     Text(
-        "开售后会在官方 12306 中辅助选择目标车次、席别和唯一乘车人，并自动点击一次“提交订单”。验证码、身份核验、风控和支付必须由你手动完成。",
+        "后台发现余票不代表已经下单。请在官方 12306 手动查询完全一致的日期、路线、车次和席别并停留在结果页；只有页面字段核对通过后才会继续辅助操作。验证码、身份核验、风控和支付必须由你手动完成。",
         style = MaterialTheme.typography.bodySmall
     )
     Spacer(Modifier.height(12.dp))

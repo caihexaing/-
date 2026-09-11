@@ -33,6 +33,10 @@ class TaskStore(context: Context) {
             task.lastEvent?.let { put("lastEvent", it) }
             task.lastEventAt?.let { put("lastEventAt", it) }
             task.lastError?.let { put("lastError", it) }
+            task.lastPageState?.let { put("lastPageState", it) }
+            task.lastAction?.let { put("lastAction", it) }
+            task.lastAccessibilityEventAt?.let { put("lastAccessibilityEventAt", it) }
+            put("accessibilityEventCount", task.accessibilityEventCount)
         }
         prefs.edit().putString(KEY, json.toString()).apply()
     }
@@ -52,7 +56,11 @@ class TaskStore(context: Context) {
             (saleState == SaleState.NOT_YET_ON_SALE &&
                 (saleDateTime == null || TaskTiming.parseSaleDateTime(saleDateTime) == null))
         val status = if (invalidSaleData && storedStatus in setOf(
-                TaskStatus.ENABLED, TaskStatus.WAITING_FOR_SALE, TaskStatus.PREPARING, TaskStatus.OBSERVING, TaskStatus.SEARCHING
+                TaskStatus.ENABLED, TaskStatus.WAITING_FOR_SALE, TaskStatus.PREPARING,
+                TaskStatus.WAITING_OFFICIAL_PAGE, TaskStatus.VALIDATING_SEARCH_RESULT,
+                TaskStatus.SELECTING_TRAIN_SEAT, TaskStatus.SELECTING_PASSENGER,
+                TaskStatus.VALIDATING_ORDER, TaskStatus.SUBMIT_ACTION_SENT,
+                TaskStatus.WAITING_SERVER_RESULT, TaskStatus.OBSERVING, TaskStatus.SEARCHING
             )) TaskStatus.DRAFT else storedStatus
         val lastError = j.optString("lastError").ifBlank { null }
         TicketTask(
@@ -74,7 +82,11 @@ class TaskStore(context: Context) {
             lastEventAt = j.optLong("lastEventAt").takeIf { it > 0L },
             lastError = if (invalidSaleData) {
                 lastError ?: "开售状态未知，请重新查询确认"
-            } else lastError
+            } else lastError,
+            lastPageState = j.optString("lastPageState").ifBlank { null },
+            lastAction = j.optString("lastAction").ifBlank { null },
+            lastAccessibilityEventAt = j.optLong("lastAccessibilityEventAt").takeIf { it > 0L },
+            accessibilityEventCount = j.optInt("accessibilityEventCount", 0).coerceAtLeast(0)
         )
     }.getOrNull()
 
@@ -82,7 +94,7 @@ class TaskStore(context: Context) {
         val task = load() ?: return
         save(task.copy(
             status = status,
-            enabled = status !in setOf(TaskStatus.DRAFT, TaskStatus.DISABLED, TaskStatus.EXPIRED, TaskStatus.TAKEOVER, TaskStatus.RESULT_UNKNOWN, TaskStatus.PENDING_PAYMENT) &&
+            enabled = status !in setOf(TaskStatus.DRAFT, TaskStatus.DISABLED, TaskStatus.EXPIRED, TaskStatus.TAKEOVER, TaskStatus.RESULT_UNKNOWN, TaskStatus.PENDING_PAYMENT, TaskStatus.SUBMIT_REJECTED) &&
                 task.saleState != SaleState.UNKNOWN,
             lastEvent = event ?: task.lastEvent,
             lastEventAt = if (event != null) System.currentTimeMillis() else task.lastEventAt,
@@ -93,6 +105,17 @@ class TaskStore(context: Context) {
     fun recordEvent(event: String, error: String? = null) {
         val task = load() ?: return
         save(task.copy(lastEvent = event, lastEventAt = System.currentTimeMillis(), lastError = error))
+    }
+
+    fun recordAccessibilityEvent(pageState: String?, action: String? = null) {
+        val task = load() ?: return
+        val now = System.currentTimeMillis()
+        save(task.copy(
+            lastPageState = pageState ?: task.lastPageState,
+            lastAction = action ?: task.lastAction,
+            lastAccessibilityEventAt = now,
+            accessibilityEventCount = task.accessibilityEventCount + 1
+        ))
     }
 
     fun clear() = prefs.edit().remove(KEY).apply()

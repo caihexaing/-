@@ -18,4 +18,13 @@ class PersistentSubmitGate(private val preferences: android.content.SharedPrefer
     }
 
     fun isLocked(): Boolean = preferences.getBoolean(key, false)
+
+    /** Only used when ACTION_CLICK was explicitly rejected by the accessibility framework. */
+    @Synchronized
+    fun releaseAfterClickRejected() {
+        preferences.edit().remove(key).commit()
+    }
 }
+
+fun submitGateKey(task: com.example.ticketassistant.data.TicketTask): String =
+    "${task.taskId}:${task.saleDateTime}:${task.date}:${task.train.trainNo}"

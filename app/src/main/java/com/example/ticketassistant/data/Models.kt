@@ -29,7 +29,11 @@ data class TicketTask(
     val status: TaskStatus = TaskStatus.ENABLED,
     val lastEvent: String? = null,
     val lastEventAt: Long? = null,
-    val lastError: String? = null
+    val lastError: String? = null,
+    val lastPageState: String? = null,
+    val lastAction: String? = null,
+    val lastAccessibilityEventAt: Long? = null,
+    val accessibilityEventCount: Int = 0
 )
 
 enum class TaskStatus {
@@ -37,8 +41,16 @@ enum class TaskStatus {
     ENABLED,
     WAITING_FOR_SALE,
     PREPARING,
+    WAITING_OFFICIAL_PAGE,
+    VALIDATING_SEARCH_RESULT,
+    SELECTING_TRAIN_SEAT,
+    SELECTING_PASSENGER,
+    VALIDATING_ORDER,
+    SUBMIT_ACTION_SENT,
+    WAITING_SERVER_RESULT,
     OBSERVING,
     SEARCHING,
+    SUBMIT_REJECTED,
     TAKEOVER,
     PENDING_PAYMENT,
     RESULT_UNKNOWN,

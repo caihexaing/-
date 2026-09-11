@@ -89,8 +89,17 @@ class TicketAutomationService : Service() {
                 }
                 if (matched != null) {
                     launch(Dispatchers.Main) {
-                        store.updateStatus(TaskStatus.OBSERVING, "已找到目标车次：${task.train.trainNo}")
-                        updateNotification("已找到 ${task.train.trainNo}，正在打开官方 12306 辅助下单")
+                        if (!AccessibilityServiceStatus.isEnabled(this@TicketAutomationService)) {
+                            store.updateStatus(TaskStatus.TAKEOVER, "已找到目标车次，但无障碍服务未启用；尚未提交订单")
+                            message("已找到 ${task.train.trainNo}，但无障碍服务未启用；尚未提交订单，请先启用服务")
+                            stopSelf()
+                            return@launch
+                        }
+                        store.updateStatus(
+                            TaskStatus.WAITING_OFFICIAL_PAGE,
+                            "后台查询发现余票，尚未提交订单；等待官方 12306 页面操作"
+                        )
+                        updateNotification("已找到 ${task.train.trainNo}；尚未提交订单，正在打开官方 12306")
                         OfficialAppLauncher(this@TicketAutomationService).launch().onFailure {
                             store.updateStatus(TaskStatus.TAKEOVER, "官方 12306 打开失败", it.message)
                             message("无法打开官方 12306：${it.message ?: "请手动打开"}")
