@@ -29,8 +29,8 @@ android {
         applicationId = "com.example.ticketassistant"
         minSdk = 26
         targetSdk = 36
-        versionCode = 15
-        versionName = "0.3.3-auto-query"
+        versionCode = 16
+        versionName = "0.3.4-popup-fix"
     }
 
     signingConfigs {

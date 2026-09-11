@@ -21,6 +21,13 @@ class PageStateClassifierTest {
         assertEquals(OfficialPageState.UNKNOWN, detectOfficialPageState("个人中心 设置"))
     }
 
+    @Test fun `homepage content with advertisement and notice stays home page`() {
+        assertEquals(
+            OfficialPageState.HOME_PAGE,
+            detectOfficialPageState("首页 我的 订单 车票 汉口 潜江 9月19日 查询车票 活动广告 公告 关闭")
+        )
+    }
+
     @Test fun `stage pages win over bottom navigation labels`() {
         assertEquals(OfficialPageState.SEAT_SELECTION, detectOfficialPageState("首页 我的 订单 车票 席别 二等座 预订"))
         assertEquals(OfficialPageState.PASSENGER_SELECTION, detectOfficialPageState("首页 订单 乘车人 蔡贺翔 下一步"))

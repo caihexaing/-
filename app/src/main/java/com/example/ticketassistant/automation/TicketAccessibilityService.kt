@@ -28,6 +28,7 @@ class TicketAccessibilityService : AccessibilityService() {
     private val formEvidence = mutableSetOf<SearchField>()
     private var navigationAttempted = false
     private var searchActionSent = false
+    private var popupDismissSent = false
     private val searchInteractor by lazy {
         OfficialSearchInteractor { action -> recordDiagnostic(pageState, action) }
     }
@@ -51,6 +52,7 @@ class TicketAccessibilityService : AccessibilityService() {
             formEvidence.clear()
             navigationAttempted = false
             searchActionSent = false
+            popupDismissSent = false
         }
 
         val gate = PersistentSubmitGate(getSharedPreferences("submit_gate", MODE_PRIVATE), submitGateKey(task))
@@ -80,12 +82,36 @@ class TicketAccessibilityService : AccessibilityService() {
             return
         }
 
-        pageState = detectOfficialPageState(text)
+        val popupMatch = PopupMatcher.find(root)
+        pageState = when (popupMatch) {
+            is PopupMatcher.Result.Unique, is PopupMatcher.Result.Ambiguous -> OfficialPageState.POPUP
+            PopupMatcher.Result.None -> detectOfficialPageState(text)
+        }
         recordDiagnostic(pageState)
         if (pageState == OfficialPageState.POPUP) {
-            takeover("官方 12306 出现公告或活动弹窗，请手动关闭后继续")
+            when (popupMatch) {
+                is PopupMatcher.Result.Unique -> {
+                    if (popupDismissSent) {
+                        if (System.currentTimeMillis() - lastActionAt < ACTION_COOLDOWN_MS) return
+                        takeover("普通弹窗关闭动作已派发，但页面仍未恢复；请手动核对")
+                        return
+                    }
+                    val clicked = clickNodeOrParent(popupMatch.node)
+                    recordDiagnostic(pageState, "普通弹窗关闭${if (clicked) "动作已派发" else "动作未派发"}（${popupMatch.label}）")
+                    if (!clicked) {
+                        takeover("普通弹窗关闭控件无法操作，请手动关闭")
+                    } else {
+                        popupDismissSent = true
+                        lastActionAt = System.currentTimeMillis()
+                        TaskStore(this).updateStatus(TaskStatus.WAITING_OFFICIAL_PAGE, "已关闭普通弹窗，等待官方 12306 页面")
+                    }
+                }
+                is PopupMatcher.Result.Ambiguous -> takeover("普通弹窗关闭控件不唯一（${popupMatch.count} 个），请手动关闭")
+                PopupMatcher.Result.None -> takeover("检测到疑似弹窗但无法安全定位关闭控件，请手动核对")
+            }
             return
         }
+        popupDismissSent = false
         if (pageState == OfficialPageState.SUBMIT_REJECTED) {
             if (stage == Stage.WAITING_RESULT) {
                 submitRejected("官方 12306 未创建订单：${failureCategory(text)}")
