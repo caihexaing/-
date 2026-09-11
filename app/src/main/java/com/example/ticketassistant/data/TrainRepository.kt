@@ -10,6 +10,12 @@ import java.net.URLEncoder
 class TrainRepository {
     @Volatile private var cookie: String = ""
 
+    /** Prepare the read-only query session without making it a purchase gate. */
+    suspend fun warmUpSession(): Boolean = withContext(Dispatchers.IO) {
+        if (cookie.isBlank()) cookie = initSession()
+        cookie.isNotBlank()
+    }
+
     suspend fun query(date: String, from: Station, to: Station): List<Train> = queryInternal(date, from, to, allowRefresh = true)
 
     private suspend fun queryInternal(date: String, from: Station, to: Station, allowRefresh: Boolean): List<Train> = withContext(Dispatchers.IO) {

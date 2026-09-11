@@ -31,6 +31,7 @@ class TicketAccessibilityService : AccessibilityService() {
     private var navigationAttempted = false
     private var searchActionSent = false
     private var popupDismissSent = false
+    private var fastPathWaitEvents = 0
     private val searchInteractor by lazy {
         OfficialSearchInteractor { action -> recordDiagnostic(pageState, action) }
     }
@@ -57,6 +58,7 @@ class TicketAccessibilityService : AccessibilityService() {
             navigationAttempted = false
             searchActionSent = false
             popupDismissSent = false
+            fastPathWaitEvents = 0
         }
 
         val gate = PersistentSubmitGate(getSharedPreferences("submit_gate", MODE_PRIVATE), submitGateKey(task))
@@ -148,6 +150,24 @@ class TicketAccessibilityService : AccessibilityService() {
             handleSubmitResult(text, task, rootPackage)
             return
         }
+        if (stage == Stage.PREWARM && task.status == TaskStatus.VALIDATING_SEARCH_RESULT) {
+            if (pageState != OfficialPageState.SEARCH_RESULT) {
+                fastPathWaitEvents++
+                recordDiagnostic(
+                    pageState,
+                    "开售时刻等待预热结果页恢复（第 ${fastPathWaitEvents} 次）",
+                    evidenceSource = "SALE_FAST_PATH_WAIT"
+                )
+                if (fastPathWaitEvents >= MAX_FAST_PATH_WAIT_EVENTS) {
+                    takeover("开售时官方页面不是任务一致的预热结果页，未执行冷启动查询")
+                }
+                return
+            }
+            fastPathWaitEvents = 0
+            stage = Stage.VALIDATING_SEARCH
+            formWaitEvents = 0
+            TaskStore(this).recordEvent("开售时刻已到，进入预热结果页快速路径")
+        }
         if (pageState == OfficialPageState.PROCESSING) {
             takeover("官方 12306 正在处理，但任务尚未发送提交点击，请手动确认页面")
             return
@@ -164,7 +184,7 @@ class TicketAccessibilityService : AccessibilityService() {
 
         val expectedPage = when (stage) {
             Stage.WAITING_PAGE, Stage.OPEN_SEARCH, Stage.DEPARTURE, Stage.ARRIVAL,
-            Stage.DATE, Stage.SUBMIT_SEARCH, Stage.WAITING_RESULT, Stage.DONE -> null
+            Stage.DATE, Stage.SUBMIT_SEARCH, Stage.PREWARM, Stage.WAITING_RESULT, Stage.DONE -> null
             Stage.VALIDATING_SEARCH, Stage.TRAIN -> OfficialPageState.SEARCH_RESULT
             Stage.SEAT -> OfficialPageState.SEAT_SELECTION
             Stage.PASSENGER -> OfficialPageState.PASSENGER_SELECTION
@@ -178,6 +198,7 @@ class TicketAccessibilityService : AccessibilityService() {
 
         when (stage) {
             Stage.WAITING_PAGE -> handleWaitingPage(root, text, task)
+            Stage.PREWARM -> handlePrewarm(text, task)
             Stage.OPEN_SEARCH -> handleOpeningSearch(root, text)
             Stage.DEPARTURE -> handleStationField(root, SearchField.DEPARTURE, task.from.name) {
                 stage = Stage.ARRIVAL
@@ -260,6 +281,39 @@ class TicketAccessibilityService : AccessibilityService() {
                 validateAndSelectTrain(root, text, task)
             }
             else -> waitForFormProgress("等待官方 12306 查询页面")
+        }
+    }
+
+    private fun handlePrewarm(text: String, task: TicketTask) {
+        when (pageState) {
+            OfficialPageState.SEARCH_RESULT -> {
+                if (matchesExecutionSearchContext(text, task)) {
+                    recordDiagnostic(
+                        pageState,
+                        "任务一致的官方结果页已预热，等待开售",
+                        evidenceSource = "PREWARM_READY"
+                    )
+                    TaskStore(this).recordEvent("官方结果页已预热：开售时将直接定位目标车次")
+                } else {
+                    recordDiagnostic(
+                        pageState,
+                        "官方结果页与任务不一致，等待调整",
+                        evidenceSource = "PREWARM_CONTEXT_MISMATCH"
+                    )
+                    TaskStore(this).recordEvent("官方结果页与任务日期、站点或车次不一致，请在开售前调整")
+                }
+            }
+            OfficialPageState.HOME_PAGE -> {
+                recordDiagnostic(
+                    pageState,
+                    "官方首页已打开，请在开售前准备任务一致的结果页",
+                    evidenceSource = "PREWARM_HOME"
+                )
+                TaskStore(this).recordEvent("官方首页已打开；为降低开售延迟，请提前查询任务一致的结果页")
+            }
+            else -> {
+                recordDiagnostic(pageState, "等待官方结果页预热", evidenceSource = "PREWARM_WAITING")
+            }
         }
     }
 
@@ -671,6 +725,7 @@ class TicketAccessibilityService : AccessibilityService() {
     }
 
     private fun stageFor(status: TaskStatus): Stage = when (status) {
+        TaskStatus.PREPARING -> Stage.PREWARM
         TaskStatus.WAITING_OFFICIAL_PAGE, TaskStatus.OBSERVING, TaskStatus.SEARCHING -> Stage.WAITING_PAGE
         TaskStatus.OPENING_SEARCH -> Stage.OPEN_SEARCH
         TaskStatus.FILLING_DEPARTURE -> Stage.DEPARTURE
@@ -694,10 +749,12 @@ class TicketAccessibilityService : AccessibilityService() {
         private const val MAX_FORM_WAIT_EVENTS = 8
         private const val FORM_TIMEOUT_MS = 10_000L
         private const val MAX_UNKNOWN_RESULT_EVENTS = 3
+        private const val MAX_FAST_PATH_WAIT_EVENTS = 3
         private const val MAX_EVIDENCE_LENGTH = 8_000
         private const val MAX_PENDING_EVIDENCE_EVENTS = 5
         private const val PENDING_EVIDENCE_WINDOW_MS = 10_000L
         private val ACTIVE_STATUSES = setOf(
+            TaskStatus.PREPARING,
             TaskStatus.WAITING_OFFICIAL_PAGE,
             TaskStatus.OPENING_SEARCH,
             TaskStatus.FILLING_DEPARTURE,
@@ -716,7 +773,7 @@ class TicketAccessibilityService : AccessibilityService() {
     }
 
     private enum class Stage {
-        WAITING_PAGE, OPEN_SEARCH, DEPARTURE, ARRIVAL, DATE, SUBMIT_SEARCH,
+        WAITING_PAGE, PREWARM, OPEN_SEARCH, DEPARTURE, ARRIVAL, DATE, SUBMIT_SEARCH,
         VALIDATING_SEARCH, TRAIN, SEAT, PASSENGER, ORDER, WAITING_RESULT, DONE
     }
     private enum class PassengerResult { SELECTED, AMBIGUOUS, NOT_FOUND }

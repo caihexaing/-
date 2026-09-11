@@ -77,6 +77,7 @@ enum class SaleState {
 const val TASK_ZONE_ID = "Asia/Shanghai"
 
 internal fun TaskStatus.isAccessibilityActive(): Boolean = this in setOf(
+    TaskStatus.PREPARING,
     TaskStatus.WAITING_OFFICIAL_PAGE,
     TaskStatus.OPENING_SEARCH,
     TaskStatus.FILLING_DEPARTURE,

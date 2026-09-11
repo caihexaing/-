@@ -537,7 +537,7 @@ private fun TaskScreen(vm: TicketViewModel) {
     val task = vm.storedTask ?: return
     val statusText = when (task.status) {
         TaskStatus.ENABLED, TaskStatus.WAITING_FOR_SALE -> "任务已启用，等待开售"
-        TaskStatus.PREPARING -> "正在准备并唤起官方 12306"
+        TaskStatus.PREPARING -> "正在预热官方 12306 页面和查询连接"
         TaskStatus.WAITING_OFFICIAL_PAGE -> "已发现余票，等待官方 12306 页面"
         TaskStatus.OPENING_SEARCH -> "正在定位官方 12306 查询入口"
         TaskStatus.FILLING_DEPARTURE -> "正在自动填写出发站"

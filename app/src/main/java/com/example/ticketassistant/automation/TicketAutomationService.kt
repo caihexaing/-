@@ -15,10 +15,12 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class TicketAutomationService : Service() {
     private val scope = CoroutineScope(Dispatchers.Main + Job())
-    private var searchJob: Job? = null
+    private var probeJob: Job? = null
+    private var queryRepository: TrainRepository? = null
     private var foregroundStartFailed = false
 
     override fun onCreate() {
@@ -46,95 +48,118 @@ class TicketAutomationService : Service() {
             return START_NOT_STICKY
         }
         val store = TaskStore(this)
-        if (phase == PHASE_PREPARE) store.updateStatus(TaskStatus.PREPARING, "已触发开售前准备")
-        if (phase == PHASE_SALE && task.status in setOf(TaskStatus.ENABLED, TaskStatus.WAITING_FOR_SALE, TaskStatus.PREPARING)) store.updateStatus(TaskStatus.PREPARING, "已触发开售查询")
-        if (phase == PHASE_PREPARE) {
-            store.recordEvent("准备阶段：正在唤起官方 12306")
-            updateNotification("已进入开售准备，正在唤起官方 12306")
-            OfficialAppLauncher(this).launch().onFailure {
-                store.updateStatus(TaskStatus.TAKEOVER, "官方 12306 打开失败", it.message)
-                message("无法打开官方 12306：${it.message ?: "请手动打开"}")
+        when (phase) {
+            PHASE_PREPARE -> {
+                if (!AccessibilityServiceStatus.isEnabled(this)) {
+                    store.updateStatus(TaskStatus.TAKEOVER, "无障碍服务未启用，无法准备官方页面")
+                    message("无障碍服务未启用，无法进行开售前预热；请先启用服务")
+                    stopSelfResult(startId)
+                    return START_NOT_STICKY
+                }
+                store.updateStatus(TaskStatus.PREPARING, "已触发开售前准备")
+                store.recordEvent("准备阶段：正在预热只读查询会话并唤起官方 12306")
+                updateNotification("已进入开售准备，正在预热官方页面")
+                startSessionWarmup(task, store)
+                OfficialAppLauncher(this).launch().onFailure {
+                    store.updateStatus(TaskStatus.TAKEOVER, "官方 12306 打开失败", it.message)
+                    message("无法打开官方 12306：${it.message ?: "请手动打开"}")
+                    stopSelf()
+                }
             }
-            stopSelfResult(startId)
-            return START_NOT_STICKY
+            PHASE_SALE -> {
+                if (!AccessibilityServiceStatus.isEnabled(this)) {
+                    store.updateStatus(TaskStatus.TAKEOVER, "开售时无障碍服务未启用，尚未操作官方页面")
+                    message("开售时无障碍服务未启用，尚未操作官方页面")
+                    stopSelfResult(startId)
+                    return START_NOT_STICKY
+                }
+                if (task.status in setOf(TaskStatus.ENABLED, TaskStatus.WAITING_FOR_SALE, TaskStatus.PREPARING)) {
+                    store.updateStatus(
+                        TaskStatus.VALIDATING_SEARCH_RESULT,
+                        "已到开售时刻，进入预热结果页快速路径；旁路查询不阻塞页面操作"
+                    )
+                }
+                store.recordEvent("开售阶段：旁路查询已启动，官方页面操作不等待查询结果")
+                updateNotification("已到开售时间，正在定位预热的官方结果页")
+                startSideChannelProbe(task, store)
+                OfficialAppLauncher(this).launch().onFailure {
+                    store.updateStatus(TaskStatus.TAKEOVER, "官方 12306 打开失败", it.message)
+                    message("无法打开官方 12306：${it.message ?: "请手动打开"}")
+                    stopSelf()
+                }
+            }
+            else -> {
+                store.recordEvent("未知执行阶段：$phase")
+                stopSelfResult(startId)
+            }
         }
+        return START_NOT_STICKY
+    }
 
-        store.recordEvent("开售阶段：开始查询目标车次")
-        updateNotification("已到开售时间，正在查询目标车次")
-        searchJob?.cancel()
-        searchJob = scope.launch(Dispatchers.IO) {
-            val deadline = System.currentTimeMillis() + task.maxRunMinutes.coerceIn(1, 120) * 60_000L
-            val repository = TrainRepository()
-            val polling = PollingPolicy(maximumRunMillis = task.maxRunMinutes.coerceIn(1, 120) * 60_000L)
+    private fun startSessionWarmup(task: com.example.ticketassistant.data.TicketTask, store: TaskStore) {
+        probeJob?.cancel()
+        val repository = queryRepository ?: TrainRepository().also { queryRepository = it }
+        probeJob = scope.launch(Dispatchers.IO) {
+            val warmup = runCatching { repository.warmUpSession() }
+            withContext(Dispatchers.Main) {
+                warmup.fold(
+                    onSuccess = { warmed ->
+                        store.recordEvent(
+                            if (warmed) {
+                                "准备阶段：只读查询会话已预热（${task.from.name} → ${task.to.name}）"
+                            } else {
+                                "准备阶段：只读查询会话未返回 Cookie，官方页面预热仍继续"
+                            }
+                        )
+                    },
+                    onFailure = { error ->
+                        store.recordEvent("准备阶段：只读查询会话预热失败，官方页面预热仍继续", error.message)
+                    }
+                )
+            }
+        }
+    }
+
+    /** Query availability as a bounded diagnostic side channel; it never drives UI actions. */
+    private fun startSideChannelProbe(task: com.example.ticketassistant.data.TicketTask, store: TaskStore) {
+        probeJob?.cancel()
+        val repository = queryRepository ?: TrainRepository().also { queryRepository = it }
+        probeJob = scope.launch(Dispatchers.IO) {
+            val maximumRunMillis = task.maxRunMinutes.coerceIn(1, 120) * 60_000L
+            val deadline = System.currentTimeMillis() + maximumRunMillis
+            val polling = PollingPolicy(maximumRunMillis = maximumRunMillis)
             val startedAt = System.currentTimeMillis()
             while (isActive && System.currentTimeMillis() < deadline) {
-                val queryResult = runCatching {
-                    repository.query(task.date, task.from, task.to)
-                }
-                val routeMatch = queryResult.getOrNull()?.firstOrNull { it.matchesTrain(task) }
-                val matched = routeMatch?.takeIf { it.hasPurchasableSeat(task.seat) }
+                val queryResult = runCatching { repository.query(task.date, task.from, task.to) }
                 val failure = queryResult.exceptionOrNull()
-                if (failure != null && isRateLimited(failure)) {
-                    launch(Dispatchers.Main) {
-                        store.updateStatus(TaskStatus.TAKEOVER, "官方接口触发限流，已停止自动查询", failure.message)
-                        message("官方接口触发限流，任务已停止；请稍后手动重试")
-                        stopSelf()
-                    }
-                    return@launch
-                }
-                failure?.let { failure ->
-                    launch(Dispatchers.Main) {
-                        store.updateStatus(TaskStatus.SEARCHING, "查询失败，稍后重试", failure.message ?: failure.javaClass.simpleName)
-                    }
-                }
-                if (matched != null) {
-                    launch(Dispatchers.Main) {
-                        if (!AccessibilityServiceStatus.isEnabled(this@TicketAutomationService)) {
-                            store.updateStatus(TaskStatus.TAKEOVER, "已找到目标车次，但无障碍服务未启用；尚未提交订单")
-                            message("已找到 ${task.train.trainNo}，但无障碍服务未启用；尚未提交订单，请先启用服务")
-                            stopSelf()
-                            return@launch
-                        }
-                        store.updateStatus(
-                            TaskStatus.WAITING_OFFICIAL_PAGE,
-                            "后台查询发现余票，尚未提交订单；等待官方 12306 页面操作"
+                if (failure != null) {
+                    withContext(Dispatchers.Main) {
+                        store.recordEvent(
+                            "旁路查询失败（不影响官方页面操作）：${failure.message ?: failure.javaClass.simpleName}",
+                            failure.message
                         )
-                        updateNotification("已找到 ${task.train.trainNo}；尚未提交订单，正在打开官方 12306")
-                        OfficialAppLauncher(this@TicketAutomationService).launch().onFailure {
-                            store.updateStatus(TaskStatus.TAKEOVER, "官方 12306 打开失败", it.message)
-                            message("无法打开官方 12306：${it.message ?: "请手动打开"}")
+                        if (isRateLimited(failure)) {
+                            store.recordEvent("旁路查询触发限流，已停止旁路查询；不影响官方页面快速路径")
                         }
-                        // 结果确认交给无障碍服务和用户，不使用固定超时打断人工接管。
-                        stopSelf()
                     }
-                    return@launch
-                }
-                if (routeMatch != null) {
-                    launch(Dispatchers.Main) {
-                        val message = "已找到 ${task.train.trainNo}，但所选席别 ${task.seat} 暂无可购买余票，继续查询"
-                        store.updateStatus(TaskStatus.SEARCHING, message)
-                        updateNotification(message)
+                    if (isRateLimited(failure)) break
+                } else {
+                    val routeMatch = queryResult.getOrThrow().firstOrNull { it.matchesTrain(task) }
+                    val matched = routeMatch?.takeIf { it.hasPurchasableSeat(task.seat) }
+                    val event = when {
+                        matched != null -> "旁路查询发现目标车次和${task.seat}可购买（仅诊断，不驱动页面操作）"
+                        routeMatch != null -> "旁路查询发现目标车次，但${task.seat}暂不可购买（仅诊断）"
+                        else -> "旁路查询暂未发现目标车次 ${task.train.trainNo}（仅诊断）"
                     }
-                }
-                launch(Dispatchers.Main) {
-                    val message = if (routeMatch == null) {
-                        "暂未发现目标车次 ${task.train.trainNo}，按 15-30 秒策略继续查询"
-                    } else {
-                        "目标车次仍无可购买的 ${task.seat}，按 15-30 秒策略继续查询"
-                    }
-                    store.recordEvent(message)
-                    updateNotification(message)
+                    withContext(Dispatchers.Main) { store.recordEvent(event) }
                 }
                 val nextDelay = polling.nextDelayMillis(System.currentTimeMillis() - startedAt) ?: break
                 delay(nextDelay)
             }
-            launch(Dispatchers.Main) {
-                store.updateStatus(TaskStatus.EXPIRED, "查询超时，未找到目标车次")
-                message("在限定时间内未找到目标车次，任务已结束")
-                stopSelf()
+            withContext(Dispatchers.Main) {
+                store.recordEvent("旁路查询结束；官方页面状态仍由无障碍流程决定")
             }
         }
-        return START_NOT_STICKY
     }
 
     private fun com.example.ticketassistant.data.Train.matchesTrain(task: com.example.ticketassistant.data.TicketTask): Boolean =
@@ -170,7 +195,7 @@ class TicketAutomationService : Service() {
         .build()
 
     override fun onDestroy() {
-        searchJob?.cancel()
+        probeJob?.cancel()
         scope.coroutineContext[Job]?.cancel()
         super.onDestroy()
     }

@@ -20,6 +20,7 @@ class TaskStoreStateTest {
 
         assertTrue(TaskStatus.OPENING_SEARCH.isAccessibilityActive())
         assertTrue(TaskStatus.SUBMITTING_SEARCH.isAccessibilityActive())
+        assertTrue(TaskStatus.PREPARING.isAccessibilityActive())
         assertNotEquals(taskSnapshotKey(task), taskSnapshotKey(task.copy(seat = "一等座")))
     }
 }
