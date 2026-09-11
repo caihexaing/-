@@ -8,8 +8,12 @@ import java.net.URL
 import java.net.URLEncoder
 
 class TrainRepository {
-    suspend fun query(date: String, from: Station, to: Station): List<Train> = withContext(Dispatchers.IO) {
-        val cookie = initSession()
+    @Volatile private var cookie: String = ""
+
+    suspend fun query(date: String, from: Station, to: Station): List<Train> = queryInternal(date, from, to, allowRefresh = true)
+
+    private suspend fun queryInternal(date: String, from: Station, to: Station, allowRefresh: Boolean): List<Train> = withContext(Dispatchers.IO) {
+        if (cookie.isBlank()) cookie = initSession()
         val params = listOf(
             "leftTicketDTO.train_date" to date,
             "leftTicketDTO.from_station" to from.telecode,
@@ -23,14 +27,42 @@ class TrainRepository {
             readTimeout = 12_000
             setRequestProperty("User-Agent", StationRepository.USER_AGENT)
             setRequestProperty("Referer", "https://kyfw.12306.cn/otn/leftTicket/init")
-            if (cookie.isNotBlank()) setRequestProperty("Cookie", cookie)
+            if (this@TrainRepository.cookie.isNotBlank()) setRequestProperty("Cookie", this@TrainRepository.cookie)
         }
         try {
-            val text = (if (connection.responseCode in 200..299) connection.inputStream else connection.errorStream)
+            val responseCode = connection.responseCode
+            val text = (if (responseCode in 200..299) connection.inputStream else connection.errorStream)
                 ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+            if (responseCode == 429) error("12306 接口触发限流（HTTP 429）")
+            if (allowRefresh && (responseCode == 401 || responseCode == 403 || text.trimStart().startsWith("<"))) {
+                cookie = ""
+                return@withContext retryQuery(date, from, to)
+            }
+            if (responseCode !in 200..299) error("12306 查询失败（HTTP $responseCode）")
             if (text.trimStart().startsWith("<")) error("12306 返回了网页而不是查询数据")
             parse(text)
         } finally { connection.disconnect() }
+    }
+
+    suspend fun assessSaleState(date: String, from: Station, to: Station, target: Train, seat: String): SaleAssessment =
+        withContext(Dispatchers.IO) {
+            val trains = query(date, from, to)
+            val match = trains.firstOrNull {
+                it.trainNo.equals(target.trainNo, ignoreCase = true) &&
+                    it.from == target.from && it.to == target.to &&
+                    it.depart == target.depart && it.arrive == target.arrive
+            } ?: return@withContext SaleAssessment(SaleState.UNKNOWN, targetFound = false)
+            val value = match.seats[seat]?.trim().orEmpty()
+            if (value.isNotBlank() && value !in UNAVAILABLE_SEAT_VALUES) {
+                SaleAssessment(SaleState.ALREADY_ON_SALE, targetFound = true)
+            } else {
+                SaleAssessment(SaleState.UNKNOWN, targetFound = true)
+            }
+        }
+
+    private suspend fun retryQuery(date: String, from: Station, to: Station): List<Train> {
+        cookie = initSession()
+        return queryInternal(date, from, to, allowRefresh = false)
     }
 
     private fun initSession(): String {
@@ -87,4 +119,13 @@ class TrainRepository {
     }
 
     private fun enc(value: String) = URLEncoder.encode(value, "UTF-8")
+
+    companion object {
+        val UNAVAILABLE_SEAT_VALUES = setOf("无", "无票", "--", "*")
+    }
 }
+
+data class SaleAssessment(
+    val state: SaleState,
+    val targetFound: Boolean
+)

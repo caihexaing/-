@@ -16,4 +16,7 @@ object TaskTiming {
 
     fun shouldStartImmediately(saleDateTime: String?, now: Instant = Instant.now()): Boolean =
         parseSaleDateTime(saleDateTime)?.let { !it.isAfter(now) } ?: false
+
+    fun isFutureSaleDateTime(value: String?, now: Instant = Instant.now()): Boolean =
+        parseSaleDateTime(value)?.isAfter(now) == true
 }

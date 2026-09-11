@@ -21,6 +21,7 @@ data class TicketTask(
     val train: Train,
     val seat: String,
     val passengerName: String,
+    val saleState: SaleState = SaleState.UNKNOWN,
     val saleDateTime: String?,
     val saleTimeSource: SaleTimeSource = SaleTimeSource.UNKNOWN,
     val maxRunMinutes: Int = 120,
@@ -46,5 +47,11 @@ enum class TaskStatus {
 }
 
 enum class SaleTimeSource { OFFICIAL, USER_CONFIRMED, UNKNOWN }
+
+enum class SaleState {
+    ALREADY_ON_SALE,
+    NOT_YET_ON_SALE,
+    UNKNOWN
+}
 
 const val TASK_ZONE_ID = "Asia/Shanghai"

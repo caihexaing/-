@@ -3,4 +3,5 @@
     android:accessibilityFeedbackType="feedbackGeneric"
     android:notificationTimeout="100"
     android:canRetrieveWindowContent="true"
+    android:packageNames="com.MobileTicket"
     android:description="@string/accessibility_service_description" />

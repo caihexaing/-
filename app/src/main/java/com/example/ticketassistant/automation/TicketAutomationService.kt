@@ -6,7 +6,6 @@ import android.app.Service
 import android.content.Intent
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
-import com.example.ticketassistant.R
 import com.example.ticketassistant.data.TaskStatus
 import com.example.ticketassistant.data.TaskStore
 import com.example.ticketassistant.data.TrainRepository
@@ -19,21 +18,30 @@ import kotlinx.coroutines.launch
 
 class TicketAutomationService : Service() {
     private val scope = CoroutineScope(Dispatchers.Main + Job())
-    private var stopJob: Job? = null
     private var searchJob: Job? = null
-    private var resultJob: Job? = null
+    private var foregroundStartFailed = false
 
     override fun onCreate() {
         super.onCreate()
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel(CHANNEL, "抢票执行", NotificationManager.IMPORTANCE_HIGH))
-        startForeground(NOTIFICATION_ID, notification("正在准备行程执行"))
+        runCatching { startForeground(NOTIFICATION_ID, notification("正在准备行程执行")) }
+            .onFailure {
+                foregroundStartFailed = true
+                TaskStore(this).recordEvent("系统阻止前台执行服务启动", it.message)
+                stopSelf()
+            }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (foregroundStartFailed) {
+            stopSelfResult(startId)
+            return START_NOT_STICKY
+        }
         val phase = intent?.getStringExtra(EXTRA_PHASE) ?: PHASE_SALE
         val task = TaskStore(this).load()
-        if (task == null || !task.enabled) {
+        val expectedTaskId = intent?.getStringExtra(EXTRA_TASK_ID)
+        if (task == null || !task.enabled || (expectedTaskId != null && expectedTaskId != task.taskId)) {
             stopSelfResult(startId)
             return START_NOT_STICKY
         }
@@ -47,22 +55,34 @@ class TicketAutomationService : Service() {
                 store.updateStatus(TaskStatus.TAKEOVER, "官方 12306 打开失败", it.message)
                 message("无法打开官方 12306：${it.message ?: "请手动打开"}")
             }
+            stopSelfResult(startId)
             return START_NOT_STICKY
         }
 
         store.recordEvent("开售阶段：开始查询目标车次")
         updateNotification("已到开售时间，正在查询目标车次")
         searchJob?.cancel()
-        stopJob?.cancel()
         searchJob = scope.launch(Dispatchers.IO) {
             val deadline = System.currentTimeMillis() + task.maxRunMinutes.coerceIn(1, 120) * 60_000L
-            var firstAttempt = true
+            val repository = TrainRepository()
+            val polling = PollingPolicy(maximumRunMillis = task.maxRunMinutes.coerceIn(1, 120) * 60_000L)
+            val startedAt = System.currentTimeMillis()
             while (isActive && System.currentTimeMillis() < deadline) {
                 val queryResult = runCatching {
-                    TrainRepository().query(task.date, task.from, task.to)
+                    repository.query(task.date, task.from, task.to)
                 }
-                val matched = queryResult.getOrNull()?.firstOrNull { it.matchesTask(task) }
-                queryResult.exceptionOrNull()?.let { failure ->
+                val routeMatch = queryResult.getOrNull()?.firstOrNull { it.matchesTrain(task) }
+                val matched = routeMatch?.takeIf { it.hasPurchasableSeat(task.seat) }
+                val failure = queryResult.exceptionOrNull()
+                if (failure != null && isRateLimited(failure)) {
+                    launch(Dispatchers.Main) {
+                        store.updateStatus(TaskStatus.TAKEOVER, "官方接口触发限流，已停止自动查询", failure.message)
+                        message("官方接口触发限流，任务已停止；请稍后手动重试")
+                        stopSelf()
+                    }
+                    return@launch
+                }
+                failure?.let { failure ->
                     launch(Dispatchers.Main) {
                         store.updateStatus(TaskStatus.SEARCHING, "查询失败，稍后重试", failure.message ?: failure.javaClass.simpleName)
                     }
@@ -75,25 +95,28 @@ class TicketAutomationService : Service() {
                             store.updateStatus(TaskStatus.TAKEOVER, "官方 12306 打开失败", it.message)
                             message("无法打开官方 12306：${it.message ?: "请手动打开"}")
                         }
-                        resultJob?.cancel()
-                        resultJob = scope.launch {
-                            delay(90_000L)
-                            val current = store.load()
-                            if (current?.taskId == task.taskId && current.status == TaskStatus.OBSERVING) {
-                                store.updateStatus(TaskStatus.RESULT_UNKNOWN, "订单提交结果未能确认，请到官方订单页核对")
-                                message("未能确认订单结果，请到官方 12306 的订单页核对；不会自动重试提交")
-                                stopSelf()
-                            }
-                        }
+                        // 结果确认交给无障碍服务和用户，不使用固定超时打断人工接管。
+                        stopSelf()
                     }
                     return@launch
                 }
-                launch(Dispatchers.Main) {
-                    store.recordEvent(if (firstAttempt) "正在查询目标车次 ${task.train.trainNo}" else "暂未发现目标车次，继续查询")
-                    updateNotification(if (firstAttempt) "正在查询目标车次 ${task.train.trainNo}" else "暂未发现目标车次，继续查询")
+                if (routeMatch != null) {
+                    launch(Dispatchers.Main) {
+                        val message = "已找到 ${task.train.trainNo}，但所选席别 ${task.seat} 暂无可购买余票，继续查询"
+                        store.updateStatus(TaskStatus.SEARCHING, message)
+                        updateNotification(message)
+                    }
                 }
-                val nextDelay = if (firstAttempt) 3_000L else 8_000L
-                firstAttempt = false
+                launch(Dispatchers.Main) {
+                    val message = if (routeMatch == null) {
+                        "暂未发现目标车次 ${task.train.trainNo}，按 15-30 秒策略继续查询"
+                    } else {
+                        "目标车次仍无可购买的 ${task.seat}，按 15-30 秒策略继续查询"
+                    }
+                    store.recordEvent(message)
+                    updateNotification(message)
+                }
+                val nextDelay = polling.nextDelayMillis(System.currentTimeMillis() - startedAt) ?: break
                 delay(nextDelay)
             }
             launch(Dispatchers.Main) {
@@ -105,12 +128,19 @@ class TicketAutomationService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun com.example.ticketassistant.data.Train.matchesTask(task: com.example.ticketassistant.data.TicketTask): Boolean {
-        val seatValue = seats[task.seat].orEmpty().trim()
-        return trainNo.equals(task.train.trainNo, ignoreCase = true) &&
+    private fun com.example.ticketassistant.data.Train.matchesTrain(task: com.example.ticketassistant.data.TicketTask): Boolean =
+        trainNo.equals(task.train.trainNo, ignoreCase = true) &&
             from == task.from.name && to == task.to.name &&
-            depart == task.train.depart && arrive == task.train.arrive &&
-            seatValue.isNotBlank() && seatValue !in setOf("无", "无票", "--", "*")
+            depart == task.train.depart && arrive == task.train.arrive
+
+    private fun com.example.ticketassistant.data.Train.hasPurchasableSeat(seat: String): Boolean {
+        val value = seats[seat]?.trim().orEmpty()
+        return value.isNotBlank() && value !in TrainRepository.UNAVAILABLE_SEAT_VALUES
+    }
+
+    private fun isRateLimited(failure: Throwable): Boolean {
+        val text = generateSequence(failure) { it.cause }.joinToString(" ") { it.message.orEmpty() }.lowercase()
+        return listOf("429", "too many", "频繁", "限流", "风控", "access denied", "403").any(text::contains)
     }
 
     private fun updateNotification(text: String) {
@@ -131,9 +161,7 @@ class TicketAutomationService : Service() {
         .build()
 
     override fun onDestroy() {
-        stopJob?.cancel()
         searchJob?.cancel()
-        resultJob?.cancel()
         scope.coroutineContext[Job]?.cancel()
         super.onDestroy()
     }
@@ -142,6 +170,7 @@ class TicketAutomationService : Service() {
 
     companion object {
         const val EXTRA_PHASE = "phase"
+        const val EXTRA_TASK_ID = "task_id"
         const val PHASE_PREPARE = "prepare"
         const val PHASE_SALE = "sale"
         private const val CHANNEL = "ticket_execution"

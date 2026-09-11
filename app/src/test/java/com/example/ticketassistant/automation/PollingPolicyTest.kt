@@ -7,13 +7,15 @@ import org.junit.Test
 class PollingPolicyTest {
     private val policy = PollingPolicy()
 
-    @Test fun `first thirty seconds use bounded short interval`() {
-        assertEquals(4_000L, policy.nextDelayMillis(0))
-        assertEquals(4_000L, policy.nextDelayMillis(29_999))
+    @Test fun `first thirty seconds use fifteen second interval`() {
+        assertEquals(15_000L, policy.nextDelayMillis(0))
+        assertEquals(15_000L, policy.nextDelayMillis(29_999))
     }
 
-    @Test fun `steady state uses slower interval`() {
-        assertEquals(9_000L, policy.nextDelayMillis(30_000))
+    @Test fun `backoff reaches twenty then thirty seconds`() {
+        assertEquals(20_000L, policy.nextDelayMillis(30_000))
+        assertEquals(20_000L, policy.nextDelayMillis(89_999))
+        assertEquals(30_000L, policy.nextDelayMillis(90_000))
     }
 
     @Test fun `stops at maximum duration`() {

@@ -1,0 +1,6 @@
+# Copy to release-signing.properties or export TICKET_RELEASE_* variables.
+# Never commit the real keystore or these passwords.
+storeFile=C:/path/to/ticket-assistant-release.keystore
+storePassword=replace-with-keystore-password
+keyAlias=ticket-assistant
+keyPassword=replace-with-key-password

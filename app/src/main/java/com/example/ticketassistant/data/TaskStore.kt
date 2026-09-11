@@ -25,6 +25,7 @@ class TaskStore(context: Context) {
             put("depart", task.train.depart); put("arrive", task.train.arrive); put("duration", task.train.duration)
             put("seatMap", JSONObject(task.train.seats))
             put("seat", task.seat); put("passenger", crypto.encrypt(task.passengerName))
+            put("saleState", task.saleState.name)
             task.saleDateTime?.let { put("saleDateTime", it) }
             put("saleTimeSource", task.saleTimeSource.name)
             task.train.saleTime?.let { put("trainSaleTime", it) }
@@ -41,10 +42,13 @@ class TaskStore(context: Context) {
         val seatMap = buildMap { val obj = j.optJSONObject("seatMap") ?: JSONObject(); obj.keys().forEach { key -> put(key, obj.optString(key)) } }
         val train = Train(j.getString("trainNo"), j.getString("fromName"), j.getString("toName"), j.getString("depart"), j.getString("arrive"), j.optString("duration"), seatMap, j.optString("trainSaleTime").ifBlank { null })
         val saleDateTime = j.optString("saleDateTime").ifBlank { null }
+        val hasSaleState = j.has("saleState")
+        val saleState = runCatching { SaleState.valueOf(j.optString("saleState")) }
+            .getOrDefault(if (hasSaleState) SaleState.UNKNOWN else SaleState.UNKNOWN)
         val source = runCatching { SaleTimeSource.valueOf(j.optString("saleTimeSource", if (saleDateTime == null) SaleTimeSource.UNKNOWN.name else SaleTimeSource.USER_CONFIRMED.name)) }
             .getOrDefault(SaleTimeSource.UNKNOWN)
         val storedStatus = runCatching { TaskStatus.valueOf(j.optString("status", TaskStatus.ENABLED.name)) }.getOrDefault(TaskStatus.ENABLED)
-        val status = if (saleDateTime == null && storedStatus in setOf(
+        val status = if ((!hasSaleState || saleState == SaleState.UNKNOWN) && storedStatus in setOf(
                 TaskStatus.ENABLED, TaskStatus.WAITING_FOR_SALE, TaskStatus.PREPARING, TaskStatus.OBSERVING, TaskStatus.SEARCHING
             )) TaskStatus.DRAFT else storedStatus
         val lastError = j.optString("lastError").ifBlank { null }
@@ -56,13 +60,18 @@ class TaskStore(context: Context) {
             train = train,
             seat = j.getString("seat"),
             passengerName = crypto.decrypt(j.getString("passenger")),
+            saleState = saleState,
             saleDateTime = saleDateTime,
-            saleTimeSource = if (saleDateTime == null) SaleTimeSource.UNKNOWN else source,
-            enabled = saleDateTime != null && j.optBoolean("enabled", false),
+            saleTimeSource = if (hasSaleState) source else SaleTimeSource.UNKNOWN,
+            enabled = hasSaleState && saleState != SaleState.UNKNOWN &&
+                (saleState != SaleState.NOT_YET_ON_SALE || saleDateTime != null) &&
+                j.optBoolean("enabled", false),
             status = status,
             lastEvent = j.optString("lastEvent").ifBlank { null },
             lastEventAt = j.optLong("lastEventAt").takeIf { it > 0L },
-            lastError = if (saleDateTime == null) lastError ?: "开售日期时间未知，请重新配置完整的 yyyy-MM-dd HH:mm" else lastError
+            lastError = if (!hasSaleState || saleState == SaleState.UNKNOWN) {
+                lastError ?: "开售状态未知，请重新查询确认"
+            } else lastError
         )
     }.getOrNull()
 
@@ -70,7 +79,8 @@ class TaskStore(context: Context) {
         val task = load() ?: return
         save(task.copy(
             status = status,
-            enabled = status !in setOf(TaskStatus.DISABLED, TaskStatus.EXPIRED, TaskStatus.RESULT_UNKNOWN, TaskStatus.PENDING_PAYMENT),
+            enabled = status !in setOf(TaskStatus.DRAFT, TaskStatus.DISABLED, TaskStatus.EXPIRED, TaskStatus.TAKEOVER, TaskStatus.RESULT_UNKNOWN, TaskStatus.PENDING_PAYMENT) &&
+                task.saleState != SaleState.UNKNOWN,
             lastEvent = event ?: task.lastEvent,
             lastEventAt = if (event != null) System.currentTimeMillis() else task.lastEventAt,
             lastError = error

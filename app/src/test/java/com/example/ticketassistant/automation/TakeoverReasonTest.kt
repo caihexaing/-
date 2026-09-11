@@ -38,4 +38,9 @@ class TakeoverReasonTest {
     @Test fun `normal payment copy is not pending payment`() {
         assertFalse(isPendingPaymentPage("支付方式 微信支付"))
     }
+
+    @Test fun `unknown pages are handled by page classifier`() {
+        assertEquals(OfficialPageState.UNKNOWN, detectOfficialPageState("个人中心 设置"))
+        assertEquals(OfficialPageState.POPUP, detectOfficialPageState("活动公告 温馨提示 关闭"))
+    }
 }

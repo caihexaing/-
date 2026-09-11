@@ -11,6 +11,7 @@ import com.example.ticketassistant.R
 import com.example.ticketassistant.automation.TicketAutomationService
 import com.example.ticketassistant.data.TaskStatus
 import com.example.ticketassistant.data.TaskStore
+import com.example.ticketassistant.data.SaleState
 
 class TaskAlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -23,9 +24,20 @@ class TaskAlarmReceiver : BroadcastReceiver() {
         val phase = intent.getStringExtra(EXTRA_PHASE) ?: "开售"
         store.recordEvent("闹钟已触发：$phase")
         if (phase == TicketAutomationService.PHASE_PREPARE || phase == TicketAutomationService.PHASE_SALE) {
+            if (task.saleState != SaleState.NOT_YET_ON_SALE) return
             if (phase == TicketAutomationService.PHASE_SALE && task.status !in setOf(TaskStatus.WAITING_FOR_SALE, TaskStatus.ENABLED, TaskStatus.PREPARING)) return
-            val runner = Intent(context, TicketAutomationService::class.java).putExtra(TicketAutomationService.EXTRA_PHASE, phase)
-            ContextCompat.startForegroundService(context, runner)
+            val runner = Intent(context, TicketAutomationService::class.java)
+                .putExtra(TicketAutomationService.EXTRA_PHASE, phase)
+                .putExtra(EXTRA_TASK_ID, task.taskId)
+            runCatching { ContextCompat.startForegroundService(context, runner) }
+                .onFailure {
+                    store.updateStatus(TaskStatus.TAKEOVER, "系统阻止后台启动执行服务", it.message)
+                    manager.notify(101, NotificationCompat.Builder(context, CHANNEL)
+                        .setSmallIcon(android.R.drawable.ic_dialog_info)
+                        .setContentTitle("行程助手需要你打开应用")
+                        .setContentText("系统阻止后台启动，请打开行程助手后手动继续")
+                        .setPriority(NotificationCompat.PRIORITY_HIGH).setAutoCancel(true).build())
+                }
             return
         }
         val message = when (phase) {

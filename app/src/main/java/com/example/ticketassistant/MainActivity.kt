@@ -1,12 +1,12 @@
 package com.example.ticketassistant
 
 import android.Manifest
-import android.app.AlarmManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -69,6 +69,9 @@ import com.example.ticketassistant.data.TaskStore
 import com.example.ticketassistant.data.TicketTask
 import com.example.ticketassistant.data.Train
 import com.example.ticketassistant.data.TrainRepository
+import com.example.ticketassistant.data.SaleState
+import com.example.ticketassistant.data.SaleTimeSource
+import com.example.ticketassistant.data.SaleStateRules
 import com.example.ticketassistant.notifications.TaskScheduler
 import com.example.ticketassistant.update.AppUpdate
 import com.example.ticketassistant.update.UpdateChecker
@@ -78,7 +81,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.time.LocalDate
-import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
@@ -92,6 +94,30 @@ class MainActivity : ComponentActivity() {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         setContent { MaterialTheme { TicketApp(viewModel) } }
+        handleResumeIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleResumeIntent(intent)
+    }
+
+    private fun handleResumeIntent(intent: Intent?) {
+        if (intent?.getBooleanExtra(EXTRA_RESUME_TASK, false) != true) return
+        val expectedId = intent.getStringExtra(EXTRA_TASK_ID)
+        val task = TaskStore(this).load()
+        if (task == null || !task.enabled || (expectedId != null && expectedId != task.taskId)) {
+            viewModel.error.value = "任务已失效，请重新查询并配置"
+            return
+        }
+        runCatching { TaskScheduler(this).startImmediately(task) }
+            .onFailure { viewModel.error.value = it.message ?: "无法启动任务，请保持应用在前台重试" }
+    }
+
+    companion object {
+        const val EXTRA_RESUME_TASK = "resume_task"
+        const val EXTRA_TASK_ID = "task_id"
     }
 }
 
@@ -164,6 +190,64 @@ class TicketViewModel : ViewModel() {
         storedTask = TaskStore(context).load()
     }
 
+    fun saveTask(context: android.content.Context, seat: String, name: String, saleDateTimeInput: String, confirmNotYetOnSale: Boolean) = viewModelScope.launch {
+        val departure = from ?: run { error.value = "请选择标准出发站"; return@launch }
+        val arrival = to ?: run { error.value = "请选择标准到达站"; return@launch }
+        if (departure.telecode == arrival.telecode) {
+            error.value = "出发站和到达站不能相同"
+            return@launch
+        }
+        val target = selectedTrain ?: run { error.value = "请先选择车次"; return@launch }
+        if (name.isBlank()) { error.value = "请填写乘车人姓名"; return@launch }
+        val selectedAvailability = target.seats[seat]?.trim()
+        if (seat.isBlank() || selectedAvailability.isNullOrBlank() || selectedAvailability in TrainRepository.UNAVAILABLE_SEAT_VALUES) {
+            error.value = "所选席别当前不可购买，请重新选择"
+            return@launch
+        }
+        busy.value = true
+        error.value = null
+        try {
+            val assessment = runCatching {
+                trainRepository.assessSaleState(date, departure, arrival, target, seat)
+            }.getOrElse {
+                error.value = "无法确认开售状态：${it.message ?: "官方查询失败"}"
+                return@launch
+            }
+            val normalizedSale = saleDateTimeInput.trim().ifBlank { null }
+            val saleState = SaleStateRules.resolveState(assessment, confirmNotYetOnSale)
+            when (saleState) {
+                SaleState.ALREADY_ON_SALE, SaleState.NOT_YET_ON_SALE, SaleState.UNKNOWN ->
+                    SaleStateRules.validateForSave(saleState, normalizedSale)?.let {
+                        error.value = it
+                        return@launch
+                    }
+            }
+            val task = TicketTask(
+                date = date,
+                from = departure,
+                to = arrival,
+                train = target,
+                seat = seat,
+                passengerName = name.trim(),
+                saleState = saleState,
+                saleDateTime = if (saleState == SaleState.NOT_YET_ON_SALE) normalizedSale else null,
+                saleTimeSource = if (saleState == SaleState.ALREADY_ON_SALE) SaleTimeSource.OFFICIAL else SaleTimeSource.USER_CONFIRMED,
+                enabled = true,
+                status = TaskStatus.ENABLED
+            )
+            TaskStore(context).save(task)
+            runCatching { TaskScheduler(context).schedule(task) }.onFailure {
+                TaskStore(context).save(task.copy(enabled = false, status = TaskStatus.DRAFT, lastError = it.message ?: "调度失败"))
+                error.value = it.message ?: "任务调度失败"
+                return@launch
+            }
+            storedTask = TaskStore(context).load()
+            page.value = Page.TASK
+        } finally {
+            busy.value = false
+        }
+    }
+
     fun checkForUpdate(context: android.content.Context) = viewModelScope.launch {
         if (update.value != null || updateBusy.value) return@launch
         val current = context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "0.0.0"
@@ -187,6 +271,12 @@ class TicketViewModel : ViewModel() {
             updateProgress.value = null
         }
     }
+}
+
+private fun SaleState.label(): String = when (this) {
+    SaleState.ALREADY_ON_SALE -> "已确认开售"
+    SaleState.NOT_YET_ON_SALE -> "已确认未开售"
+    SaleState.UNKNOWN -> "开售状态未知"
 }
 
 enum class Page { HOME, TRAINS, CONFIGURE, TASK }
@@ -397,53 +487,44 @@ private fun TrainList(vm: TicketViewModel, busy: Boolean) {
 private fun ConfigureScreen(vm: TicketViewModel) {
     val context = LocalContext.current
     val train = vm.selectedTrain ?: return
-    var seat by remember { mutableStateOf(train.seats.keys.firstOrNull().orEmpty()) }
+    val busy by vm.busy.collectAsStateCompat()
+    val purchasableSeats = remember(train) {
+        train.seats.filter { (_, availability) ->
+            availability.trim().isNotBlank() && availability.trim() !in TrainRepository.UNAVAILABLE_SEAT_VALUES
+        }
+    }
+    var seat by remember(train) { mutableStateOf(purchasableSeats.keys.firstOrNull().orEmpty()) }
     var name by remember { mutableStateOf("") }
     var saleDateTime by remember { mutableStateOf("") }
+    var confirmNotYetOnSale by remember(train) { mutableStateOf(false) }
     var allowed by remember { mutableStateOf(false) }
     Text("配置任务", style = MaterialTheme.typography.titleLarge)
     Text("${train.trainNo}  ${train.from} ${train.depart} → ${train.to} ${train.arrive}")
     Spacer(Modifier.height(12.dp))
     Text("选择席别")
-    train.seats.forEach { (label, availability) -> Row(modifier = Modifier.clickable { seat = label }, verticalAlignment = Alignment.CenterVertically) { RadioButton(selected = seat == label, onClick = { seat = label }); Text("$label（$availability）") } }
+    if (purchasableSeats.isEmpty()) {
+        Text("当前查询结果没有可购买席别，请稍后重新查询。", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+    } else {
+        purchasableSeats.forEach { (label, availability) -> Row(modifier = Modifier.clickable { seat = label }, verticalAlignment = Alignment.CenterVertically) { RadioButton(selected = seat == label, onClick = { seat = label }); Text("$label（$availability）") } }
+    }
     OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("乘车人姓名（仅一名成人）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-    OutlinedTextField(value = saleDateTime, onValueChange = { saleDateTime = it }, label = { Text("开售日期时间（yyyy-MM-dd HH:mm）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+    OutlinedTextField(value = saleDateTime, onValueChange = { saleDateTime = it }, label = { Text("开售日期时间（未开售时填写 yyyy-MM-dd HH:mm）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Checkbox(confirmNotYetOnSale, { confirmNotYetOnSale = it })
+        Text("我已确认目标车次尚未开售")
+    }
     Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(allowed, { allowed = it }); Text("允许在开售时创建真实待支付订单") }
     Button(onClick = {
-        val from = vm.from ?: run { vm.error.value = "请选择标准出发站"; return@Button }
-        val to = vm.to ?: run { vm.error.value = "请选择标准到达站"; return@Button }
-        if (from.telecode == to.telecode) {
-            vm.error.value = "出发站和到达站不能相同"
-            return@Button
-        }
         val travelDate = runCatching { LocalDate.parse(vm.date, DateTimeFormatter.ISO_DATE) }.getOrNull()
         if (travelDate == null || travelDate.isBefore(LocalDate.now())) {
             vm.error.value = "乘车日期无效或早于今天"
             return@Button
         }
-        val sale = runCatching { LocalDateTime.parse(saleDateTime.trim(), DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")) }.getOrNull()
-        if (sale == null) {
-            vm.error.value = "开售日期时间格式应为 yyyy-MM-dd HH:mm，不能只填写时分"
-            return@Button
-        }
-        val task = TicketTask(
-            date = vm.date,
-            from = from,
-            to = to,
-            train = train,
-            seat = seat,
-            passengerName = name.trim(),
-            saleDateTime = saleDateTime.trim(),
-            saleTimeSource = com.example.ticketassistant.data.SaleTimeSource.USER_CONFIRMED,
-            enabled = true,
-            status = TaskStatus.ENABLED
-        )
-        TaskStore(context).save(task)
-        TaskScheduler(context).schedule(task)
-        vm.storedTask = TaskStore(context).load()
-        vm.page.value = Page.TASK
-    }, enabled = seat.isNotBlank() && name.isNotBlank() && saleDateTime.matches(Regex("\\d{4}-\\d{2}-\\d{2} (?:[01]\\d|2[0-3]):[0-5]\\d")) && allowed, modifier = Modifier.fillMaxWidth()) { Text("保存并启用唯一任务") }
-    Spacer(Modifier.height(8.dp)); Text("开售时间已过时会立即查询确认。提交仅允许一次；无法识别页面、验证码、登录失效或字段不一致时会停止并要求你接管。", style = MaterialTheme.typography.bodySmall)
+        vm.saveTask(context, seat, name, saleDateTime, confirmNotYetOnSale)
+    }, enabled = !busy && seat.isNotBlank() && name.isNotBlank() && allowed, modifier = Modifier.fillMaxWidth()) {
+        if (busy) CircularProgressIndicator(Modifier.height(18.dp), strokeWidth = 2.dp) else Text("查询确认并启用任务")
+    }
+    Spacer(Modifier.height(8.dp)); Text("保存时会重新查询官方车次：已确认有票则立即执行；确认未开售才要求填写未来开售时间。查询不明确时不会盲目启用。", style = MaterialTheme.typography.bodySmall)
 }
 
 @Composable
@@ -479,7 +560,7 @@ private fun TaskScreen(vm: TicketViewModel) {
     Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp)) {
         Text("${task.date}  ${task.train.trainNo}", fontWeight = FontWeight.Bold)
         Text("${task.from.name} ${task.train.depart} → ${task.to.name} ${task.train.arrive}")
-        Text("${task.seat} · ${task.passengerName} · 开售 ${task.saleDateTime ?: "未知"}（${task.saleTimeSource.name}）")
+        Text("${task.seat} · ${task.passengerName} · ${task.saleState.label()} · 开售 ${task.saleDateTime ?: "无需填写"}（${task.saleTimeSource.name}）")
     } }
     Spacer(Modifier.height(10.dp))
     Text(
@@ -497,6 +578,14 @@ private fun TaskScreen(vm: TicketViewModel) {
     Spacer(Modifier.height(8.dp))
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         OutlinedButton(onClick = { context.startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:${context.packageName}"))) }, modifier = Modifier.fillMaxWidth()) { Text("允许精确闹钟") }
+    }
+    val power = context.getSystemService(PowerManager::class.java)
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !power.isIgnoringBatteryOptimizations(context.packageName)) {
+        Spacer(Modifier.height(8.dp))
+        Text("当前受电池优化限制，开售时后台唤起可能延迟。", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        OutlinedButton(onClick = {
+            context.startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${context.packageName}")))
+        }, modifier = Modifier.fillMaxWidth()) { Text("允许后台不受电池优化限制") }
     }
     Spacer(Modifier.height(8.dp))
     OutlinedButton(onClick = { TaskScheduler(context).cancel(); TaskStore(context).clear(); vm.storedTask = null; vm.page.value = Page.HOME }, modifier = Modifier.fillMaxWidth()) { Text("停用任务") }

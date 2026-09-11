@@ -16,6 +16,7 @@ class TicketAccessibilityService : AccessibilityService() {
     private var lastActionAt = 0L
     private var activeTaskKey: String? = null
     private var stage = Stage.SEARCH_RESULTS
+    private var pageState = OfficialPageState.LAUNCHING
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event?.packageName?.toString() != OFFICIAL_PACKAGE) return
@@ -25,12 +26,37 @@ class TicketAccessibilityService : AccessibilityService() {
         if (activeTaskKey != key) {
             activeTaskKey = key
             stage = Stage.SEARCH_RESULTS
+            pageState = OfficialPageState.LAUNCHING
             lastActionAt = 0L
+        }
+        val submitGate = PersistentSubmitGate(
+            getSharedPreferences("submit_gate", MODE_PRIVATE),
+            "${task.taskId}:${task.saleDateTime}:${task.date}:${task.train.trainNo}"
+        )
+        if (submitGate.isLocked() && stage != Stage.SUBMITTED && stage != Stage.DONE) {
+            resultUnknown("本任务已尝试提交但服务重新启动，请到官方 12306 订单页核对")
+            return
         }
         val root = rootInActiveWindow ?: return
         val text = root.textContent()
+        if (text.isBlank()) return
         takeoverReason(text)?.let { reason ->
             takeover(reason)
+            return
+        }
+        pageState = detectOfficialPageState(text)
+        if (pageState == OfficialPageState.UNKNOWN) {
+            if (stage == Stage.SUBMITTED) resultUnknown("提交后页面无法确认，请到官方 12306 订单页核对")
+            else takeover("无法确认官方 12306 当前页面，为避免误点击已停止自动操作")
+            return
+        }
+        if (pageState == OfficialPageState.POPUP) {
+            takeover("官方 12306 出现公告或活动弹窗，请手动关闭后继续")
+            return
+        }
+        if (pageState == OfficialPageState.PENDING_PAYMENT && !isVerifiedPendingPaymentPage(text, task)) {
+            if (stage == Stage.SUBMITTED) resultUnknown("待支付页面字段不完整，请到官方 12306 订单页核对")
+            else takeover("官方待支付页面的订单字段无法确认，请手动核对订单")
             return
         }
         if (isVerifiedPendingPaymentPage(text, task)) {
@@ -40,24 +66,58 @@ class TicketAccessibilityService : AccessibilityService() {
             stage = Stage.DONE
             return
         }
+        if (pageState == OfficialPageState.HOME_PAGE) {
+            if (stage == Stage.SUBMITTED) resultUnknown("提交后返回首页，请到官方 12306 订单页核对")
+            else takeover("官方 12306 当前停留在首页，请打开目标车次查询结果后再继续")
+            return
+        }
+        if (stage == Stage.SUBMITTED && pageState !in setOf(OfficialPageState.LAUNCHING, OfficialPageState.ORDER_CONFIRM)) {
+            resultUnknown("提交后页面状态异常，请到官方 12306 订单页核对")
+            return
+        }
+        val expectedPage = when (stage) {
+            Stage.SEARCH_RESULTS -> OfficialPageState.SEARCH_RESULT
+            Stage.SEAT -> OfficialPageState.SEAT_SELECTION
+            Stage.PASSENGER -> OfficialPageState.PASSENGER_SELECTION
+            Stage.ORDER -> OfficialPageState.ORDER_CONFIRM
+            Stage.SUBMITTED, Stage.DONE -> null
+        }
+        if (expectedPage != null && pageState !in setOf(expectedPage, OfficialPageState.LAUNCHING)) {
+            takeover("官方 12306 页面顺序与预期不一致，请手动接管")
+            return
+        }
         if (stage == Stage.DONE || System.currentTimeMillis() - lastActionAt < ACTION_COOLDOWN_MS) return
 
         when (stage) {
-            Stage.SEARCH_RESULTS -> if (clickTrain(root, task.train.trainNo)) stage = Stage.SEAT
-            Stage.SEAT -> if (clickSeatAndContinue(root, task.seat)) stage = Stage.PASSENGER
-            Stage.PASSENGER -> {
+            Stage.SEARCH_RESULTS -> if (pageState == OfficialPageState.SEARCH_RESULT && clickTrain(root, task.train.trainNo)) stage = Stage.SEAT
+            Stage.SEAT -> if (pageState == OfficialPageState.SEAT_SELECTION && clickSeatAndContinue(root, task.seat)) stage = Stage.PASSENGER
+            Stage.PASSENGER -> if (pageState == OfficialPageState.PASSENGER_SELECTION) {
                 when (selectPassengerAndContinue(root, task.passengerName)) {
                     PassengerResult.SELECTED -> stage = Stage.ORDER
                     PassengerResult.AMBIGUOUS -> takeover("官方 12306 中存在多个同名乘车人，请手动选择")
-                    PassengerResult.NOT_FOUND -> Unit
+                    PassengerResult.NOT_FOUND -> takeover("官方 12306 中找不到指定乘车人，请手动确认")
                 }
             }
-            Stage.ORDER -> if (submitOrder(root, task)) stage = Stage.SUBMITTED
+            Stage.ORDER -> if (pageState == OfficialPageState.ORDER_CONFIRM) {
+                val orderText = root.textContent()
+                if (!matchesToken(orderText, task.train.trainNo) ||
+                    !orderText.contains(task.seat) ||
+                    !orderText.contains(task.passengerName)
+                ) {
+                    takeover("订单确认页字段与任务不一致，请手动核对")
+                } else if (submitOrder(root, task)) {
+                    stage = Stage.SUBMITTED
+                }
+            }
             Stage.SUBMITTED, Stage.DONE -> Unit
         }
     }
 
-    override fun onInterrupt() = Unit
+    override fun onInterrupt() {
+        if (stage == Stage.SUBMITTED) {
+            resultUnknown("无障碍服务在提交后中断，请到官方 12306 订单页核对")
+        }
+    }
 
     private fun clickTrain(root: AccessibilityNodeInfo, trainNo: String): Boolean {
         val node = findTextNodes(root) { value -> matchesToken(value, trainNo) }.firstOrNull() ?: return false
@@ -67,6 +127,12 @@ class TicketAccessibilityService : AccessibilityService() {
     }
 
     private fun clickSeatAndContinue(root: AccessibilityNodeInfo, seat: String): Boolean {
+        val pageText = root.textContent()
+        val unavailable = Regex("${Regex.escape(seat)}.{0,12}(?:无票|无|--|\\*)").containsMatchIn(pageText)
+        if (unavailable) {
+            takeover("官方 12306 中所选席别当前无票，请手动选择")
+            return false
+        }
         val seatNode = findTextNodes(root) { value -> value.trim() == seat }.firstOrNull() ?: return false
         if (!clickNodeOrParent(seatNode)) return false
         lastActionAt = System.currentTimeMillis()
@@ -115,6 +181,14 @@ class TicketAccessibilityService : AccessibilityService() {
         notify(reason)
     }
 
+    private fun resultUnknown(reason: String) {
+        if (stage == Stage.DONE) return
+        stage = Stage.DONE
+        TaskStore(this).updateStatus(TaskStatus.RESULT_UNKNOWN, reason)
+        stopService(android.content.Intent(this, TicketAutomationService::class.java))
+        notify("$reason；不会自动重试提交")
+    }
+
     private fun notify(text: String) {
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel(CHANNEL, "行程助手状态", NotificationManager.IMPORTANCE_HIGH))
@@ -126,6 +200,7 @@ class TicketAccessibilityService : AccessibilityService() {
             .setAutoCancel(true)
             .build())
     }
+
 
     private fun findActionNode(root: AccessibilityNodeInfo, labels: List<String>): AccessibilityNodeInfo? =
         findTextNodes(root) { value -> labels.any { label -> value.trim() == label || value.trim().contains(label) } }
@@ -194,9 +269,20 @@ internal fun isPendingPaymentPage(text: String): Boolean {
 
 internal fun isVerifiedPendingPaymentPage(text: String, task: com.example.ticketassistant.data.TicketTask): Boolean {
     val normalized = text.replace(" ", "")
-    val hasPrice = Regex("(?:¥|￥)\\s*\\d+(?:\\.\\d{1,2})?").containsMatchIn(normalized)
+    val dateParts = task.date.split('-')
+    val hasTravelDate = dateParts.size == 3 && listOf(
+        task.date,
+        "${dateParts[0]}年${dateParts[1]}月${dateParts[2]}日",
+        "${dateParts[0]}/${dateParts[1]}/${dateParts[2]}",
+        "${dateParts[1]}月${dateParts[2]}日"
+    ).any(normalized::contains)
+    val hasOrderNumber = Regex("(?:订单号|订单编号)[:：#]?[A-Z0-9]{6,}", RegexOption.IGNORE_CASE).containsMatchIn(normalized) ||
+        Regex("订单[A-Z0-9]{8,}", RegexOption.IGNORE_CASE).containsMatchIn(normalized)
+    val hasPrice = Regex("(?:¥|￥)\\s*\\d+(?:\\.\\d{1,2})?|\\d+(?:\\.\\d{1,2})?元").containsMatchIn(normalized)
     return isPendingPaymentPage(text) &&
-        matchesToken(normalized, task.train.trainNo) &&
+        hasOrderNumber &&
+        hasTravelDate &&
+        matchesToken(text, task.train.trainNo) &&
         normalized.contains(task.seat) &&
         normalized.contains(task.passengerName) &&
         hasPrice

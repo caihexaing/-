@@ -1,8 +1,25 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
+
+val releaseSigningProperties = Properties().apply {
+    val file = rootProject.file("release-signing.properties")
+    if (file.isFile) file.inputStream().use(::load)
+}
+
+fun releaseSigningValue(name: String): String? =
+    providers.gradleProperty("release.$name").orNull
+        ?: System.getenv("TICKET_RELEASE_${name.uppercase()}")
+        ?: releaseSigningProperties.getProperty(name)
+
+val releaseStoreFile = releaseSigningValue("storeFile")
+val releaseStorePassword = releaseSigningValue("storePassword")
+val releaseKeyAlias = releaseSigningValue("keyAlias")
+val releaseKeyPassword = releaseSigningValue("keyPassword")
 
 android {
     namespace = "com.example.ticketassistant"
@@ -12,13 +29,26 @@ android {
         applicationId = "com.example.ticketassistant"
         minSdk = 26
         targetSdk = 36
-        versionCode = 11
-        versionName = "0.2.9"
+        versionCode = 12
+        versionName = "0.3.0"
+    }
+
+    signingConfigs {
+        create("release") {
+            if (releaseStoreFile != null && releaseStorePassword != null && releaseKeyAlias != null && releaseKeyPassword != null) {
+                storeFile = rootProject.file(releaseStoreFile)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            isDebuggable = false
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
@@ -29,6 +59,16 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
+}
+
+val hasReleaseSigning = releaseStoreFile != null && releaseStorePassword != null &&
+    releaseKeyAlias != null && releaseKeyPassword != null
+tasks.matching { it.name == "packageRelease" || it.name == "packageReleaseBundle" }.configureEach {
+    doFirst {
+        check(hasReleaseSigning) {
+            "Release 构建需要正式签名。请配置 release-signing.properties 或 TICKET_RELEASE_* 环境变量。"
+        }
+    }
 }
 
 dependencies {

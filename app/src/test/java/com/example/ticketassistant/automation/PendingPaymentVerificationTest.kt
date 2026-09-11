@@ -19,6 +19,11 @@ class PendingPaymentVerificationTest {
     }
 
     @Test fun `all target fields and price confirm pending payment`() {
-        assertTrue(isVerifiedPendingPaymentPage("D5963 二等座 蔡贺翔 待支付 ￥45.00", task))
+        assertTrue(isVerifiedPendingPaymentPage("订单号 1234567890 2026-09-19 D5963 二等座 蔡贺翔 待支付 ￥45.00", task))
+    }
+
+    @Test fun `missing order number or travel date is not confirmed`() {
+        assertFalse(isVerifiedPendingPaymentPage("2026-09-19 D5963 二等座 蔡贺翔 待支付 ￥45.00", task))
+        assertFalse(isVerifiedPendingPaymentPage("订单号 1234567890 D5963 二等座 蔡贺翔 待支付 ￥45.00", task))
     }
 }
