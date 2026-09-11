@@ -31,7 +31,10 @@ internal fun detectOfficialPageState(text: String): OfficialPageState {
     val hasResultEvidence = listOf("筛选条件", "余票", "有票").any(normalized::contains) ||
         (hasTrainLikeToken && listOf("查询车票", "车次").any(normalized::contains))
     val hasHomeNavigation = listOf("首页", "我的", "订单", "车票").any(normalized::contains)
-    if (hasHomeNavigation && !hasResultEvidence) return OfficialPageState.HOME_PAGE
+    val formFields = listOf("出发地", "出发站", "到达地", "到达站", "乘车日期", "出发日期")
+        .count(normalized::contains)
+    val hasSearchForm = formFields >= 2 && listOf("查询", "搜索车票", "查询车票").any(normalized::contains)
+    if ((hasHomeNavigation || hasSearchForm) && !hasResultEvidence) return OfficialPageState.HOME_PAGE
     if (hasResultEvidence) return OfficialPageState.SEARCH_RESULT
     if (listOf("启动", "加载", "请稍候", "正在加载").any(normalized::contains)) return OfficialPageState.LAUNCHING
     return OfficialPageState.UNKNOWN

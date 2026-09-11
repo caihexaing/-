@@ -24,6 +24,27 @@ enum class InteractionResult {
     FAILED
 }
 
+enum class SearchStage {
+    OPEN_SEARCH,
+    DEPARTURE,
+    ARRIVAL,
+    DATE,
+    SUBMIT_SEARCH,
+    RESULT
+}
+
+fun nextSearchStage(stage: SearchStage, page: OfficialPageState, action: InteractionResult): SearchStage {
+    if (action != InteractionResult.DONE) return stage
+    return when (stage) {
+        SearchStage.OPEN_SEARCH -> SearchStage.DEPARTURE
+        SearchStage.DEPARTURE -> SearchStage.ARRIVAL
+        SearchStage.ARRIVAL -> SearchStage.DATE
+        SearchStage.DATE -> SearchStage.SUBMIT_SEARCH
+        SearchStage.SUBMIT_SEARCH -> if (page == OfficialPageState.SEARCH_RESULT) SearchStage.RESULT else stage
+        SearchStage.RESULT -> stage
+    }
+}
+
 /** A testable projection of an accessibility node used by the search-form matcher. */
 data class NodeDescriptor(
     val text: String? = null,
