@@ -120,7 +120,7 @@ private fun parseDate(value: String): LocalDate? = try {
     null
 }
 
-private fun resourceLabelMatches(value: String, field: SearchField): Boolean {
+internal fun resourceLabelMatches(value: String, field: SearchField): Boolean {
     val normalized = normalizeLabel(value)
     return when (field) {
         SearchField.DEPARTURE -> listOf("departure", "fromstation", "from_city", "startstation", "start_city").any(normalized::contains)
