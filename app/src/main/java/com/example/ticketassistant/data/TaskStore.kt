@@ -35,6 +35,9 @@ class TaskStore(context: Context) {
             task.lastError?.let { put("lastError", it) }
             task.lastPageState?.let { put("lastPageState", it) }
             task.lastAction?.let { put("lastAction", it) }
+            task.lastAutomationStage?.let { put("lastAutomationStage", it) }
+            task.lastRootPackage?.let { put("lastRootPackage", it) }
+            task.lastEvidenceSource?.let { put("lastEvidenceSource", it) }
             task.lastAccessibilityEventAt?.let { put("lastAccessibilityEventAt", it) }
             put("accessibilityEventCount", task.accessibilityEventCount)
         }
@@ -88,6 +91,9 @@ class TaskStore(context: Context) {
             } else lastError,
             lastPageState = j.optString("lastPageState").ifBlank { null },
             lastAction = j.optString("lastAction").ifBlank { null },
+            lastAutomationStage = j.optString("lastAutomationStage").ifBlank { null },
+            lastRootPackage = j.optString("lastRootPackage").ifBlank { null },
+            lastEvidenceSource = j.optString("lastEvidenceSource").ifBlank { null },
             lastAccessibilityEventAt = j.optLong("lastAccessibilityEventAt").takeIf { it > 0L },
             accessibilityEventCount = j.optInt("accessibilityEventCount", 0).coerceAtLeast(0)
         )
@@ -110,12 +116,21 @@ class TaskStore(context: Context) {
         save(task.copy(lastEvent = event, lastEventAt = System.currentTimeMillis(), lastError = error))
     }
 
-    fun recordAccessibilityEvent(pageState: String?, action: String? = null) {
+    fun recordAccessibilityEvent(
+        pageState: String?,
+        action: String? = null,
+        automationStage: String? = null,
+        rootPackage: String? = null,
+        evidenceSource: String? = null
+    ) {
         val task = load() ?: return
         val now = System.currentTimeMillis()
         save(task.copy(
             lastPageState = pageState ?: task.lastPageState,
             lastAction = action ?: task.lastAction,
+            lastAutomationStage = automationStage ?: task.lastAutomationStage,
+            lastRootPackage = rootPackage ?: task.lastRootPackage,
+            lastEvidenceSource = evidenceSource ?: task.lastEvidenceSource,
             lastAccessibilityEventAt = now,
             accessibilityEventCount = task.accessibilityEventCount + 1
         ))

@@ -13,7 +13,7 @@ import java.time.format.DateTimeFormatter
 /** Builds a report that is useful for debugging without exporting account or payment data. */
 fun buildDiagnosticReport(task: TicketTask, generatedAt: Instant = Instant.now()): String {
     val fields = linkedMapOf<String, String?>()
-    fields["formatVersion"] = "2"
+    fields["formatVersion"] = "3"
     fields["generatedAt"] = generatedAt.toString()
     fields["automationMode"] = "任务信息自动查询（诊断）"
     fields["taskId"] = task.taskId
@@ -31,6 +31,9 @@ fun buildDiagnosticReport(task: TicketTask, generatedAt: Instant = Instant.now()
     fields["lastError"] = task.lastError?.let { "已记录（内容已脱敏）" }
     fields["lastPageState"] = task.lastPageState
     fields["lastAction"] = task.lastAction?.let { "已记录（内容已脱敏）" }
+    fields["lastAutomationStage"] = task.lastAutomationStage
+    fields["lastRootPackage"] = task.lastRootPackage
+    fields["lastEvidenceSource"] = task.lastEvidenceSource
     fields["lastAccessibilityEventAt"] = task.lastAccessibilityEventAt?.toString()
     fields["accessibilityEventCount"] = task.accessibilityEventCount.toString()
     fields["containsCredentials"] = "false"

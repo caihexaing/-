@@ -32,6 +32,9 @@ data class TicketTask(
     val lastError: String? = null,
     val lastPageState: String? = null,
     val lastAction: String? = null,
+    val lastAutomationStage: String? = null,
+    val lastRootPackage: String? = null,
+    val lastEvidenceSource: String? = null,
     val lastAccessibilityEventAt: Long? = null,
     val accessibilityEventCount: Int = 0
 )

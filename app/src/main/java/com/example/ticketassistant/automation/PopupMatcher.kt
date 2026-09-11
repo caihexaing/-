@@ -85,10 +85,13 @@ internal object PopupMatcher {
     }
 
     private fun textContent(root: AccessibilityNodeInfo): String = buildString {
-        walk(root) { node ->
+        fun appendVisible(node: AccessibilityNodeInfo?, includeRoot: Boolean = false) {
+            if (node == null || (!includeRoot && !node.isVisibleToUser)) return
             node.text?.let { append(' ').append(it) }
             node.contentDescription?.let { append(' ').append(it) }
+            for (index in 0 until node.childCount) appendVisible(node.getChild(index))
         }
+        appendVisible(root, includeRoot = true)
     }
 
     private fun normalize(value: String): String = value.replace(Regex("\\s+"), "").lowercase()

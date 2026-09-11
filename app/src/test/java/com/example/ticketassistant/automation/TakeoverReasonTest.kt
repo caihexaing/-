@@ -34,10 +34,19 @@ class TakeoverReasonTest {
     @Test fun `pending payment page is detected separately`() {
         assertTrue(isPendingPaymentPage("订单待支付 剩余 15 分钟"))
         assertTrue(isPendingPaymentPage("订单待\n支付\n剩余 15 分钟"))
+        assertTrue(isPendingPaymentPage("订单号 1234567890 待支付 ￥45.00"))
+        assertFalse(isPendingPaymentPage("首页 待支付"))
+        assertFalse(isPendingPaymentPage("订单中心 待支付"))
     }
 
     @Test fun `normal payment copy is not pending payment`() {
         assertFalse(isPendingPaymentPage("支付方式 微信支付"))
+    }
+
+    @Test fun `only official root package can be classified`() {
+        assertTrue(isOfficialRootPackage("com.MobileTicket"))
+        assertFalse(isOfficialRootPackage("android"))
+        assertFalse(isOfficialRootPackage(null))
     }
 
     @Test fun `unknown pages are handled by page classifier`() {

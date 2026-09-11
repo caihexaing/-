@@ -28,6 +28,15 @@ class PageStateClassifierTest {
         )
     }
 
+    @Test fun `pending payment keyword does not override homepage or become a page state`() {
+        assertEquals(
+            OfficialPageState.HOME_PAGE,
+            detectOfficialPageState("首页 我的 订单 车票 出发地 到达地 查询车票 待支付")
+        )
+        assertEquals(OfficialPageState.UNKNOWN, detectOfficialPageState("订单中心 待支付"))
+        assertTrue(hasPendingPaymentCandidate("首页菜单 待支付"))
+    }
+
     @Test fun `stage pages win over bottom navigation labels`() {
         assertEquals(OfficialPageState.SEAT_SELECTION, detectOfficialPageState("首页 我的 订单 车票 席别 二等座 预订"))
         assertEquals(OfficialPageState.PASSENGER_SELECTION, detectOfficialPageState("首页 订单 乘车人 蔡贺翔 下一步"))

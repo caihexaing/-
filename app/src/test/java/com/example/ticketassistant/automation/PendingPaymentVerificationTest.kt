@@ -26,4 +26,12 @@ class PendingPaymentVerificationTest {
         assertFalse(isVerifiedPendingPaymentPage("2026-09-19 D5963 二等座 蔡贺翔 待支付 ￥45.00", task))
         assertFalse(isVerifiedPendingPaymentPage("订单号 1234567890 D5963 二等座 蔡贺翔 待支付 ￥45.00", task))
     }
+
+    @Test fun `confirmation requires submit result stage and official root`() {
+        val evidence = "订单号 1234567890 2026-09-19 D5963 二等座 蔡贺翔 待支付 ￥45.00"
+        assertTrue(isPendingPaymentConfirmationAllowed("WAITING_RESULT", "com.MobileTicket", evidence, task))
+        assertFalse(isPendingPaymentConfirmationAllowed("ORDER", "com.MobileTicket", evidence, task))
+        assertFalse(isPendingPaymentConfirmationAllowed("WAITING_RESULT", "android", evidence, task))
+        assertFalse(isPendingPaymentConfirmationAllowed("WAITING_RESULT", "com.MobileTicket", "订单中心 待支付", task))
+    }
 }

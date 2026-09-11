@@ -585,6 +585,9 @@ private fun TaskScreen(vm: TicketViewModel) {
         Text("无障碍服务：${if (accessibilityEnabled) "已启用" else "未启用"}")
         Text("最近官方页面：${task.lastPageState ?: "尚未收到页面事件"}")
         Text("最近动作：${task.lastAction ?: "暂无"}")
+        Text("自动化阶段：${task.lastAutomationStage ?: "暂无"}")
+        Text("当前窗口：${task.lastRootPackage ?: "暂无"}")
+        Text("证据来源：${task.lastEvidenceSource ?: "暂无"}")
         val eventTime = task.lastAccessibilityEventAt?.let {
             java.time.Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault())
                 .format(DateTimeFormatter.ofPattern("MM-dd HH:mm:ss"))

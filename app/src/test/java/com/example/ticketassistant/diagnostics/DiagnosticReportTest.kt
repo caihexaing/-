@@ -26,12 +26,16 @@ class DiagnosticReportTest {
             status = TaskStatus.FILLING_DEPARTURE,
             lastPageState = "HOME_PAGE",
             lastAction = "已选择乘车人：蔡贺翔",
+            lastAutomationStage = "DEPARTURE",
+            lastRootPackage = "com.MobileTicket",
+            lastEvidenceSource = "NONE",
             lastEvent = "页面包含账号 13800138000",
             lastError = "订单号 ABC123456789",
             accessibilityEventCount = 2
         )
 
         val report = buildDiagnosticReport(task, Instant.parse("2026-09-11T06:00:00Z"))
+        assertTrue(report.contains("\"formatVersion\": \"3\""))
         assertTrue(report.contains("\"status\": \"FILLING_DEPARTURE\""))
         assertTrue(report.contains("\"automationMode\": \"任务信息自动查询（诊断）\""))
         assertTrue(report.contains("\"lastPageState\": \"HOME_PAGE\""))
@@ -41,6 +45,9 @@ class DiagnosticReportTest {
         assertFalse(report.contains("13800138000"))
         assertFalse(report.contains("ABC123456789"))
         assertTrue(report.contains("\"lastAction\": \"已记录（内容已脱敏）\""))
+        assertTrue(report.contains("\"lastAutomationStage\": \"DEPARTURE\""))
+        assertTrue(report.contains("\"lastRootPackage\": \"com.MobileTicket\""))
+        assertTrue(report.contains("\"lastEvidenceSource\": \"NONE\""))
         assertTrue(report.contains("\"containsCredentials\": \"false\""))
         assertTrue(report.contains("\"containsPaymentData\": \"false\""))
     }

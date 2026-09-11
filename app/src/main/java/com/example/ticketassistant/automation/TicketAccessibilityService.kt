@@ -23,6 +23,8 @@ class TicketAccessibilityService : AccessibilityService() {
     private var emptyTreeEvents = 0
     private var resultEvents = 0
     private var pendingEvidence = ""
+    private var pendingEvidenceStartedAt = 0L
+    private var pendingEvidenceEvents = 0
     private var formStartedAt = 0L
     private var formWaitEvents = 0
     private val formEvidence = mutableSetOf<SearchField>()
@@ -47,6 +49,8 @@ class TicketAccessibilityService : AccessibilityService() {
             emptyTreeEvents = 0
             resultEvents = 0
             pendingEvidence = ""
+            pendingEvidenceStartedAt = 0L
+            pendingEvidenceEvents = 0
             formStartedAt = System.currentTimeMillis()
             formWaitEvents = 0
             formEvidence.clear()
@@ -69,6 +73,16 @@ class TicketAccessibilityService : AccessibilityService() {
             handleEmptyTree("未读取到官方 12306 页面节点")
             return
         }
+        val rootPackage = root.packageName?.toString()
+        if (!isOfficialRootPackage(root.packageName)) {
+            recordDiagnostic(
+                OfficialPageState.UNKNOWN,
+                "事件来源与当前窗口不一致，已忽略",
+                rootPackage = rootPackage ?: "UNKNOWN",
+                evidenceSource = "ROOT_PACKAGE_MISMATCH"
+            )
+            return
+        }
         val text = root.textContent()
         if (text.isBlank()) {
             handleEmptyTree("官方 12306 页面节点为空")
@@ -77,7 +91,7 @@ class TicketAccessibilityService : AccessibilityService() {
         emptyTreeEvents = 0
 
         takeoverReason(text)?.let { reason ->
-            recordDiagnostic(OfficialPageState.UNKNOWN, reason)
+            recordDiagnostic(OfficialPageState.UNKNOWN, reason, rootPackage = rootPackage, evidenceSource = "TAKEOVER_REASON")
             takeover(reason)
             return
         }
@@ -87,7 +101,16 @@ class TicketAccessibilityService : AccessibilityService() {
             is PopupMatcher.Result.Unique, is PopupMatcher.Result.Ambiguous -> OfficialPageState.POPUP
             PopupMatcher.Result.None -> detectOfficialPageState(text)
         }
-        recordDiagnostic(pageState)
+        val pendingCandidate = hasPendingPaymentCandidate(text)
+        recordDiagnostic(
+            pageState,
+            rootPackage = rootPackage,
+            evidenceSource = when {
+                stage == Stage.WAITING_RESULT && isPendingPaymentPage(text) -> "PENDING_PAYMENT_STRONG_CANDIDATE"
+                pendingCandidate -> "PENDING_PAYMENT_KEYWORD_ONLY"
+                else -> "NONE"
+            }
+        )
         if (pageState == OfficialPageState.POPUP) {
             when (popupMatch) {
                 is PopupMatcher.Result.Unique -> {
@@ -122,12 +145,7 @@ class TicketAccessibilityService : AccessibilityService() {
         }
 
         if (stage == Stage.WAITING_RESULT) {
-            handleSubmitResult(text, task)
-            return
-        }
-
-        if (pageState == OfficialPageState.PENDING_PAYMENT) {
-            takeover("检测到待支付相关页面，但本任务尚未确认提交结果，请手动核对官方订单")
+            handleSubmitResult(text, task, rootPackage)
             return
         }
         if (pageState == OfficialPageState.PROCESSING) {
@@ -413,12 +431,29 @@ class TicketAccessibilityService : AccessibilityService() {
         return matchesToken(text, task.train.trainNo) && routeKnown && dateKnown
     }
 
-    private fun handleSubmitResult(text: String, task: TicketTask) {
+    private fun handleSubmitResult(text: String, task: TicketTask, rootPackage: String?) {
         resultEvents++
-        if (isPendingPaymentPage(text) || pendingEvidence.isNotBlank()) {
+        val now = System.currentTimeMillis()
+        val evidenceWindowOpen = pendingEvidence.isNotBlank() &&
+            now - pendingEvidenceStartedAt <= PENDING_EVIDENCE_WINDOW_MS &&
+            pendingEvidenceEvents < MAX_PENDING_EVIDENCE_EVENTS
+        if (hasPendingPaymentCandidate(text) || evidenceWindowOpen) {
+            if (!evidenceWindowOpen) {
+                pendingEvidence = ""
+                pendingEvidenceStartedAt = now
+                pendingEvidenceEvents = 0
+            }
             pendingEvidence = (pendingEvidence + " " + text).takeLast(MAX_EVIDENCE_LENGTH)
+            pendingEvidenceEvents++
         }
-        if (pendingEvidence.isNotBlank() && isVerifiedPendingPaymentPage(pendingEvidence, task)) {
+        if (isPendingPaymentConfirmationAllowed(stage.name, rootPackage, pendingEvidence, task)) {
+            pageState = OfficialPageState.PENDING_PAYMENT
+            recordDiagnostic(
+                OfficialPageState.PENDING_PAYMENT,
+                "已核对官方待支付订单字段",
+                rootPackage = rootPackage,
+                evidenceSource = "VERIFIED_ORDER_FIELDS"
+            )
             TaskStore(this).updateStatus(TaskStatus.PENDING_PAYMENT, "已核对官方待支付订单字段")
             notify("已确认官方待支付订单，请在 12306 手动付款")
             stopService(android.content.Intent(this, TicketAutomationService::class.java))
@@ -547,24 +582,24 @@ class TicketAccessibilityService : AccessibilityService() {
 
     private fun findTextNodes(root: AccessibilityNodeInfo, predicate: (String) -> Boolean): List<AccessibilityNodeInfo> {
         val result = mutableListOf<AccessibilityNodeInfo>()
-        fun walk(node: AccessibilityNodeInfo?) {
-            if (node == null) return
+        fun walk(node: AccessibilityNodeInfo?, includeRoot: Boolean = false) {
+            if (node == null || (!includeRoot && !node.isVisibleToUser)) return
             val values = listOfNotNull(node.text?.toString(), node.contentDescription?.toString())
             if (values.any(predicate)) result += node
             for (i in 0 until node.childCount) walk(node.getChild(i))
         }
-        walk(root)
+        walk(root, includeRoot = true)
         return result
     }
 
     private fun AccessibilityNodeInfo.textContent(): String = buildString {
-        fun walk(node: AccessibilityNodeInfo?) {
-            if (node == null) return
+        fun walk(node: AccessibilityNodeInfo?, includeRoot: Boolean = false) {
+            if (node == null || (!includeRoot && !node.isVisibleToUser)) return
             node.text?.let { append(' ').append(it) }
             node.contentDescription?.let { append(' ').append(it) }
             for (i in 0 until node.childCount) walk(node.getChild(i))
         }
-        walk(this@textContent)
+        walk(this@textContent, includeRoot = true)
     }
 
     private fun handleEmptyTree(reason: String) {
@@ -577,8 +612,19 @@ class TicketAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun recordDiagnostic(page: OfficialPageState, action: String? = null) {
-        TaskStore(this).recordAccessibilityEvent(page.name, action)
+    private fun recordDiagnostic(
+        page: OfficialPageState,
+        action: String? = null,
+        rootPackage: String? = null,
+        evidenceSource: String? = null
+    ) {
+        TaskStore(this).recordAccessibilityEvent(
+            pageState = page.name,
+            action = action,
+            automationStage = stage.name,
+            rootPackage = rootPackage,
+            evidenceSource = evidenceSource
+        )
     }
 
     private fun takeover(reason: String) {
@@ -649,6 +695,8 @@ class TicketAccessibilityService : AccessibilityService() {
         private const val FORM_TIMEOUT_MS = 10_000L
         private const val MAX_UNKNOWN_RESULT_EVENTS = 3
         private const val MAX_EVIDENCE_LENGTH = 8_000
+        private const val MAX_PENDING_EVIDENCE_EVENTS = 5
+        private const val PENDING_EVIDENCE_WINDOW_MS = 10_000L
         private val ACTIVE_STATUSES = setOf(
             TaskStatus.WAITING_OFFICIAL_PAGE,
             TaskStatus.OPENING_SEARCH,
@@ -678,11 +726,28 @@ class TicketAccessibilityService : AccessibilityService() {
 internal fun matchesToken(text: String, token: String): Boolean =
     Regex("(^|[^A-Za-z0-9])${Regex.escape(token)}([^A-Za-z0-9]|$)", RegexOption.IGNORE_CASE).containsMatchIn(text)
 
+internal fun isOfficialRootPackage(packageName: CharSequence?): Boolean =
+    packageName?.toString() == TicketAccessibilityService.OFFICIAL_PACKAGE
+
+internal fun isPendingPaymentConfirmationAllowed(
+    stageName: String,
+    rootPackage: String?,
+    evidence: String,
+    task: TicketTask
+): Boolean = stageName == "WAITING_RESULT" &&
+    rootPackage == TicketAccessibilityService.OFFICIAL_PACKAGE &&
+    isVerifiedPendingPaymentPage(evidence, task)
+
 internal fun normalizeText(text: String): String = text.replace(Regex("\\s+"), "").lowercase()
 
+/** Strong page-context check; the keyword alone is only a diagnostic candidate. */
 internal fun isPendingPaymentPage(text: String): Boolean {
     val normalized = normalizeText(text)
-    return listOf("待支付", "待付款", "订单待支付", "未支付订单", "支付倒计时").any(normalized::contains)
+    val hasPaymentState = listOf("待支付", "待付款", "订单待支付", "未支付订单", "支付倒计时")
+        .any(normalized::contains)
+    val hasOrderContext = listOf("订单号", "订单编号", "支付倒计时", "剩余支付", "去支付", "取消订单", "订单详情")
+        .any(normalized::contains) || (normalized.contains("订单") && normalized.contains("剩余"))
+    return hasPaymentState && hasOrderContext
 }
 
 internal fun isVerifiedPendingPaymentPage(text: String, task: TicketTask): Boolean {

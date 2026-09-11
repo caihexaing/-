@@ -18,7 +18,6 @@ internal fun detectOfficialPageState(text: String): OfficialPageState {
         return OfficialPageState.SUBMIT_REJECTED
     }
     if (listOf("订单确认", "提交订单").any(normalized::contains)) return OfficialPageState.ORDER_CONFIRM
-    if (isPendingPaymentPage(text)) return OfficialPageState.PENDING_PAYMENT
     if (listOf("提交中", "正在提交", "排队中", "订单处理中", "处理中").any(normalized::contains)) {
         return OfficialPageState.PROCESSING
     }
@@ -28,7 +27,10 @@ internal fun detectOfficialPageState(text: String): OfficialPageState {
         listOf("确认", "下一步").any(normalized::contains)) return OfficialPageState.PASSENGER_SELECTION
     val hasResultEvidence = listOf("筛选条件", "余票", "有票").any(normalized::contains) ||
         (hasTrainLikeToken && listOf("查询车票", "车次").any(normalized::contains))
-    val hasHomeNavigation = listOf("首页", "我的", "订单", "车票").any(normalized::contains)
+    val homeNavigationCount = listOf("首页", "我的", "订单", "车票").count(normalized::contains)
+    val hasHomeNavigation = homeNavigationCount >= 2 &&
+        listOf("查询车票", "搜索车票", "出发地", "到达地", "乘车日期", "出发日期", "火车票")
+            .any(normalized::contains)
     val formFields = listOf("出发地", "出发站", "到达地", "到达站", "乘车日期", "出发日期")
         .count(normalized::contains)
     val hasSearchForm = formFields >= 2 && listOf("查询", "搜索车票", "查询车票").any(normalized::contains)
@@ -38,4 +40,10 @@ internal fun detectOfficialPageState(text: String): OfficialPageState {
         listOf("关闭", "知道了", "暂不").any(normalized::contains)) return OfficialPageState.POPUP
     if (listOf("启动", "加载", "请稍候", "正在加载").any(normalized::contains)) return OfficialPageState.LAUNCHING
     return OfficialPageState.UNKNOWN
+}
+
+/** Broad diagnostic signal only; it is never sufficient to confirm an order. */
+internal fun hasPendingPaymentCandidate(text: String): Boolean {
+    val normalized = text.replace(Regex("\\s+"), "").lowercase()
+    return listOf("待支付", "待付款", "订单待支付", "未支付订单", "支付倒计时").any(normalized::contains)
 }
