@@ -49,6 +49,8 @@ class SearchFormMatcherTest {
     fun `field context never treats arrival as departure`() {
         assertTrue(fieldContextMatches("出发地", SearchField.DEPARTURE))
         assertTrue(fieldContextMatches("到达地", SearchField.ARRIVAL))
+        assertFalse(fieldContextMatches("出发日期", SearchField.DEPARTURE))
+        assertFalse(fieldContextMatches("到达日期", SearchField.ARRIVAL))
         assertFalse(fieldContextMatches("到达地 潜江", SearchField.DEPARTURE))
         assertFalse(fieldContextMatches("出发地 汉口 到达地 潜江", SearchField.DEPARTURE))
     }

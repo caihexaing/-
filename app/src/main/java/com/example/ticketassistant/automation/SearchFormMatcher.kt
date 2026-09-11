@@ -108,9 +108,9 @@ fun fieldLabelMatches(text: String, field: SearchField): Boolean {
 fun fieldContextMatches(text: String, field: SearchField): Boolean {
     val normalized = normalizeLabel(text)
     if (normalized.isBlank()) return false
-    val target = fieldLabelMatches(normalized, field) || resourceLabelMatches(normalized, field)
+    val target = fieldTargetLabelMatches(normalized, field) || resourceLabelMatches(normalized, field)
     val opposite = oppositeField(field)?.let {
-        fieldLabelMatches(normalized, it) || resourceLabelMatches(normalized, it)
+        fieldTargetLabelMatches(normalized, it) || resourceLabelMatches(normalized, it)
     } == true
     return target && !opposite
 }
@@ -135,13 +135,9 @@ fun findUniqueField(nodes: List<NodeDescriptor>, field: SearchField): NodeDescri
         if (!node.editable) return@filter false
         val directValues = listOfNotNull(node.text, node.contentDescription, node.resourceId)
         val context = node.contextText.orEmpty()
-        val directTarget = directValues.any { value ->
-            fieldLabelMatches(value, field) || resourceLabelMatches(value, field)
-        }
+        val directTarget = directValues.any { value -> fieldContextMatches(value, field) }
         val directOpposite = oppositeField(field)?.let { opposite ->
-            directValues.any { value ->
-                fieldLabelMatches(value, opposite) || resourceLabelMatches(value, opposite)
-            }
+            directValues.any { value -> fieldTargetLabelMatches(value, opposite) || resourceLabelMatches(value, opposite) }
         } == true
         val contextTarget = fieldContextMatches(context, field)
         val contextAmbiguous = contextHasBothStationFields(context)
@@ -189,12 +185,23 @@ private fun oppositeField(field: SearchField): SearchField? = when (field) {
     SearchField.DATE -> null
 }
 
+internal fun fieldTargetLabelMatches(text: String, field: SearchField): Boolean {
+    val normalized = normalizeLabel(text)
+    return when (field) {
+        SearchField.DEPARTURE -> listOf("出发地", "出发站", "出发城市", "出发点", "出发")
+            .any { normalized == it || (normalized.contains(it) && !normalized.contains("日期")) }
+        SearchField.ARRIVAL -> listOf("到达地", "到达站", "到达城市", "到达点", "到达")
+            .any { normalized == it || (normalized.contains(it) && !normalized.contains("日期")) }
+        SearchField.DATE -> fieldLabelMatches(normalized, field)
+    }
+}
+
 private fun contextHasBothStationFields(value: String): Boolean {
     val normalized = normalizeLabel(value)
     if (normalized.isBlank()) return false
-    val hasDeparture = fieldLabelMatches(normalized, SearchField.DEPARTURE) ||
+    val hasDeparture = fieldTargetLabelMatches(normalized, SearchField.DEPARTURE) ||
         resourceLabelMatches(normalized, SearchField.DEPARTURE)
-    val hasArrival = fieldLabelMatches(normalized, SearchField.ARRIVAL) ||
+    val hasArrival = fieldTargetLabelMatches(normalized, SearchField.ARRIVAL) ||
         resourceLabelMatches(normalized, SearchField.ARRIVAL)
     return hasDeparture && hasArrival
 }
