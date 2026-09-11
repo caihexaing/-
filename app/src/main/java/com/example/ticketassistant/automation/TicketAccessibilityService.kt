@@ -82,11 +82,12 @@ class TicketAccessibilityService : AccessibilityService() {
             Stage.ORDER -> OfficialPageState.ORDER_CONFIRM
             Stage.SUBMITTED, Stage.DONE -> null
         }
+        if (stage != Stage.DONE && System.currentTimeMillis() - lastActionAt < ACTION_COOLDOWN_MS) return
         if (expectedPage != null && pageState !in setOf(expectedPage, OfficialPageState.LAUNCHING)) {
             takeover("官方 12306 页面顺序与预期不一致，请手动接管")
             return
         }
-        if (stage == Stage.DONE || System.currentTimeMillis() - lastActionAt < ACTION_COOLDOWN_MS) return
+        if (stage == Stage.DONE) return
 
         when (stage) {
             Stage.SEARCH_RESULTS -> if (pageState == OfficialPageState.SEARCH_RESULT && clickTrain(root, task.train.trainNo)) stage = Stage.SEAT

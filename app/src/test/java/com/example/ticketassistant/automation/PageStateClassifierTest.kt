@@ -20,4 +20,8 @@ class PageStateClassifierTest {
         assertEquals(OfficialPageState.SEAT_SELECTION, detectOfficialPageState("首页 我的 订单 车票 席别 二等座 预订"))
         assertEquals(OfficialPageState.PASSENGER_SELECTION, detectOfficialPageState("首页 订单 乘车人 蔡贺翔 下一步"))
     }
+
+    @Test fun `home search form is not treated as results`() {
+        assertEquals(OfficialPageState.HOME_PAGE, detectOfficialPageState("首页 我的 订单 车票 查询车票 出发地 到达地"))
+    }
 }

@@ -48,7 +48,9 @@ class TaskStore(context: Context) {
         val source = runCatching { SaleTimeSource.valueOf(j.optString("saleTimeSource", if (saleDateTime == null) SaleTimeSource.UNKNOWN.name else SaleTimeSource.USER_CONFIRMED.name)) }
             .getOrDefault(SaleTimeSource.UNKNOWN)
         val storedStatus = runCatching { TaskStatus.valueOf(j.optString("status", TaskStatus.ENABLED.name)) }.getOrDefault(TaskStatus.ENABLED)
-        val status = if ((!hasSaleState || saleState == SaleState.UNKNOWN) && storedStatus in setOf(
+        val invalidSaleData = !hasSaleState || saleState == SaleState.UNKNOWN ||
+            (saleState == SaleState.NOT_YET_ON_SALE && saleDateTime == null)
+        val status = if (invalidSaleData && storedStatus in setOf(
                 TaskStatus.ENABLED, TaskStatus.WAITING_FOR_SALE, TaskStatus.PREPARING, TaskStatus.OBSERVING, TaskStatus.SEARCHING
             )) TaskStatus.DRAFT else storedStatus
         val lastError = j.optString("lastError").ifBlank { null }
@@ -63,13 +65,13 @@ class TaskStore(context: Context) {
             saleState = saleState,
             saleDateTime = saleDateTime,
             saleTimeSource = if (hasSaleState) source else SaleTimeSource.UNKNOWN,
-            enabled = hasSaleState && saleState != SaleState.UNKNOWN &&
+            enabled = !invalidSaleData &&
                 (saleState != SaleState.NOT_YET_ON_SALE || saleDateTime != null) &&
                 j.optBoolean("enabled", false),
             status = status,
             lastEvent = j.optString("lastEvent").ifBlank { null },
             lastEventAt = j.optLong("lastEventAt").takeIf { it > 0L },
-            lastError = if (!hasSaleState || saleState == SaleState.UNKNOWN) {
+            lastError = if (invalidSaleData) {
                 lastError ?: "开售状态未知，请重新查询确认"
             } else lastError
         )
