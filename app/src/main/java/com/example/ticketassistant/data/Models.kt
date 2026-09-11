@@ -42,6 +42,11 @@ enum class TaskStatus {
     WAITING_FOR_SALE,
     PREPARING,
     WAITING_OFFICIAL_PAGE,
+    OPENING_SEARCH,
+    FILLING_DEPARTURE,
+    FILLING_ARRIVAL,
+    FILLING_DATE,
+    SUBMITTING_SEARCH,
     VALIDATING_SEARCH_RESULT,
     SELECTING_TRAIN_SEAT,
     SELECTING_PASSENGER,
@@ -67,3 +72,31 @@ enum class SaleState {
 }
 
 const val TASK_ZONE_ID = "Asia/Shanghai"
+
+internal fun TaskStatus.isAccessibilityActive(): Boolean = this in setOf(
+    TaskStatus.WAITING_OFFICIAL_PAGE,
+    TaskStatus.OPENING_SEARCH,
+    TaskStatus.FILLING_DEPARTURE,
+    TaskStatus.FILLING_ARRIVAL,
+    TaskStatus.FILLING_DATE,
+    TaskStatus.SUBMITTING_SEARCH,
+    TaskStatus.VALIDATING_SEARCH_RESULT,
+    TaskStatus.SELECTING_TRAIN_SEAT,
+    TaskStatus.SELECTING_PASSENGER,
+    TaskStatus.VALIDATING_ORDER,
+    TaskStatus.SUBMIT_ACTION_SENT,
+    TaskStatus.WAITING_SERVER_RESULT,
+    TaskStatus.OBSERVING,
+    TaskStatus.SEARCHING
+)
+
+internal fun taskSnapshotKey(task: TicketTask): String = listOf(
+    task.taskId,
+    task.date,
+    task.from.name,
+    task.to.name,
+    task.train.trainNo,
+    task.train.depart,
+    task.train.arrive,
+    task.seat
+).joinToString("|")

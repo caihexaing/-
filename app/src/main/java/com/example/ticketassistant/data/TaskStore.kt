@@ -57,7 +57,10 @@ class TaskStore(context: Context) {
                 (saleDateTime == null || TaskTiming.parseSaleDateTime(saleDateTime) == null))
         val status = if (invalidSaleData && storedStatus in setOf(
                 TaskStatus.ENABLED, TaskStatus.WAITING_FOR_SALE, TaskStatus.PREPARING,
-                TaskStatus.WAITING_OFFICIAL_PAGE, TaskStatus.VALIDATING_SEARCH_RESULT,
+                TaskStatus.WAITING_OFFICIAL_PAGE, TaskStatus.OPENING_SEARCH,
+                TaskStatus.FILLING_DEPARTURE, TaskStatus.FILLING_ARRIVAL,
+                TaskStatus.FILLING_DATE, TaskStatus.SUBMITTING_SEARCH,
+                TaskStatus.VALIDATING_SEARCH_RESULT,
                 TaskStatus.SELECTING_TRAIN_SEAT, TaskStatus.SELECTING_PASSENGER,
                 TaskStatus.VALIDATING_ORDER, TaskStatus.SUBMIT_ACTION_SENT,
                 TaskStatus.WAITING_SERVER_RESULT, TaskStatus.OBSERVING, TaskStatus.SEARCHING
