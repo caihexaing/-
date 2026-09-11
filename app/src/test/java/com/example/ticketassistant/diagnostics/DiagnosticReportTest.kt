@@ -23,7 +23,7 @@ class DiagnosticReportTest {
             passengerName = "蔡贺翔",
             saleState = SaleState.ALREADY_ON_SALE,
             saleDateTime = null,
-            status = TaskStatus.WAITING_OFFICIAL_PAGE,
+            status = TaskStatus.FILLING_DEPARTURE,
             lastPageState = "HOME_PAGE",
             lastAction = "已选择乘车人：蔡贺翔",
             lastEvent = "页面包含账号 13800138000",
@@ -32,7 +32,8 @@ class DiagnosticReportTest {
         )
 
         val report = buildDiagnosticReport(task, Instant.parse("2026-09-11T06:00:00Z"))
-        assertTrue(report.contains("\"status\": \"WAITING_OFFICIAL_PAGE\""))
+        assertTrue(report.contains("\"status\": \"FILLING_DEPARTURE\""))
+        assertTrue(report.contains("\"automationMode\": \"任务信息自动查询（诊断）\""))
         assertTrue(report.contains("\"lastPageState\": \"HOME_PAGE\""))
         assertTrue(report.contains("\"accessibilityEventCount\": \"2\""))
         assertTrue(report.contains("\"passenger\": \"已配置（已脱敏）\""))

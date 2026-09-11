@@ -13,8 +13,9 @@ import java.time.format.DateTimeFormatter
 /** Builds a report that is useful for debugging without exporting account or payment data. */
 fun buildDiagnosticReport(task: TicketTask, generatedAt: Instant = Instant.now()): String {
     val fields = linkedMapOf<String, String?>()
-    fields["formatVersion"] = "1"
+    fields["formatVersion"] = "2"
     fields["generatedAt"] = generatedAt.toString()
+    fields["automationMode"] = "任务信息自动查询（诊断）"
     fields["taskId"] = task.taskId
     fields["travelDate"] = task.date
     fields["from"] = task.from.name
