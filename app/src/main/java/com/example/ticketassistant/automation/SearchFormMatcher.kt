@@ -101,6 +101,23 @@ fun fieldLabelMatches(text: String, field: SearchField): Boolean {
     }
 }
 
+/**
+ * Returns true only when a label/resource context belongs to one field.
+ * A container that mentions both station fields is deliberately ambiguous.
+ */
+fun fieldContextMatches(text: String, field: SearchField): Boolean {
+    val normalized = normalizeLabel(text)
+    if (normalized.isBlank()) return false
+    val target = fieldLabelMatches(normalized, field) || resourceLabelMatches(normalized, field)
+    val opposite = oppositeField(field)?.let {
+        fieldLabelMatches(normalized, it) || resourceLabelMatches(normalized, it)
+    } == true
+    return target && !opposite
+}
+
+fun candidateBelongsToField(contextText: String?, field: SearchField): Boolean =
+    contextText?.let { fieldContextMatches(it, field) } == true
+
 fun actionLabelMatches(text: String, action: SearchAction): Boolean {
     val normalized = normalizeLabel(text)
     if (normalized.isBlank()) return false
@@ -115,17 +132,33 @@ fun actionLabelMatches(text: String, action: SearchAction): Boolean {
 
 fun findUniqueField(nodes: List<NodeDescriptor>, field: SearchField): NodeDescriptor? {
     val candidates = nodes.filter { node ->
-        node.editable && listOfNotNull(node.text, node.contentDescription, node.resourceId, node.contextText)
-            .any { value -> fieldLabelMatches(value, field) || resourceLabelMatches(value, field) }
+        if (!node.editable) return@filter false
+        val directValues = listOfNotNull(node.text, node.contentDescription, node.resourceId)
+        val context = node.contextText.orEmpty()
+        val directTarget = directValues.any { value ->
+            fieldLabelMatches(value, field) || resourceLabelMatches(value, field)
+        }
+        val directOpposite = oppositeField(field)?.let { opposite ->
+            directValues.any { value ->
+                fieldLabelMatches(value, opposite) || resourceLabelMatches(value, opposite)
+            }
+        } == true
+        val contextTarget = fieldContextMatches(context, field)
+        val contextAmbiguous = contextHasBothStationFields(context)
+        node.editable && (directTarget || contextTarget) && !directOpposite && !contextAmbiguous
     }
     return candidates.singleOrNull()
 }
 
-fun findExactCandidate(nodes: List<NodeDescriptor>, stationName: String): NodeDescriptor? {
+fun findExactCandidate(
+    nodes: List<NodeDescriptor>,
+    stationName: String,
+    field: SearchField? = null
+): NodeDescriptor? {
     return nodes.filter { node ->
         node.clickable && listOfNotNull(node.text, node.contentDescription).any {
             exactStationCandidate(it, stationName)
-        }
+        } && (field == null || candidateBelongsToField(node.contextText, field))
     }.singleOrNull()
 }
 
@@ -148,4 +181,20 @@ internal fun resourceLabelMatches(value: String, field: SearchField): Boolean {
         SearchField.ARRIVAL -> listOf("arrival", "tostation", "to_city", "endstation", "end_city").any(normalized::contains)
         SearchField.DATE -> listOf("date", "calendar", "travelday", "traindate").any(normalized::contains)
     }
+}
+
+private fun oppositeField(field: SearchField): SearchField? = when (field) {
+    SearchField.DEPARTURE -> SearchField.ARRIVAL
+    SearchField.ARRIVAL -> SearchField.DEPARTURE
+    SearchField.DATE -> null
+}
+
+private fun contextHasBothStationFields(value: String): Boolean {
+    val normalized = normalizeLabel(value)
+    if (normalized.isBlank()) return false
+    val hasDeparture = fieldLabelMatches(normalized, SearchField.DEPARTURE) ||
+        resourceLabelMatches(normalized, SearchField.DEPARTURE)
+    val hasArrival = fieldLabelMatches(normalized, SearchField.ARRIVAL) ||
+        resourceLabelMatches(normalized, SearchField.ARRIVAL)
+    return hasDeparture && hasArrival
 }

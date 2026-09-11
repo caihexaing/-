@@ -17,11 +17,22 @@ class OfficialSearchInteractor(
         field: SearchField,
         stationName: String
     ): InteractionResult {
-        val candidate = findExactCandidateNode(root, stationName)
-        if (candidate != null) return click(candidate, "选择${field.actionName()}候选站")
-
         val input = findEditableField(root, field) ?: return InteractionResult.WAITING
-        if (exactStationCandidate(input.text?.toString().orEmpty(), stationName)) {
+        val currentValue = input.text?.toString().orEmpty()
+        val candidates = findFieldScopedCandidates(root, input, field, stationName)
+        if (candidates.size > 1) {
+            record("${field.actionName()}候选站不唯一")
+            return InteractionResult.FAILED
+        }
+        if (candidates.size == 1) {
+            if (!clickNodeOrParent(candidates.single())) {
+                record("${field.actionName()}候选站点击未派发")
+                return InteractionResult.FAILED
+            }
+            record("已选择${field.actionName()}候选站，等待字段值确认")
+            return InteractionResult.WAITING
+        }
+        if (exactStationCandidate(currentValue, stationName)) {
             record("${field.actionName()}已是目标站")
             return InteractionResult.DONE
         }
@@ -101,24 +112,88 @@ class OfficialSearchInteractor(
     private fun findEditableField(root: AccessibilityNodeInfo, field: SearchField): AccessibilityNodeInfo? {
         val candidates = findNodes(root) { node ->
             if (!node.isEditable) return@findNodes false
-            val values = listOfNotNull(
+            val directValues = listOfNotNull(
                 node.text?.toString(),
                 node.contentDescription?.toString(),
                 node.hintText?.toString(),
-                node.viewIdResourceName,
-                parentContext(node)
+                node.viewIdResourceName
             )
-            values.any { fieldLabelMatches(it, field) || resourceLabelMatches(it, field) }
+            val directContext = fieldContextKind(directValues.joinToString(" "), field)
+            if (directContext == FieldContext.OPPOSITE || directContext == FieldContext.AMBIGUOUS) {
+                return@findNodes false
+            }
+            if (directContext == FieldContext.TARGET) return@findNodes true
+
+            when (nearestFieldContext(node, field)) {
+                FieldContext.TARGET -> true
+                FieldContext.NONE -> fieldContextMatches(parentContext(node), field)
+                FieldContext.OPPOSITE, FieldContext.AMBIGUOUS -> false
+            }
         }
         return candidates.singleOrNull()
     }
 
-    private fun findExactCandidateNode(root: AccessibilityNodeInfo, stationName: String): AccessibilityNodeInfo? {
-        val candidates = findNodes(root) { node ->
+    /**
+     * Station suggestions are scoped to the active editable field. A matching
+     * station elsewhere on the page is never a valid candidate for this field.
+     */
+    private fun findFieldScopedCandidates(
+        root: AccessibilityNodeInfo,
+        input: AccessibilityNodeInfo,
+        field: SearchField,
+        stationName: String
+    ): List<AccessibilityNodeInfo> {
+        val fieldContainer = findFieldContainer(input, field)
+        val matches = findNodes(root) { node ->
+            if (node.isEditable) return@findNodes false
             listOfNotNull(node.text?.toString(), node.contentDescription?.toString())
                 .any { exactStationCandidate(it, stationName) }
-        }.mapNotNull(::clickableNode).distinctBy(::nodeIdentity)
-        return candidates.singleOrNull()
+        }
+        val eligible = matches.mapNotNull { stationNode ->
+            if (hasEditableAncestor(stationNode, input)) return@mapNotNull null
+            val association = nearestFieldContext(stationNode, field)
+            val inContainer = fieldContainer?.let { isDescendantOrSelf(stationNode, it) } == true
+            when {
+                association == FieldContext.OPPOSITE || association == FieldContext.AMBIGUOUS -> null
+                association == FieldContext.TARGET && (fieldContainer == null || inContainer) -> clickableNode(stationNode)
+                association == FieldContext.NONE && input.isFocused && matches.size == 1 -> clickableNode(stationNode)
+                else -> null
+            }
+        }.distinctBy(::nodeIdentity)
+        return eligible
+    }
+
+    private fun findFieldContainer(input: AccessibilityNodeInfo, field: SearchField): AccessibilityNodeInfo? {
+        // Keep the editable node itself out of the scope. Suggestions are
+        // normally siblings inside its labelled container, not descendants of
+        // the EditText node.
+        var current: AccessibilityNodeInfo? = input.parent
+        repeat(MAX_PARENT_DEPTH) {
+            if (current == null) return@repeat
+            val localText = listOfNotNull(
+                current.text?.toString(),
+                current.contentDescription?.toString(),
+                current.hintText?.toString(),
+                current.viewIdResourceName
+            ).joinToString(" ")
+            when (fieldContextKind(localText, field)) {
+                FieldContext.TARGET -> return current
+                FieldContext.OPPOSITE, FieldContext.AMBIGUOUS -> return null
+                FieldContext.NONE -> Unit
+            }
+            current = current.parent
+        }
+        return null
+    }
+
+    private fun isDescendantOrSelf(node: AccessibilityNodeInfo, ancestor: AccessibilityNodeInfo): Boolean {
+        var current: AccessibilityNodeInfo? = node
+        repeat(MAX_PARENT_DEPTH + 1) {
+            if (current == null) return@repeat
+            if (current === ancestor || current == ancestor) return true
+            current = current.parent
+        }
+        return false
     }
 
     private fun findActionNode(root: AccessibilityNodeInfo, action: SearchAction): AccessibilityNodeInfo? {
@@ -134,13 +209,59 @@ class OfficialSearchInteractor(
 
     private fun findNodes(root: AccessibilityNodeInfo, predicate: (AccessibilityNodeInfo) -> Boolean): List<AccessibilityNodeInfo> {
         val result = mutableListOf<AccessibilityNodeInfo>()
-        fun walk(node: AccessibilityNodeInfo?) {
-            if (node == null) return
+        fun walk(node: AccessibilityNodeInfo?, includeRoot: Boolean = false) {
+            if (node == null || (!includeRoot && !node.isVisibleToUser)) return
             if (predicate(node)) result += node
             for (index in 0 until node.childCount) walk(node.getChild(index))
         }
-        walk(root)
+        walk(root, includeRoot = true)
         return result
+    }
+
+    private fun nearestFieldContext(node: AccessibilityNodeInfo, field: SearchField): FieldContext {
+        var parent = node.parent
+        repeat(MAX_PARENT_DEPTH) {
+            if (parent == null) return@repeat
+            val localText = listOfNotNull(
+                parent.text?.toString(),
+                parent.contentDescription?.toString(),
+                parent.hintText?.toString(),
+                parent.viewIdResourceName
+            ).joinToString(" ")
+            val context = fieldContextKind(localText, field)
+            if (context != FieldContext.NONE) return context
+            parent = parent.parent
+        }
+        return FieldContext.NONE
+    }
+
+    private fun fieldContextKind(value: String, field: SearchField): FieldContext {
+        val normalized = value.trim().replace(Regex("\\s+"), "")
+        if (normalized.isBlank()) return FieldContext.NONE
+        val target = fieldLabelMatches(normalized, field) || resourceLabelMatches(normalized, field)
+        val opposite = when (field) {
+            SearchField.DEPARTURE -> SearchField.ARRIVAL
+            SearchField.ARRIVAL -> SearchField.DEPARTURE
+            SearchField.DATE -> null
+        }?.let { other ->
+            fieldLabelMatches(normalized, other) || resourceLabelMatches(normalized, other)
+        } == true
+        return when {
+            target && opposite -> FieldContext.AMBIGUOUS
+            target -> FieldContext.TARGET
+            opposite -> FieldContext.OPPOSITE
+            else -> FieldContext.NONE
+        }
+    }
+
+    private fun hasEditableAncestor(node: AccessibilityNodeInfo, input: AccessibilityNodeInfo): Boolean {
+        var current: AccessibilityNodeInfo? = node.parent
+        repeat(MAX_PARENT_DEPTH) {
+            if (current == null) return@repeat
+            if (current === input || current == input || current?.isEditable == true) return true
+            current = current.parent
+        }
+        return false
     }
 
     private fun clickableNode(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
@@ -189,4 +310,6 @@ class OfficialSearchInteractor(
     companion object {
         private const val MAX_PARENT_DEPTH = 5
     }
+
+    private enum class FieldContext { NONE, TARGET, OPPOSITE, AMBIGUOUS }
 }

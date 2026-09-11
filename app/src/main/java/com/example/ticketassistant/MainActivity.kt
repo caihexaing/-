@@ -21,6 +21,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
@@ -331,7 +333,7 @@ private fun TicketApp(vm: TicketViewModel) {
                 Page.HOME -> HomeScreen(vm, busy)
                 Page.TRAINS -> TrainList(vm, busy)
                 Page.CONFIGURE -> ConfigureScreen(vm)
-                Page.TASK -> TaskScreen(vm)
+                Page.TASK -> TaskScreen(vm, Modifier.weight(1f))
             }
         }
     }
@@ -532,9 +534,10 @@ private fun ConfigureScreen(vm: TicketViewModel) {
 }
 
 @Composable
-private fun TaskScreen(vm: TicketViewModel) {
+private fun TaskScreen(vm: TicketViewModel, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val task = vm.storedTask ?: return
+    Column(modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
     val statusText = when (task.status) {
         TaskStatus.ENABLED, TaskStatus.WAITING_FOR_SALE -> "任务已启用，等待开售"
         TaskStatus.PREPARING -> "正在预热官方 12306 页面和查询连接"
@@ -637,6 +640,7 @@ private fun TaskScreen(vm: TicketViewModel) {
     OutlinedButton(onClick = { TaskScheduler(context).cancel(); TaskStore(context).clear(); vm.storedTask = null; vm.page.value = Page.HOME }, modifier = Modifier.fillMaxWidth()) { Text("停用任务") }
     Spacer(Modifier.height(12.dp))
     Text("可靠模式请在开售前保持手机已解锁、屏幕可用，并在官方 12306 保持登录。Android 16 可能限制后台唤起，因此后台尝试不能保证执行。", style = MaterialTheme.typography.bodySmall)
+    }
 }
 
 @Composable
