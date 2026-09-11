@@ -33,6 +33,7 @@ class TakeoverReasonTest {
 
     @Test fun `pending payment page is detected separately`() {
         assertTrue(isPendingPaymentPage("订单待支付 剩余 15 分钟"))
+        assertTrue(isPendingPaymentPage("订单待\n支付\n剩余 15 分钟"))
     }
 
     @Test fun `normal payment copy is not pending payment`() {

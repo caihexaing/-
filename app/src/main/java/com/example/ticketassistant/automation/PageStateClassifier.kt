@@ -6,8 +6,9 @@ enum class OfficialPageState {
 }
 
 internal fun detectOfficialPageState(text: String): OfficialPageState {
-    val normalized = text.replace(" ", "").lowercase()
-    val hasTrainLikeToken = Regex("(?:车次|[gcdztksylpn]?\\d{1,4})", RegexOption.IGNORE_CASE).containsMatchIn(normalized)
+    val normalized = text.replace(Regex("\\s+"), "").lowercase()
+    val hasTrainLikeToken = Regex("(?<![A-Za-z0-9])[gcdztksylpn]\\d{1,4}(?![A-Za-z0-9])", RegexOption.IGNORE_CASE)
+        .containsMatchIn(normalized)
     if (listOf("公告", "活动", "优惠", "温馨提示").any(normalized::contains) &&
         listOf("关闭", "知道了", "暂不").any(normalized::contains)) return OfficialPageState.POPUP
     if (listOf("订单确认", "提交订单").any(normalized::contains)) return OfficialPageState.ORDER_CONFIRM
@@ -16,9 +17,11 @@ internal fun detectOfficialPageState(text: String): OfficialPageState {
         listOf("预订", "下一步").any(normalized::contains)) return OfficialPageState.SEAT_SELECTION
     if (listOf("乘车人", "联系人").any(normalized::contains) &&
         listOf("确认", "下一步").any(normalized::contains)) return OfficialPageState.PASSENGER_SELECTION
-    if (listOf("筛选条件", "余票", "有票", "车次").any(normalized::contains) ||
-        (normalized.contains("查询车票") && hasTrainLikeToken)) return OfficialPageState.SEARCH_RESULT
-    if (listOf("首页", "我的", "订单", "车票").any(normalized::contains)) return OfficialPageState.HOME_PAGE
+    val hasResultEvidence = listOf("筛选条件", "余票", "有票").any(normalized::contains) ||
+        (hasTrainLikeToken && listOf("查询车票", "车次").any(normalized::contains))
+    val hasHomeNavigation = listOf("首页", "我的", "订单", "车票").any(normalized::contains)
+    if (hasHomeNavigation && !hasResultEvidence) return OfficialPageState.HOME_PAGE
+    if (hasResultEvidence) return OfficialPageState.SEARCH_RESULT
     if (listOf("启动", "加载", "请稍候", "正在加载").any(normalized::contains)) return OfficialPageState.LAUNCHING
     return OfficialPageState.UNKNOWN
 }

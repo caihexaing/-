@@ -264,12 +264,12 @@ internal fun matchesToken(text: String, token: String): Boolean =
     Regex("(^|[^A-Za-z0-9])${Regex.escape(token)}([^A-Za-z0-9]|$)", RegexOption.IGNORE_CASE).containsMatchIn(text)
 
 internal fun isPendingPaymentPage(text: String): Boolean {
-    val normalized = text.replace(" ", "").lowercase()
+    val normalized = text.replace(Regex("\\s+"), "").lowercase()
     return listOf("待支付", "待付款", "订单待支付", "未支付订单", "支付倒计时").any(normalized::contains)
 }
 
 internal fun isVerifiedPendingPaymentPage(text: String, task: com.example.ticketassistant.data.TicketTask): Boolean {
-    val normalized = text.replace(" ", "")
+    val normalized = text.replace(Regex("\\s+"), "")
     val dateParts = task.date.split('-')
     val hasTravelDate = dateParts.size == 3 && listOf(
         task.date,

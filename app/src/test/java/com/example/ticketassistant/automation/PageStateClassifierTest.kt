@@ -23,5 +23,10 @@ class PageStateClassifierTest {
 
     @Test fun `home search form is not treated as results`() {
         assertEquals(OfficialPageState.HOME_PAGE, detectOfficialPageState("首页 我的 订单 车票 查询车票 出发地 到达地"))
+        assertEquals(OfficialPageState.HOME_PAGE, detectOfficialPageState("首页 我的 订单 车票 查询车票 2026-09-19 出发地 到达地"))
+    }
+
+    @Test fun `search results require result evidence rather than dates alone`() {
+        assertEquals(OfficialPageState.SEARCH_RESULT, detectOfficialPageState("首页 查询车票 D5963 余票 二等座"))
     }
 }

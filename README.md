@@ -6,7 +6,7 @@
 
 `app/build/outputs/apk/debug/app-debug.apk`
 
-当前版本为 `0.3.0`（`versionCode` 12），支持 Android 8.0（API 26）及以上，目标 Android 16（API 36）。APK 包名为 `com.example.ticketassistant`。
+当前版本为 `0.3.1`（`versionCode` 13），支持 Android 8.0（API 26）及以上，目标 Android 16（API 36）。APK 包名为 `com.example.ticketassistant`。
 
 ## 构建
 

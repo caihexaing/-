@@ -49,7 +49,8 @@ class TaskStore(context: Context) {
             .getOrDefault(SaleTimeSource.UNKNOWN)
         val storedStatus = runCatching { TaskStatus.valueOf(j.optString("status", TaskStatus.ENABLED.name)) }.getOrDefault(TaskStatus.ENABLED)
         val invalidSaleData = !hasSaleState || saleState == SaleState.UNKNOWN ||
-            (saleState == SaleState.NOT_YET_ON_SALE && saleDateTime == null)
+            (saleState == SaleState.NOT_YET_ON_SALE &&
+                (saleDateTime == null || TaskTiming.parseSaleDateTime(saleDateTime) == null))
         val status = if (invalidSaleData && storedStatus in setOf(
                 TaskStatus.ENABLED, TaskStatus.WAITING_FOR_SALE, TaskStatus.PREPARING, TaskStatus.OBSERVING, TaskStatus.SEARCHING
             )) TaskStatus.DRAFT else storedStatus
