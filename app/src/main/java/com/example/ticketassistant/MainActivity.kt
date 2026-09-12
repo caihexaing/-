@@ -541,6 +541,7 @@ private fun TaskScreen(vm: TicketViewModel, modifier: Modifier = Modifier) {
     val statusText = when (task.status) {
         TaskStatus.ENABLED, TaskStatus.WAITING_FOR_SALE -> "任务已启用，等待开售"
         TaskStatus.PREPARING -> "正在预热官方 12306 页面和查询连接"
+        TaskStatus.SALE_T0 -> "已到开售时刻，正在核对当前官方结果页"
         TaskStatus.WAITING_OFFICIAL_PAGE -> "已发现余票，等待官方 12306 页面"
         TaskStatus.OPENING_SEARCH -> "正在定位官方 12306 查询入口"
         TaskStatus.FILLING_DEPARTURE -> "正在自动填写出发站"
@@ -591,6 +592,8 @@ private fun TaskScreen(vm: TicketViewModel, modifier: Modifier = Modifier) {
         Text("自动化阶段：${task.lastAutomationStage ?: "暂无"}")
         Text("当前窗口：${task.lastRootPackage ?: "暂无"}")
         Text("证据来源：${task.lastEvidenceSource ?: "暂无"}")
+        Text("结果页校验：${task.lastSearchContextStatus ?: "暂无"}")
+        task.lastMissingEvidence?.let { Text("缺少证据：$it") }
         val eventTime = task.lastAccessibilityEventAt?.let {
             java.time.Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault())
                 .format(DateTimeFormatter.ofPattern("MM-dd HH:mm:ss"))

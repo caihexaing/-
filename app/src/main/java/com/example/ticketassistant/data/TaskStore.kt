@@ -38,6 +38,11 @@ class TaskStore(context: Context) {
             task.lastAutomationStage?.let { put("lastAutomationStage", it) }
             task.lastRootPackage?.let { put("lastRootPackage", it) }
             task.lastEvidenceSource?.let { put("lastEvidenceSource", it) }
+            task.lastSearchContextStatus?.let { put("lastSearchContextStatus", it) }
+            task.lastMissingEvidence?.let { put("lastMissingEvidence", it) }
+            task.lastSearchContextAt?.let { put("lastSearchContextAt", it) }
+            task.lastSearchSnapshotFingerprint?.let { put("lastSearchSnapshotFingerprint", it) }
+            task.lastSaleT0At?.let { put("lastSaleT0At", it) }
             task.lastAccessibilityEventAt?.let { put("lastAccessibilityEventAt", it) }
             put("accessibilityEventCount", task.accessibilityEventCount)
         }
@@ -60,6 +65,7 @@ class TaskStore(context: Context) {
                 (saleDateTime == null || TaskTiming.parseSaleDateTime(saleDateTime) == null))
         val status = if (invalidSaleData && storedStatus in setOf(
                 TaskStatus.ENABLED, TaskStatus.WAITING_FOR_SALE, TaskStatus.PREPARING,
+                TaskStatus.SALE_T0,
                 TaskStatus.WAITING_OFFICIAL_PAGE, TaskStatus.OPENING_SEARCH,
                 TaskStatus.FILLING_DEPARTURE, TaskStatus.FILLING_ARRIVAL,
                 TaskStatus.FILLING_DATE, TaskStatus.SUBMITTING_SEARCH,
@@ -94,6 +100,11 @@ class TaskStore(context: Context) {
             lastAutomationStage = j.optString("lastAutomationStage").ifBlank { null },
             lastRootPackage = j.optString("lastRootPackage").ifBlank { null },
             lastEvidenceSource = j.optString("lastEvidenceSource").ifBlank { null },
+            lastSearchContextStatus = j.optString("lastSearchContextStatus").ifBlank { null },
+            lastMissingEvidence = j.optString("lastMissingEvidence").ifBlank { null },
+            lastSearchContextAt = j.optLong("lastSearchContextAt").takeIf { it > 0L },
+            lastSearchSnapshotFingerprint = j.optString("lastSearchSnapshotFingerprint").ifBlank { null },
+            lastSaleT0At = j.optLong("lastSaleT0At").takeIf { it > 0L },
             lastAccessibilityEventAt = j.optLong("lastAccessibilityEventAt").takeIf { it > 0L },
             accessibilityEventCount = j.optInt("accessibilityEventCount", 0).coerceAtLeast(0)
         )
@@ -121,7 +132,12 @@ class TaskStore(context: Context) {
         action: String? = null,
         automationStage: String? = null,
         rootPackage: String? = null,
-        evidenceSource: String? = null
+        evidenceSource: String? = null,
+        contextStatus: String? = null,
+        missingEvidence: String? = null,
+        contextAt: Long? = null,
+        snapshotFingerprint: String? = null,
+        saleT0At: Long? = null
     ) {
         val task = load() ?: return
         val now = System.currentTimeMillis()
@@ -131,8 +147,35 @@ class TaskStore(context: Context) {
             lastAutomationStage = automationStage ?: task.lastAutomationStage,
             lastRootPackage = rootPackage ?: task.lastRootPackage,
             lastEvidenceSource = evidenceSource ?: task.lastEvidenceSource,
+            lastSearchContextStatus = contextStatus ?: task.lastSearchContextStatus,
+            lastMissingEvidence = missingEvidence ?: task.lastMissingEvidence,
+            lastSearchContextAt = contextAt ?: task.lastSearchContextAt,
+            lastSearchSnapshotFingerprint = snapshotFingerprint ?: task.lastSearchSnapshotFingerprint,
+            lastSaleT0At = saleT0At ?: task.lastSaleT0At,
             lastAccessibilityEventAt = now,
             accessibilityEventCount = task.accessibilityEventCount + 1
+        ))
+    }
+
+    fun recordSaleT0(event: String) {
+        val task = load() ?: return
+        val now = System.currentTimeMillis()
+        save(task.copy(
+            status = TaskStatus.SALE_T0,
+            enabled = true,
+            lastEvent = event,
+            lastEventAt = now,
+            lastSaleT0At = now
+        ))
+    }
+
+    fun clearSearchSnapshot() {
+        val task = load() ?: return
+        save(task.copy(
+            lastSearchContextStatus = null,
+            lastMissingEvidence = null,
+            lastSearchContextAt = null,
+            lastSearchSnapshotFingerprint = null
         ))
     }
 

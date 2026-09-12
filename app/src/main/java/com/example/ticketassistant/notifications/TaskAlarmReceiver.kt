@@ -25,7 +25,10 @@ class TaskAlarmReceiver : BroadcastReceiver() {
         store.recordEvent("闹钟已触发：$phase")
         if (phase == TicketAutomationService.PHASE_PREPARE || phase == TicketAutomationService.PHASE_SALE) {
             if (task.saleState != SaleState.NOT_YET_ON_SALE) return
-            if (phase == TicketAutomationService.PHASE_SALE && task.status !in setOf(TaskStatus.WAITING_FOR_SALE, TaskStatus.ENABLED, TaskStatus.PREPARING)) return
+            if (phase == TicketAutomationService.PHASE_SALE && !isSalePhaseEligible(task.status)) {
+                store.recordEvent("开售闹钟已触发，但任务已进入终态：${task.status.name}")
+                return
+            }
             val runner = Intent(context, TicketAutomationService::class.java)
                 .putExtra(TicketAutomationService.EXTRA_PHASE, phase)
                 .putExtra(EXTRA_TASK_ID, task.taskId)
@@ -56,3 +59,20 @@ class TaskAlarmReceiver : BroadcastReceiver() {
         const val EXTRA_TASK_ID = "task_id"
     }
 }
+
+internal fun isSalePhaseEligible(status: TaskStatus): Boolean = status in setOf(
+    TaskStatus.ENABLED,
+    TaskStatus.WAITING_FOR_SALE,
+    TaskStatus.PREPARING,
+    TaskStatus.SALE_T0,
+    TaskStatus.WAITING_OFFICIAL_PAGE,
+    TaskStatus.OPENING_SEARCH,
+    TaskStatus.FILLING_DEPARTURE,
+    TaskStatus.FILLING_ARRIVAL,
+    TaskStatus.FILLING_DATE,
+    TaskStatus.SUBMITTING_SEARCH,
+    TaskStatus.VALIDATING_SEARCH_RESULT,
+    TaskStatus.SELECTING_TRAIN_SEAT,
+    TaskStatus.SELECTING_PASSENGER,
+    TaskStatus.VALIDATING_ORDER
+)

@@ -45,7 +45,14 @@ class PageStateClassifierTest {
     @Test fun `home search form is not treated as results`() {
         assertEquals(OfficialPageState.HOME_PAGE, detectOfficialPageState("首页 我的 订单 车票 查询车票 出发地 到达地"))
         assertEquals(OfficialPageState.HOME_PAGE, detectOfficialPageState("首页 我的 订单 车票 查询车票 2026-09-19 出发地 到达地"))
-        assertEquals(OfficialPageState.HOME_PAGE, detectOfficialPageState("出发地 到达地 乘车日期 查询"))
+        assertEquals(OfficialPageState.SEARCH_FORM, detectOfficialPageState("出发地 到达地 乘车日期 查询"))
+    }
+
+    @Test fun `explicit picker and loading states are distinct`() {
+        assertEquals(OfficialPageState.STATION_PICKER, detectOfficialPageState("选择出发站 站点列表 汉口 潜江"))
+        assertEquals(OfficialPageState.DATE_PICKER, detectOfficialPageState("日期选择 日历 9月19日"))
+        assertEquals(OfficialPageState.SEARCH_RESULT_LOADING, detectOfficialPageState("正在查询 加载车次"))
+        assertEquals(OfficialPageState.SEARCH_RESULT_PARTIAL, detectOfficialPageState("车次 D353 正在加载"))
     }
 
     @Test fun `search results require result evidence rather than dates alone`() {
@@ -74,5 +81,21 @@ class PageStateClassifierTest {
         assertTrue(matchesSearchContext("查询车票 2026年9月19日 汉口 潜江 D353 二等座 余票", task))
         assertFalse(matchesSearchContext("查询车票 2026-09-18 汉口 潜江 D353 二等座 余票", task))
         assertFalse(matchesSearchContext("查询车票 2026-09-19 汉口 武昌 D353 二等座 余票", task))
+    }
+
+    @Test fun `search context distinguishes missing and conflicting evidence`() {
+        val task = TicketTask(
+            date = "2026-09-19",
+            from = Station("汉口", "HKN"),
+            to = Station("潜江", "QJN"),
+            train = Train("D353", "汉口", "潜江", "07:25", "08:16", "00:51", emptyMap()),
+            seat = "二等座",
+            passengerName = "乘客",
+            saleDateTime = null
+        )
+        assertEquals(SearchContextStatus.MATCH, classifySearchContext("查询车票 2026-09-19 汉口 潜江 D353 二等座 余票", task).status)
+        assertEquals(SearchContextStatus.MISSING, classifySearchContext("查询车票 余票", task).status)
+        assertEquals(SearchContextStatus.CONFLICT, classifySearchContext("查询车票 2026-09-18 汉口 潜江 D353 二等座 余票", task).status)
+        assertEquals(SearchContextStatus.WRONG_PAGE, classifySearchContext("首页 出发地 到达地 查询车票", task).status)
     }
 }

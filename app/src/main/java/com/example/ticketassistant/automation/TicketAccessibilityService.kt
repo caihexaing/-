@@ -3,6 +3,9 @@ package com.example.ticketassistant.automation
 import android.accessibilityservice.AccessibilityService
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import androidx.core.app.NotificationCompat
@@ -16,6 +19,17 @@ import com.example.ticketassistant.data.taskSnapshotKey
  * 页面入口和每个动作都必须先被诊断记录；无法确认时停止，而不是静默等待或盲点。
  */
 class TicketAccessibilityService : AccessibilityService() {
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val staticRefresh = object : Runnable {
+        override fun run() {
+            val task = TaskStore(this@TicketAccessibilityService).load()
+            if (task?.enabled == true && task.status in STATIC_REFRESH_STATUSES &&
+                (task.status == TaskStatus.SALE_T0 || lastOfficialRootAt > 0L)) {
+                processCurrentWindow("STATIC_REFRESH")
+            }
+            mainHandler.postDelayed(this, STATIC_REFRESH_INTERVAL_MS)
+        }
+    }
     private var lastActionAt = 0L
     private var activeTaskKey: String? = null
     private var stage = Stage.WAITING_PAGE
@@ -32,12 +46,35 @@ class TicketAccessibilityService : AccessibilityService() {
     private var searchActionSent = false
     private var popupDismissSent = false
     private var fastPathWaitEvents = 0
+    private var expectedPageWaitEvents = 0
+    private var seatSelected = false
+    private var passengerSelected = false
+    private var actionWaitEvents = 0
     private val searchInteractor by lazy {
         OfficialSearchInteractor { action -> recordDiagnostic(pageState, action) }
     }
 
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        activeInstance = this
+        mainHandler.removeCallbacks(staticRefresh)
+        mainHandler.post(staticRefresh)
+    }
+
+    private fun activateSaleT0(taskId: String) {
+        val task = TaskStore(this).load()
+        if (task?.taskId == taskId && task.status == TaskStatus.SALE_T0) {
+            processCurrentWindow("SALE_T0")
+        }
+    }
+
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (event?.packageName?.toString() != OFFICIAL_PACKAGE) return
+        val eventPackage = event?.packageName?.toString()
+        if (eventPackage != OFFICIAL_PACKAGE) return
+        processCurrentWindow("ACCESSIBILITY_EVENT")
+    }
+
+    private fun processCurrentWindow(source: String) {
         val task = TaskStore(this).load() ?: return
         if (!task.enabled || task.status !in ACTIVE_STATUSES) return
 
@@ -59,6 +96,16 @@ class TicketAccessibilityService : AccessibilityService() {
             searchActionSent = false
             popupDismissSent = false
             fastPathWaitEvents = 0
+            expectedPageWaitEvents = 0
+            seatSelected = false
+            passengerSelected = false
+            actionWaitEvents = 0
+        }
+        if (task.status == TaskStatus.SALE_T0 && stage != Stage.SALE_T0 && stage != Stage.DONE) {
+            stage = Stage.SALE_T0
+            fastPathWaitEvents = 0
+            expectedPageWaitEvents = 0
+            recordDiagnostic(OfficialPageState.LAUNCHING, "收到 SALE_T0 信号，重新读取当前官方窗口", evidenceSource = "SALE_T0_SIGNAL")
         }
 
         val gate = PersistentSubmitGate(getSharedPreferences("submit_gate", MODE_PRIVATE), submitGateKey(task))
@@ -79,15 +126,24 @@ class TicketAccessibilityService : AccessibilityService() {
         if (!isOfficialRootPackage(root.packageName)) {
             recordDiagnostic(
                 OfficialPageState.UNKNOWN,
-                "事件来源与当前窗口不一致，已忽略",
+                "当前前台不是官方 12306（来源=$source），已停止自动操作",
                 rootPackage = rootPackage ?: "UNKNOWN",
                 evidenceSource = "ROOT_PACKAGE_MISMATCH"
             )
+            if (task.status != TaskStatus.PREPARING) {
+                TaskStore(this).clearSearchSnapshot()
+                takeover("官方 12306 不在前台，当前窗口为 ${rootPackage ?: "未知"}")
+            }
             return
         }
+        lastOfficialRootAt = System.currentTimeMillis()
         val text = root.textContent()
         if (text.isBlank()) {
-            handleEmptyTree("官方 12306 页面节点为空")
+            if (source == "SALE_T0") {
+                takeover("开售 T0 读取到的官方页面树为空，请手动确认 12306 页面")
+                return
+            }
+            handleEmptyTree("官方 12306 页面节点为空（来源=$source）")
             return
         }
         emptyTreeEvents = 0
@@ -104,6 +160,9 @@ class TicketAccessibilityService : AccessibilityService() {
             PopupMatcher.Result.None -> detectOfficialPageState(text)
         }
         val pendingCandidate = hasPendingPaymentCandidate(text)
+        val contextCheck = if (pageState == OfficialPageState.SEARCH_RESULT || pageState == OfficialPageState.SEARCH_RESULT_PARTIAL) {
+            classifySearchContext(text, task)
+        } else null
         recordDiagnostic(
             pageState,
             rootPackage = rootPackage,
@@ -111,7 +170,10 @@ class TicketAccessibilityService : AccessibilityService() {
                 stage == Stage.WAITING_RESULT && isPendingPaymentPage(text) -> "PENDING_PAYMENT_STRONG_CANDIDATE"
                 pendingCandidate -> "PENDING_PAYMENT_KEYWORD_ONLY"
                 else -> "NONE"
-            }
+            },
+            contextStatus = contextCheck?.status?.name,
+            missingEvidence = contextCheck?.missing?.joinToString("、"),
+            snapshotFingerprint = contextCheck?.let { searchSnapshotFingerprint(text) }
         )
         if (pageState == OfficialPageState.POPUP) {
             when (popupMatch) {
@@ -150,23 +212,39 @@ class TicketAccessibilityService : AccessibilityService() {
             handleSubmitResult(text, task, rootPackage)
             return
         }
-        if (stage == Stage.PREWARM && task.status == TaskStatus.VALIDATING_SEARCH_RESULT) {
-            if (pageState != OfficialPageState.SEARCH_RESULT) {
-                fastPathWaitEvents++
-                recordDiagnostic(
-                    pageState,
-                    "开售时刻等待预热结果页恢复（第 ${fastPathWaitEvents} 次）",
-                    evidenceSource = "SALE_FAST_PATH_WAIT"
-                )
-                if (fastPathWaitEvents >= MAX_FAST_PATH_WAIT_EVENTS) {
-                    takeover("开售时官方页面不是任务一致的预热结果页，未执行冷启动查询")
+        if (stage == Stage.SALE_T0) {
+            when (pageState) {
+                OfficialPageState.SEARCH_RESULT -> when (contextCheck?.status) {
+                    SearchContextStatus.MATCH -> {
+                        fastPathWaitEvents = 0
+                        expectedPageWaitEvents = 0
+                        stage = Stage.VALIDATING_SEARCH
+                        formWaitEvents = 0
+                        TaskStore(this).updateStatus(TaskStatus.VALIDATING_SEARCH_RESULT, "开售 T0 已确认任务一致结果页，正在定位目标车次")
+                    }
+                    SearchContextStatus.MISSING -> {
+                        waitForSearchContext(contextCheck?.missing.orEmpty())
+                        return
+                    }
+                    SearchContextStatus.CONFLICT, SearchContextStatus.WRONG_PAGE -> {
+                        takeover("开售 T0 结果页与任务冲突，未点击首页入口或返回按钮")
+                        return
+                    }
+                    null -> return
                 }
-                return
+                OfficialPageState.SEARCH_RESULT_LOADING, OfficialPageState.SEARCH_RESULT_PARTIAL -> {
+                    fastPathWaitEvents++
+                    recordDiagnostic(pageState, "开售 T0 等待结果页证据补齐（第 ${fastPathWaitEvents} 次）", evidenceSource = "SALE_FAST_PATH_WAIT")
+                    if (fastPathWaitEvents >= MAX_FAST_PATH_WAIT_EVENTS) {
+                        takeover("开售 T0 结果页证据不足，未执行冷启动查询")
+                    }
+                    return
+                }
+                else -> {
+                    takeover("开售 T0 当前不是任务一致的官方结果页（${pageState.name}），未执行返回或首页跳转")
+                    return
+                }
             }
-            fastPathWaitEvents = 0
-            stage = Stage.VALIDATING_SEARCH
-            formWaitEvents = 0
-            TaskStore(this).recordEvent("开售时刻已到，进入预热结果页快速路径")
         }
         if (pageState == OfficialPageState.PROCESSING) {
             takeover("官方 12306 正在处理，但任务尚未发送提交点击，请手动确认页面")
@@ -181,10 +259,14 @@ class TicketAccessibilityService : AccessibilityService() {
             stage = Stage.ORDER
             TaskStore(this).updateStatus(TaskStatus.VALIDATING_ORDER, "车次已预订，正在核对订单确认页")
         }
+        if (stage == Stage.PASSENGER && pageState == OfficialPageState.ORDER_CONFIRM) {
+            stage = Stage.ORDER
+            TaskStore(this).updateStatus(TaskStatus.VALIDATING_ORDER, "乘车人已确认，正在核对订单确认页")
+        }
 
         val expectedPage = when (stage) {
             Stage.WAITING_PAGE, Stage.OPEN_SEARCH, Stage.DEPARTURE, Stage.ARRIVAL,
-            Stage.DATE, Stage.SUBMIT_SEARCH, Stage.PREWARM, Stage.WAITING_RESULT, Stage.DONE -> null
+            Stage.DATE, Stage.SUBMIT_SEARCH, Stage.PREWARM, Stage.SALE_T0, Stage.WAITING_RESULT, Stage.DONE -> null
             Stage.VALIDATING_SEARCH, Stage.TRAIN -> OfficialPageState.SEARCH_RESULT
             Stage.SEAT -> OfficialPageState.SEAT_SELECTION
             Stage.PASSENGER -> OfficialPageState.PASSENGER_SELECTION
@@ -192,13 +274,23 @@ class TicketAccessibilityService : AccessibilityService() {
         }
         if (stage != Stage.DONE && System.currentTimeMillis() - lastActionAt < ACTION_COOLDOWN_MS) return
         if (expectedPage != null && pageState != expectedPage) {
+            if (pageState == OfficialPageState.SEARCH_RESULT_LOADING || pageState == OfficialPageState.SEARCH_RESULT_PARTIAL ||
+                (stage == Stage.SEAT && pageState == OfficialPageState.SEARCH_RESULT) ||
+                (stage == Stage.PASSENGER && pageState == OfficialPageState.SEAT_SELECTION) ||
+                (stage == Stage.ORDER && pageState == OfficialPageState.PASSENGER_SELECTION)) {
+                expectedPageWaitEvents++
+                recordDiagnostic(pageState, "等待页面刷新（当前 ${pageState.name}，预期 ${expectedPage.name}，第 ${expectedPageWaitEvents} 次）", evidenceSource = "PAGE_REFRESH_WAIT")
+                if (expectedPageWaitEvents < MAX_PAGE_REFRESH_WAIT_EVENTS) return
+            }
             takeover("官方 12306 页面与预期不一致（当前 ${pageState.name}，预期 ${expectedPage.name}），已停止自动操作")
             return
         }
+        expectedPageWaitEvents = 0
 
         when (stage) {
             Stage.WAITING_PAGE -> handleWaitingPage(root, text, task)
             Stage.PREWARM -> handlePrewarm(text, task)
+            Stage.SALE_T0 -> Unit
             Stage.OPEN_SEARCH -> handleOpeningSearch(root, text)
             Stage.DEPARTURE -> handleStationField(root, SearchField.DEPARTURE, task.from.name) {
                 stage = Stage.ARRIVAL
@@ -212,27 +304,50 @@ class TicketAccessibilityService : AccessibilityService() {
             Stage.SUBMIT_SEARCH -> handleSearchSubmission(root, text, task)
             Stage.VALIDATING_SEARCH -> validateAndSelectTrain(root, text, task)
             Stage.TRAIN -> {
-                if (!matchesExecutionSearchContext(text, task)) {
-                    takeover("查询结果页字段与任务不一致，未点击车次")
-                } else if (clickTrain(root, task)) {
-                    stage = Stage.SEAT
-                    TaskStore(this).updateStatus(TaskStatus.SELECTING_TRAIN_SEAT, "已定位目标车次，等待席别页面")
-                } else {
-                    takeover("已核对查询结果，但未找到目标车次对应的可点击预订控件")
+                val check = classifySearchContext(text, task)
+                when (check.status) {
+                    SearchContextStatus.MATCH -> {
+                        if (clickTrain(root, task)) {
+                            stage = Stage.SEAT
+                            TaskStore(this).updateStatus(TaskStatus.SELECTING_TRAIN_SEAT, "已定位目标车次，等待席别页面")
+                        } else {
+                            takeover("已核对查询结果，但未找到目标车次对应的可点击预订控件")
+                        }
+                    }
+                    SearchContextStatus.MISSING -> waitForSearchContext(check.missing)
+                    SearchContextStatus.CONFLICT -> takeover("查询结果页字段与任务冲突，未点击车次")
+                    SearchContextStatus.WRONG_PAGE -> takeover("当前不是查询结果页，未点击车次")
                 }
             }
             Stage.SEAT -> {
-                if (clickSeatAndContinue(root, task.seat)) {
-                    stage = Stage.PASSENGER
-                    TaskStore(this).updateStatus(TaskStatus.SELECTING_PASSENGER, "已选择目标席别，等待乘车人页面")
-                } else {
-                    takeover("未找到目标席别对应的可点击控件，未继续操作")
+                when (selectSeatStep(root, task.seat)) {
+                    InteractionResult.DONE -> {
+                        actionWaitEvents = 0
+                        stage = Stage.PASSENGER
+                        TaskStore(this).updateStatus(TaskStatus.SELECTING_PASSENGER, "已刷新页面并进入乘车人选择")
+                    }
+                    InteractionResult.WAITING -> {
+                        actionWaitEvents++
+                        recordDiagnostic(pageState, "等待席别页面刷新或继续控件（第 ${actionWaitEvents} 次）", evidenceSource = "SEAT_PAGE_REFRESH")
+                        if (actionWaitEvents >= MAX_ACTION_WAIT_EVENTS) takeover("未找到目标席别或席别页面继续控件")
+                    }
+                    InteractionResult.FAILED -> takeover("目标席别控件动作未派发，未继续操作")
                 }
             }
             Stage.PASSENGER -> when (selectPassengerAndContinue(root, task.passengerName)) {
                 PassengerResult.SELECTED -> {
+                    actionWaitEvents = 0
+                    TaskStore(this).recordEvent("已选择唯一同名乘车人，等待刷新后点击继续")
+                }
+                PassengerResult.CONTINUED -> {
+                    actionWaitEvents = 0
                     stage = Stage.ORDER
-                    TaskStore(this).updateStatus(TaskStatus.VALIDATING_ORDER, "已选择唯一同名乘车人，等待订单确认页")
+                    TaskStore(this).updateStatus(TaskStatus.VALIDATING_ORDER, "已刷新页面并进入订单确认页")
+                }
+                PassengerResult.WAITING -> {
+                    actionWaitEvents++
+                    recordDiagnostic(pageState, "等待乘车人列表或继续控件（第 ${actionWaitEvents} 次）", evidenceSource = "PASSENGER_PAGE_REFRESH")
+                    if (actionWaitEvents >= MAX_ACTION_WAIT_EVENTS) takeover("未找到唯一乘车人或乘车人页面继续控件")
                 }
                 PassengerResult.AMBIGUOUS -> takeover("官方 12306 中存在多个同名乘车人，请手动选择")
                 PassengerResult.NOT_FOUND -> takeover("官方 12306 中找不到指定乘车人，请手动确认")
@@ -266,9 +381,15 @@ class TicketAccessibilityService : AccessibilityService() {
         }
     }
 
+    override fun onDestroy() {
+        mainHandler.removeCallbacks(staticRefresh)
+        if (activeInstance === this) activeInstance = null
+        super.onDestroy()
+    }
+
     private fun handleWaitingPage(root: AccessibilityNodeInfo, text: String, task: TicketTask) {
         when (pageState) {
-            OfficialPageState.HOME_PAGE -> {
+            OfficialPageState.HOME_PAGE, OfficialPageState.SEARCH_FORM -> {
                 stage = Stage.OPEN_SEARCH
                 formStartedAt = System.currentTimeMillis()
                 formWaitEvents = 0
@@ -280,6 +401,8 @@ class TicketAccessibilityService : AccessibilityService() {
                 TaskStore(this).updateStatus(TaskStatus.VALIDATING_SEARCH_RESULT, "正在核对官方查询结果并定位目标车次")
                 validateAndSelectTrain(root, text, task)
             }
+            OfficialPageState.SEARCH_RESULT_LOADING, OfficialPageState.SEARCH_RESULT_PARTIAL ->
+                waitForFormProgress("等待官方查询结果页加载")
             else -> waitForFormProgress("等待官方 12306 查询页面")
         }
     }
@@ -287,23 +410,33 @@ class TicketAccessibilityService : AccessibilityService() {
     private fun handlePrewarm(text: String, task: TicketTask) {
         when (pageState) {
             OfficialPageState.SEARCH_RESULT -> {
-                if (matchesExecutionSearchContext(text, task)) {
+                val check = classifySearchContext(text, task)
+                recordDiagnostic(
+                    pageState,
+                    contextStatus = check.status.name,
+                    missingEvidence = check.missing.joinToString("、"),
+                    snapshotFingerprint = searchSnapshotFingerprint(text),
+                    evidenceSource = "PREWARM_CONTEXT"
+                )
+                if (check.status == SearchContextStatus.MATCH) {
                     recordDiagnostic(
                         pageState,
                         "任务一致的官方结果页已预热，等待开售",
                         evidenceSource = "PREWARM_READY"
                     )
                     TaskStore(this).recordEvent("官方结果页已预热：开售时将直接定位目标车次")
-                } else {
+                } else if (check.status == SearchContextStatus.MISSING) {
                     recordDiagnostic(
                         pageState,
-                        "官方结果页与任务不一致，等待调整",
+                        "官方结果页证据不完整，等待用户补齐：${check.missing.joinToString("、")}",
                         evidenceSource = "PREWARM_CONTEXT_MISMATCH"
                     )
-                    TaskStore(this).recordEvent("官方结果页与任务日期、站点或车次不一致，请在开售前调整")
+                    TaskStore(this).recordEvent("官方结果页证据不完整，请在开售前保持日期、站点、车次和席别可见")
+                } else {
+                    TaskStore(this).recordEvent("预热页面与任务冲突或不是结果页，开售时将要求人工接管")
                 }
             }
-            OfficialPageState.HOME_PAGE -> {
+            OfficialPageState.HOME_PAGE, OfficialPageState.SEARCH_FORM -> {
                 recordDiagnostic(
                     pageState,
                     "官方首页已打开，请在开售前准备任务一致的结果页",
@@ -325,7 +458,7 @@ class TicketAccessibilityService : AccessibilityService() {
                 TaskStore(this).updateStatus(TaskStatus.VALIDATING_SEARCH_RESULT, "正在核对官方查询结果并定位目标车次")
                 validateAndSelectTrain(root, text, task)
             }
-            OfficialPageState.HOME_PAGE -> {
+            OfficialPageState.HOME_PAGE, OfficialPageState.SEARCH_FORM -> {
                 if (hasSearchForm(text)) {
                     stage = Stage.DEPARTURE
                     TaskStore(this).updateStatus(TaskStatus.FILLING_DEPARTURE, "正在自动填写出发站")
@@ -392,7 +525,7 @@ class TicketAccessibilityService : AccessibilityService() {
             validateAndSelectTrain(root, text, task)
             return
         }
-        if (pageState != OfficialPageState.HOME_PAGE) {
+        if (pageState != OfficialPageState.HOME_PAGE && pageState != OfficialPageState.SEARCH_FORM) {
             waitForFormProgress("查询已发送，等待官方结果页")
             return
         }
@@ -430,12 +563,47 @@ class TicketAccessibilityService : AccessibilityService() {
         }
     }
 
+    private fun waitForSearchContext(missing: List<String>) {
+        fastPathWaitEvents++
+        val detail = missing.ifEmpty { listOf("结果页字段") }.joinToString("、")
+        recordDiagnostic(
+            pageState,
+            "等待结果页证据补齐：$detail（第 ${fastPathWaitEvents} 次）",
+            evidenceSource = "SEARCH_CONTEXT_MISSING",
+            missingEvidence = detail
+        )
+        if (fastPathWaitEvents >= MAX_RESULT_CONTEXT_WAIT_EVENTS) {
+            takeover("官方结果页证据持续缺失：$detail")
+        } else {
+            TaskStore(this).recordEvent("等待官方结果页证据补齐：$detail")
+        }
+    }
+
     private fun validateAndSelectTrain(root: AccessibilityNodeInfo, text: String, task: TicketTask) {
         TaskStore(this).updateStatus(TaskStatus.VALIDATING_SEARCH_RESULT, "正在核对官方查询结果并定位目标车次")
-        if (!matchesExecutionSearchContext(text, task)) {
-            if (navigateToSearchForm(root)) return
-            takeover("官方查询结果与任务不一致，未点击车次")
-            return
+        val check = classifySearchContext(text, task)
+        recordDiagnostic(
+            pageState,
+            contextStatus = check.status.name,
+            missingEvidence = check.missing.joinToString("、"),
+            evidenceSource = "SEARCH_CONTEXT_CHECK"
+        )
+        when (check.status) {
+            SearchContextStatus.MISSING -> {
+                waitForSearchContext(check.missing)
+                return
+            }
+            SearchContextStatus.CONFLICT -> {
+                TaskStore(this).clearSearchSnapshot()
+                takeover("官方查询结果与任务冲突（${check.conflicts.joinToString("、")})，未点击车次")
+                return
+            }
+            SearchContextStatus.WRONG_PAGE -> {
+                TaskStore(this).clearSearchSnapshot()
+                takeover("当前不是官方查询结果页，未点击首页入口或返回按钮")
+                return
+            }
+            SearchContextStatus.MATCH -> Unit
         }
         stage = Stage.TRAIN
         TaskStore(this).updateStatus(TaskStatus.SELECTING_TRAIN_SEAT, "已核对查询结果页，正在定位目标车次")
@@ -447,42 +615,8 @@ class TicketAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun navigateToSearchForm(root: AccessibilityNodeInfo): Boolean {
-        if (navigationAttempted) return false
-        navigationAttempted = true
-        when (searchInteractor.openTickets(root)) {
-            InteractionResult.DONE -> {
-                stage = Stage.OPEN_SEARCH
-                formStartedAt = System.currentTimeMillis()
-                formWaitEvents = 0
-                lastActionAt = System.currentTimeMillis()
-                TaskStore(this).updateStatus(TaskStatus.OPENING_SEARCH, "当前结果页不是任务目标，正在返回查询表单")
-                return true
-            }
-            InteractionResult.FAILED -> return false
-            InteractionResult.WAITING -> Unit
-        }
-        if (performGlobalAction(GLOBAL_ACTION_BACK)) {
-            stage = Stage.OPEN_SEARCH
-            formStartedAt = System.currentTimeMillis()
-            formWaitEvents = 0
-            lastActionAt = System.currentTimeMillis()
-            recordDiagnostic(pageState, "已返回官方查询表单")
-            TaskStore(this).updateStatus(TaskStatus.OPENING_SEARCH, "正在返回官方查询表单")
-            return true
-        }
-        return false
-    }
-
     private fun matchesExecutionSearchContext(text: String, task: TicketTask): Boolean {
-        if (detectOfficialPageState(text) != OfficialPageState.SEARCH_RESULT) return false
-        val normalized = normalizeText(text)
-        val routeVisible = normalized.contains(normalizeText(task.from.name)) &&
-            normalized.contains(normalizeText(task.to.name))
-        val routeKnown = routeVisible ||
-            (SearchField.DEPARTURE in formEvidence && SearchField.ARRIVAL in formEvidence)
-        val dateKnown = matchesTravelDate(text, task.date) || SearchField.DATE in formEvidence
-        return matchesToken(text, task.train.trainNo) && routeKnown && dateKnown
+        return classifySearchContext(text, task).status == SearchContextStatus.MATCH
     }
 
     private fun handleSubmitResult(text: String, task: TicketTask, rootPackage: String?) {
@@ -535,36 +669,48 @@ class TicketAccessibilityService : AccessibilityService() {
         return clicked
     }
 
-    private fun clickSeatAndContinue(root: AccessibilityNodeInfo, seat: String): Boolean {
+    private fun selectSeatStep(root: AccessibilityNodeInfo, seat: String): InteractionResult {
+        if (seatSelected) {
+            val next = findActionNode(root, listOf("预订", "下一步", "确认")) ?: return InteractionResult.WAITING
+            if (!clickNodeOrParent(next)) return InteractionResult.FAILED
+            seatSelected = false
+            lastActionAt = System.currentTimeMillis()
+            recordDiagnostic(pageState, "已刷新席别页面并点击继续")
+            return InteractionResult.DONE
+        }
         val pageText = root.textContent()
         val unavailable = Regex("${Regex.escape(seat)}.{0,12}(?:无票|无|--|\\*)").containsMatchIn(pageText)
         if (unavailable) {
             takeover("官方 12306 中所选席别当前无票，请手动选择")
-            return false
+            return InteractionResult.FAILED
         }
         val matches = findTextNodes(root) { value -> normalizeText(value) == normalizeText(seat) }
             .filter { it.childCount == 0 }
-        if (matches.size != 1) return false
-        if (!clickNodeOrParent(matches.first())) return false
+        if (matches.size != 1) return InteractionResult.WAITING
+        if (!clickNodeOrParent(matches.first())) return InteractionResult.FAILED
+        seatSelected = true
         lastActionAt = System.currentTimeMillis()
         recordDiagnostic(pageState, "已点击席别：$seat")
-        findActionNode(root, listOf("预订", "下一步", "确认"))?.let {
-            if (clickNodeOrParent(it)) recordDiagnostic(pageState, "已点击席别页面继续")
-        }
-        return true
+        return InteractionResult.WAITING
     }
 
     private fun selectPassengerAndContinue(root: AccessibilityNodeInfo, passenger: String): PassengerResult {
+        if (passengerSelected) {
+            val next = findActionNode(root, listOf("确认", "下一步")) ?: return PassengerResult.WAITING
+            if (!clickNodeOrParent(next)) return PassengerResult.NOT_FOUND
+            passengerSelected = false
+            lastActionAt = System.currentTimeMillis()
+            recordDiagnostic(pageState, "已刷新乘车人页面并点击继续")
+            return PassengerResult.CONTINUED
+        }
         val matches = findTextNodes(root) { value -> normalizeText(value) == normalizeText(passenger) }
             .filter { it.childCount == 0 }
-        if (matches.isEmpty()) return PassengerResult.NOT_FOUND
+        if (matches.isEmpty()) return PassengerResult.WAITING
         if (matches.size > 1) return PassengerResult.AMBIGUOUS
         if (!clickNodeOrParent(matches.first())) return PassengerResult.NOT_FOUND
+        passengerSelected = true
         lastActionAt = System.currentTimeMillis()
         recordDiagnostic(pageState, "已选择目标乘车人（姓名已脱敏）")
-        findActionNode(root, listOf("确认", "下一步"))?.let {
-            if (clickNodeOrParent(it)) recordDiagnostic(pageState, "已点击乘车人页面继续")
-        }
         return PassengerResult.SELECTED
     }
 
@@ -661,6 +807,8 @@ class TicketAccessibilityService : AccessibilityService() {
         recordDiagnostic(OfficialPageState.UNKNOWN, "$reason（连续 ${emptyTreeEvents} 次）")
         if (emptyTreeEvents >= MAX_EMPTY_TREE_EVENTS) {
             takeover("连续多次无法读取官方 12306 页面，已停止自动操作；请确认无障碍服务已启用")
+        } else if (TaskStore(this).load()?.status == TaskStatus.SALE_T0) {
+            TaskStore(this).recordEvent("开售 T0 等待官方窗口节点恢复")
         } else {
             TaskStore(this).updateStatus(TaskStatus.WAITING_OFFICIAL_PAGE, reason)
         }
@@ -670,14 +818,21 @@ class TicketAccessibilityService : AccessibilityService() {
         page: OfficialPageState,
         action: String? = null,
         rootPackage: String? = null,
-        evidenceSource: String? = null
+        evidenceSource: String? = null,
+        contextStatus: String? = null,
+        missingEvidence: String? = null,
+        snapshotFingerprint: String? = null
     ) {
         TaskStore(this).recordAccessibilityEvent(
             pageState = page.name,
             action = action,
             automationStage = stage.name,
             rootPackage = rootPackage,
-            evidenceSource = evidenceSource
+            evidenceSource = evidenceSource,
+            contextStatus = contextStatus,
+            missingEvidence = missingEvidence,
+            contextAt = if (contextStatus != null) System.currentTimeMillis() else null,
+            snapshotFingerprint = snapshotFingerprint
         )
     }
 
@@ -726,6 +881,7 @@ class TicketAccessibilityService : AccessibilityService() {
 
     private fun stageFor(status: TaskStatus): Stage = when (status) {
         TaskStatus.PREPARING -> Stage.PREWARM
+        TaskStatus.SALE_T0 -> Stage.SALE_T0
         TaskStatus.WAITING_OFFICIAL_PAGE, TaskStatus.OBSERVING, TaskStatus.SEARCHING -> Stage.WAITING_PAGE
         TaskStatus.OPENING_SEARCH -> Stage.OPEN_SEARCH
         TaskStatus.FILLING_DEPARTURE -> Stage.DEPARTURE
@@ -742,6 +898,32 @@ class TicketAccessibilityService : AccessibilityService() {
 
     companion object {
         const val OFFICIAL_PACKAGE = "com.MobileTicket"
+        @Volatile private var activeInstance: TicketAccessibilityService? = null
+        @Volatile private var lastOfficialRootAt: Long = 0L
+
+        fun signalSaleT0(context: Context, taskId: String) {
+            val service = activeInstance
+            if (service == null) {
+                TaskStore(context).updateStatus(TaskStatus.TAKEOVER, "开售时无障碍服务实例不可用，请手动打开官方 12306")
+                return
+            }
+            service.mainHandler.post { service.activateSaleT0(taskId) }
+        }
+
+        fun hasRecentOfficialWindow(context: Context, maxAgeMs: Long = 30_000L): Boolean {
+            val task = TaskStore(context).load() ?: return false
+            val eventAt = task.lastAccessibilityEventAt ?: return false
+            return activeInstance != null && task.lastRootPackage == OFFICIAL_PACKAGE &&
+                task.lastPageState in setOf(
+                    OfficialPageState.HOME_PAGE.name,
+                    OfficialPageState.SEARCH_FORM.name,
+                    OfficialPageState.SEARCH_RESULT.name,
+                    OfficialPageState.SEARCH_RESULT_PARTIAL.name,
+                    OfficialPageState.SEARCH_RESULT_LOADING.name
+                ) && System.currentTimeMillis() - eventAt <= maxAgeMs &&
+                System.currentTimeMillis() - lastOfficialRootAt <= maxAgeMs
+        }
+
         private const val CHANNEL = "ticket_takeover"
         private const val NOTIFICATION_ID = 102
         private const val ACTION_COOLDOWN_MS = 900L
@@ -750,11 +932,31 @@ class TicketAccessibilityService : AccessibilityService() {
         private const val FORM_TIMEOUT_MS = 10_000L
         private const val MAX_UNKNOWN_RESULT_EVENTS = 3
         private const val MAX_FAST_PATH_WAIT_EVENTS = 3
+        private const val MAX_RESULT_CONTEXT_WAIT_EVENTS = 4
+        private const val MAX_PAGE_REFRESH_WAIT_EVENTS = 4
+        private const val MAX_ACTION_WAIT_EVENTS = 4
+        private const val STATIC_REFRESH_INTERVAL_MS = 750L
+        private val STATIC_REFRESH_STATUSES = setOf(
+            TaskStatus.SALE_T0,
+            TaskStatus.WAITING_OFFICIAL_PAGE,
+            TaskStatus.OPENING_SEARCH,
+            TaskStatus.FILLING_DEPARTURE,
+            TaskStatus.FILLING_ARRIVAL,
+            TaskStatus.FILLING_DATE,
+            TaskStatus.SUBMITTING_SEARCH,
+            TaskStatus.VALIDATING_SEARCH_RESULT,
+            TaskStatus.SELECTING_TRAIN_SEAT,
+            TaskStatus.SELECTING_PASSENGER,
+            TaskStatus.VALIDATING_ORDER,
+            TaskStatus.SUBMIT_ACTION_SENT,
+            TaskStatus.WAITING_SERVER_RESULT
+        )
         private const val MAX_EVIDENCE_LENGTH = 8_000
         private const val MAX_PENDING_EVIDENCE_EVENTS = 5
         private const val PENDING_EVIDENCE_WINDOW_MS = 10_000L
         private val ACTIVE_STATUSES = setOf(
             TaskStatus.PREPARING,
+            TaskStatus.SALE_T0,
             TaskStatus.WAITING_OFFICIAL_PAGE,
             TaskStatus.OPENING_SEARCH,
             TaskStatus.FILLING_DEPARTURE,
@@ -773,10 +975,10 @@ class TicketAccessibilityService : AccessibilityService() {
     }
 
     private enum class Stage {
-        WAITING_PAGE, PREWARM, OPEN_SEARCH, DEPARTURE, ARRIVAL, DATE, SUBMIT_SEARCH,
+        WAITING_PAGE, PREWARM, SALE_T0, OPEN_SEARCH, DEPARTURE, ARRIVAL, DATE, SUBMIT_SEARCH,
         VALIDATING_SEARCH, TRAIN, SEAT, PASSENGER, ORDER, WAITING_RESULT, DONE
     }
-    private enum class PassengerResult { SELECTED, AMBIGUOUS, NOT_FOUND }
+    private enum class PassengerResult { SELECTED, CONTINUED, WAITING, AMBIGUOUS, NOT_FOUND }
     private enum class SubmitResult { CLICKED, NO_BUTTON, ALREADY_LOCKED, CLICK_REJECTED }
 }
 
@@ -796,6 +998,11 @@ internal fun isPendingPaymentConfirmationAllowed(
     isVerifiedPendingPaymentPage(evidence, task)
 
 internal fun normalizeText(text: String): String = text.replace(Regex("\\s+"), "").lowercase()
+
+internal fun searchSnapshotFingerprint(text: String): String {
+    val digest = java.security.MessageDigest.getInstance("SHA-256").digest(normalizeText(text).toByteArray())
+    return digest.joinToString("") { "%02x".format(it) }.take(16)
+}
 
 /** Strong page-context check; the keyword alone is only a diagnostic candidate. */
 internal fun isPendingPaymentPage(text: String): Boolean {

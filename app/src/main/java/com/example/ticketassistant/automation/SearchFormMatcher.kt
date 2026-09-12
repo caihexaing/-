@@ -33,6 +33,54 @@ enum class SearchStage {
     RESULT
 }
 
+enum class SearchContextStatus { MATCH, MISSING, CONFLICT, WRONG_PAGE }
+
+data class SearchContextCheck(
+    val status: SearchContextStatus,
+    val missing: List<String> = emptyList(),
+    val conflicts: List<String> = emptyList()
+)
+
+/** Classifies the current result-page evidence without allowing a missing field to become a mismatch. */
+fun classifySearchContext(text: String, task: com.example.ticketassistant.data.TicketTask): SearchContextCheck {
+    if (detectOfficialPageState(text) != OfficialPageState.SEARCH_RESULT) {
+        return SearchContextCheck(SearchContextStatus.WRONG_PAGE)
+    }
+    val normalized = normalizeText(text)
+    val missing = mutableListOf<String>()
+    val conflicts = mutableListOf<String>()
+    val from = normalizeText(task.from.name)
+    val to = normalizeText(task.to.name)
+    val hasFrom = normalized.contains(from)
+    val hasTo = normalized.contains(to)
+    if (!hasFrom) missing += "出发站:${task.from.name}"
+    if (!hasTo) missing += "到达站:${task.to.name}"
+    if (hasFrom.xor(hasTo)) conflicts += "路线字段不完整"
+    val dateMatches = matchesTravelDate(text, task.date)
+    val hasDateToken = Regex("(?:\\d{4}年\\d{1,2}月\\d{1,2}日|\\d{4}[-/]\\d{1,2}[-/]\\d{1,2}|\\d{1,2}月\\d{1,2}日)")
+        .containsMatchIn(text.replace(Regex("\\s+"), ""))
+    when {
+        dateMatches -> Unit
+        hasDateToken -> conflicts += "乘车日期不一致"
+        else -> missing += "乘车日期:${task.date}"
+    }
+    if (!matchesToken(text, task.train.trainNo)) {
+        val trainLike = Regex("(?<![A-Za-z0-9])[gcdztksylpn]\\d{1,4}(?![A-Za-z0-9])", RegexOption.IGNORE_CASE)
+            .containsMatchIn(normalized)
+        if (trainLike) conflicts += "车次不一致:${task.train.trainNo}" else missing += "车次:${task.train.trainNo}"
+    }
+    if (!normalized.contains(normalizeText(task.seat))) {
+        val otherSeat = listOf("商务座", "一等座", "二等座", "高级软卧", "软卧", "硬卧", "硬座", "无座")
+            .firstOrNull { normalized.contains(normalizeText(it)) }
+        if (otherSeat == null) missing += "席别:${task.seat}" else conflicts += "席别不一致"
+    }
+    return when {
+        conflicts.isNotEmpty() -> SearchContextCheck(SearchContextStatus.CONFLICT, missing, conflicts)
+        missing.isNotEmpty() -> SearchContextCheck(SearchContextStatus.MISSING, missing, conflicts)
+        else -> SearchContextCheck(SearchContextStatus.MATCH)
+    }
+}
+
 fun nextSearchStage(stage: SearchStage, page: OfficialPageState, action: InteractionResult): SearchStage {
     if (action != InteractionResult.DONE) return stage
     return when (stage) {

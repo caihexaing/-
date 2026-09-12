@@ -25,6 +25,7 @@ class TaskRestoreReceiver : BroadcastReceiver() {
         }
         if (task.status in setOf(
                 TaskStatus.WAITING_OFFICIAL_PAGE,
+                TaskStatus.SALE_T0,
                 TaskStatus.OPENING_SEARCH,
                 TaskStatus.FILLING_DEPARTURE,
                 TaskStatus.FILLING_ARRIVAL,

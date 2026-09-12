@@ -60,10 +60,14 @@ class TicketAutomationService : Service() {
                 store.recordEvent("准备阶段：正在预热只读查询会话并唤起官方 12306")
                 updateNotification("已进入开售准备，正在预热官方页面")
                 startSessionWarmup(task, store)
-                OfficialAppLauncher(this).launch().onFailure {
-                    store.updateStatus(TaskStatus.TAKEOVER, "官方 12306 打开失败", it.message)
-                    message("无法打开官方 12306：${it.message ?: "请手动打开"}")
-                    stopSelf()
+                if (!TicketAccessibilityService.hasRecentOfficialWindow(this)) {
+                    OfficialAppLauncher(this).launch().onFailure {
+                        store.updateStatus(TaskStatus.TAKEOVER, "官方 12306 打开失败", it.message)
+                        message("无法打开官方 12306：${it.message ?: "请手动打开"}")
+                        stopSelf()
+                    }
+                } else {
+                    store.recordEvent("准备阶段检测到官方 12306 已在前台，保留当前页面")
                 }
             }
             PHASE_SALE -> {
@@ -73,20 +77,11 @@ class TicketAutomationService : Service() {
                     stopSelfResult(startId)
                     return START_NOT_STICKY
                 }
-                if (task.status in setOf(TaskStatus.ENABLED, TaskStatus.WAITING_FOR_SALE, TaskStatus.PREPARING)) {
-                    store.updateStatus(
-                        TaskStatus.VALIDATING_SEARCH_RESULT,
-                        "已到开售时刻，进入预热结果页快速路径；旁路查询不阻塞页面操作"
-                    )
-                }
+                store.recordSaleT0("已到开售时刻（SALE_T0），保留当前官方页面并开始快速校验")
                 store.recordEvent("开售阶段：旁路查询已启动，官方页面操作不等待查询结果")
                 updateNotification("已到开售时间，正在定位预热的官方结果页")
                 startSideChannelProbe(task, store)
-                OfficialAppLauncher(this).launch().onFailure {
-                    store.updateStatus(TaskStatus.TAKEOVER, "官方 12306 打开失败", it.message)
-                    message("无法打开官方 12306：${it.message ?: "请手动打开"}")
-                    stopSelf()
-                }
+                TicketAccessibilityService.signalSaleT0(this, task.taskId)
             }
             else -> {
                 store.recordEvent("未知执行阶段：$phase")

@@ -1,7 +1,8 @@
 package com.example.ticketassistant.automation
 
 enum class OfficialPageState {
-    LAUNCHING, HOME_PAGE, SEARCH_RESULT, SEAT_SELECTION,
+    LAUNCHING, HOME_PAGE, SEARCH_FORM, STATION_PICKER, DATE_PICKER,
+    SEARCH_RESULT_LOADING, SEARCH_RESULT_PARTIAL, SEARCH_RESULT, SEAT_SELECTION,
     PASSENGER_SELECTION, ORDER_CONFIRM, PENDING_PAYMENT,
     PROCESSING, SUBMIT_REJECTED, POPUP, UNKNOWN
 }
@@ -26,7 +27,8 @@ internal fun detectOfficialPageState(text: String): OfficialPageState {
     if (listOf("乘车人", "联系人").any(normalized::contains) &&
         listOf("确认", "下一步").any(normalized::contains)) return OfficialPageState.PASSENGER_SELECTION
     val hasResultEvidence = listOf("筛选条件", "余票", "有票").any(normalized::contains) ||
-        (hasTrainLikeToken && listOf("查询车票", "车次").any(normalized::contains))
+        (hasTrainLikeToken && normalized.contains("查询车票")) ||
+        (hasTrainLikeToken && normalized.contains("车次") && normalized.contains("余票"))
     val homeNavigationCount = listOf("首页", "我的", "订单", "车票").count(normalized::contains)
     val hasHomeNavigation = homeNavigationCount >= 2 &&
         listOf("查询车票", "搜索车票", "出发地", "到达地", "乘车日期", "出发日期", "火车票")
@@ -34,7 +36,18 @@ internal fun detectOfficialPageState(text: String): OfficialPageState {
     val formFields = listOf("出发地", "出发站", "到达地", "到达站", "乘车日期", "出发日期")
         .count(normalized::contains)
     val hasSearchForm = formFields >= 2 && listOf("查询", "搜索车票", "查询车票").any(normalized::contains)
-    if ((hasHomeNavigation || hasSearchForm) && !hasResultEvidence) return OfficialPageState.HOME_PAGE
+    if (listOf("选择出发站", "选择到达站", "站点列表", "热门站点", "车站选择").any(normalized::contains)) {
+        return OfficialPageState.STATION_PICKER
+    }
+    if (listOf("日期选择", "选择日期", "日历").any(normalized::contains)) return OfficialPageState.DATE_PICKER
+    if (listOf("查询中", "正在查询", "加载车次", "正在加载车次").any(normalized::contains)) {
+        return OfficialPageState.SEARCH_RESULT_LOADING
+    }
+    if ((hasTrainLikeToken || normalized.contains("车次")) && !hasResultEvidence) {
+        return OfficialPageState.SEARCH_RESULT_PARTIAL
+    }
+    if (hasHomeNavigation && !hasResultEvidence) return OfficialPageState.HOME_PAGE
+    if (hasSearchForm && !hasResultEvidence) return OfficialPageState.SEARCH_FORM
     if (hasResultEvidence) return OfficialPageState.SEARCH_RESULT
     if (listOf("公告", "活动", "优惠", "温馨提示").any(normalized::contains) &&
         listOf("关闭", "知道了", "暂不").any(normalized::contains)) return OfficialPageState.POPUP

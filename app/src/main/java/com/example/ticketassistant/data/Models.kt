@@ -35,6 +35,11 @@ data class TicketTask(
     val lastAutomationStage: String? = null,
     val lastRootPackage: String? = null,
     val lastEvidenceSource: String? = null,
+    val lastSearchContextStatus: String? = null,
+    val lastMissingEvidence: String? = null,
+    val lastSearchContextAt: Long? = null,
+    val lastSearchSnapshotFingerprint: String? = null,
+    val lastSaleT0At: Long? = null,
     val lastAccessibilityEventAt: Long? = null,
     val accessibilityEventCount: Int = 0
 )
@@ -44,6 +49,7 @@ enum class TaskStatus {
     ENABLED,
     WAITING_FOR_SALE,
     PREPARING,
+    SALE_T0,
     WAITING_OFFICIAL_PAGE,
     OPENING_SEARCH,
     FILLING_DEPARTURE,
@@ -78,6 +84,7 @@ const val TASK_ZONE_ID = "Asia/Shanghai"
 
 internal fun TaskStatus.isAccessibilityActive(): Boolean = this in setOf(
     TaskStatus.PREPARING,
+    TaskStatus.SALE_T0,
     TaskStatus.WAITING_OFFICIAL_PAGE,
     TaskStatus.OPENING_SEARCH,
     TaskStatus.FILLING_DEPARTURE,
