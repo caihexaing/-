@@ -193,6 +193,14 @@ fun matchesTravelDate(text: String, date: String): Boolean {
     return dateVariants(date).any { normalizeDateText(it) in normalized }
 }
 
+/** The task only supports one adult passenger; never submit without this evidence. */
+internal fun hasAdultTicketSelection(text: String): Boolean {
+    val normalized = normalizeText(text)
+    return normalized.contains("成人票") &&
+        !normalized.contains("未选择成人票") &&
+        !normalized.contains("请选择成人票")
+}
+
 fun fieldLabelMatches(text: String, field: SearchField): Boolean {
     val normalized = normalizeLabel(text)
     if (normalized.isBlank()) return false

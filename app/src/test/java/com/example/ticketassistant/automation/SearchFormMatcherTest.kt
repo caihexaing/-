@@ -20,6 +20,13 @@ class SearchFormMatcherTest {
     }
 
     @Test
+    fun `order confirmation requires an adult ticket selection`() {
+        assertTrue(hasAdultTicketSelection("确认订单 蔡某 成人票 二等座 提交订单"))
+        assertFalse(hasAdultTicketSelection("确认订单 蔡某 学生票 二等座 提交订单"))
+        assertFalse(hasAdultTicketSelection("确认订单 请选择成人票"))
+    }
+
+    @Test
     fun `station candidate requires exact normalized name`() {
         assertTrue(exactStationCandidate("汉口", "汉口"))
         assertTrue(exactStationCandidate(" 汉 口 ", "汉口"))

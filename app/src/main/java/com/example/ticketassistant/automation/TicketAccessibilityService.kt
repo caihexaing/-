@@ -55,6 +55,9 @@ class TicketAccessibilityService : AccessibilityService() {
     private var passengerSelected = false
     private var passengerBeforeClickFingerprint: String? = null
     private var actionWaitEvents = 0
+    private var lastDiagnosticKey: String? = null
+    private var lastDiagnosticAt = 0L
+    private var lastProgressRecordAt = 0L
     private val searchInteractor by lazy {
         OfficialSearchInteractor { action -> recordDiagnostic(pageState, action) }
     }
@@ -118,6 +121,9 @@ class TicketAccessibilityService : AccessibilityService() {
             passengerSelected = false
             passengerBeforeClickFingerprint = null
             actionWaitEvents = 0
+            lastDiagnosticKey = null
+            lastDiagnosticAt = 0L
+            lastProgressRecordAt = 0L
             searchInteractor.reset()
         }
         if (task.status in COLD_START_STATUSES && stage in setOf(Stage.WAITING_PAGE, Stage.PREWARM, Stage.SALE_T0)) {
@@ -405,13 +411,13 @@ class TicketAccessibilityService : AccessibilityService() {
             }
             Stage.ORDER -> {
                 val orderText = root.textContent()
-                if (!matchesToken(orderText, task.train.trainNo) ||
-                    !normalizeText(orderText).contains(normalizeText(task.seat)) ||
-                    !normalizeText(orderText).contains(normalizeText(task.passengerName))
-                ) {
-                    takeover("订单确认页字段与任务不一致，未提交订单")
-                } else {
-                    when (submitOrder(root, task)) {
+                val orderMatchesTask = matchesToken(orderText, task.train.trainNo) &&
+                    normalizeText(orderText).contains(normalizeText(task.seat)) &&
+                    normalizeText(orderText).contains(normalizeText(task.passengerName))
+                when {
+                    !orderMatchesTask -> takeover("订单确认页字段与任务不一致，未提交订单")
+                    !hasAdultTicketSelection(orderText) -> takeover("订单确认页未确认成人票，未提交订单")
+                    else -> when (submitOrder(root, task)) {
                         SubmitResult.CLICKED -> {
                             stage = Stage.WAITING_RESULT
                             resultEvents = 0
@@ -584,7 +590,6 @@ class TicketAccessibilityService : AccessibilityService() {
                 onDone()
             }
             InteractionResult.WAITING -> {
-                lastActionAt = System.currentTimeMillis()
                 waitForFormProgress("等待${if (field == SearchField.DEPARTURE) "出发站" else "到达站"}候选项")
             }
             InteractionResult.FAILED -> takeover("官方 12306 ${if (field == SearchField.DEPARTURE) "出发站" else "到达站"}控件无法操作")
@@ -601,7 +606,6 @@ class TicketAccessibilityService : AccessibilityService() {
                 TaskStore(this).updateStatus(TaskStatus.SUBMITTING_SEARCH, "日期已确认，正在查询目标车次")
             }
             InteractionResult.WAITING -> {
-                lastActionAt = System.currentTimeMillis()
                 waitForFormProgress("等待乘车日期控件更新")
             }
             InteractionResult.FAILED -> takeover("官方 12306 乘车日期控件无法操作")
@@ -646,10 +650,15 @@ class TicketAccessibilityService : AccessibilityService() {
     private fun waitForFormProgress(reason: String) {
         formWaitEvents++
         val elapsed = if (formStartedAt == 0L) 0L else System.currentTimeMillis() - formStartedAt
-        recordDiagnostic(pageState, "$reason（第 ${formWaitEvents} 次等待）")
+        val now = System.currentTimeMillis()
+        val shouldPersist = formWaitEvents == 1 || now - lastProgressRecordAt >= PROGRESS_RECORD_INTERVAL_MS
+        if (shouldPersist) {
+            lastProgressRecordAt = now
+            recordDiagnostic(pageState, "$reason（第 ${formWaitEvents} 次等待）")
+        }
         if (formWaitEvents >= MAX_FORM_WAIT_EVENTS || elapsed >= FORM_TIMEOUT_MS) {
             takeover(reason + "超时，无法确认官方控件")
-        } else {
+        } else if (shouldPersist) {
             TaskStore(this).recordEvent(reason)
         }
     }
@@ -979,6 +988,20 @@ class TicketAccessibilityService : AccessibilityService() {
         missingEvidence: String? = null,
         snapshotFingerprint: String? = null
     ) {
+        val now = System.currentTimeMillis()
+        val key = listOf(
+            page.name,
+            stage.name,
+            action?.replace(Regex("（第 \\d+ 次等待）"), "（等待）"),
+            rootPackage,
+            evidenceSource,
+            contextStatus,
+            missingEvidence,
+            snapshotFingerprint
+        ).joinToString("|")
+        if (key == lastDiagnosticKey && now - lastDiagnosticAt < DIAGNOSTIC_REPEAT_INTERVAL_MS) return
+        lastDiagnosticKey = key
+        lastDiagnosticAt = now
         val actionOutcome = action?.let {
             when {
                 it.contains("失败") || it.contains("未派发") || it.contains("无法") -> "REJECTED"
@@ -1109,10 +1132,10 @@ class TicketAccessibilityService : AccessibilityService() {
 
         private const val CHANNEL = "ticket_takeover"
         private const val NOTIFICATION_ID = 102
-        private const val ACTION_COOLDOWN_MS = 900L
+        private const val ACTION_COOLDOWN_MS = 180L
         private const val MAX_EMPTY_TREE_EVENTS = 3
-        private const val MAX_FORM_WAIT_EVENTS = 40
-        private const val FORM_TIMEOUT_MS = 30_000L
+        private const val MAX_FORM_WAIT_EVENTS = 120
+        private const val FORM_TIMEOUT_MS = 60_000L
         private const val MAX_UNKNOWN_RESULT_EVENTS = 3
         private const val MAX_FAST_PATH_WAIT_EVENTS = 3
         private const val MAX_COLD_START_WAIT_EVENTS = 120
@@ -1120,7 +1143,9 @@ class TicketAccessibilityService : AccessibilityService() {
         private const val MAX_RESULT_CONTEXT_WAIT_EVENTS = 12
         private const val MAX_PAGE_REFRESH_WAIT_EVENTS = 12
         private const val MAX_ACTION_WAIT_EVENTS = 12
-        private const val STATIC_REFRESH_INTERVAL_MS = 750L
+        private const val STATIC_REFRESH_INTERVAL_MS = 300L
+        private const val PROGRESS_RECORD_INTERVAL_MS = 750L
+        private const val DIAGNOSTIC_REPEAT_INTERVAL_MS = 300L
         private val STATIC_REFRESH_STATUSES = setOf(
             TaskStatus.SALE_T0,
             TaskStatus.COLD_START,

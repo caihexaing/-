@@ -13,6 +13,7 @@ class OfficialSearchInteractor(
     private var stationPickerSeen = false
     private var stationCandidateSeen = false
     private var stationBeforeClickFingerprint: String? = null
+    private var stationActionSent = false
     private var dateTarget: String? = null
     private var datePhase = DateSelectionPhase.IDLE
     private var dateBeforeClickFingerprint: String? = null
@@ -24,6 +25,7 @@ class OfficialSearchInteractor(
         stationPickerSeen = false
         stationCandidateSeen = false
         stationBeforeClickFingerprint = null
+        stationActionSent = false
         completeDateFlow()
     }
 
@@ -38,11 +40,22 @@ class OfficialSearchInteractor(
         stationName: String
     ): InteractionResult {
         prepareStationFlow(field, stationName)
-        val input = findEditableField(root, field)
-        val currentValue = input?.text?.toString().orEmpty()
-        val pickerVisible = isStationPickerVisible(root)
+        var input = findEditableField(root, field)
+        var currentValue = input?.text?.toString().orEmpty()
+        var pickerVisible = isStationPickerVisible(root, field, stationName, input)
+        // The station picker in current 12306 builds often exposes one
+        // unlabelled search EditText. Only use it after this station flow has
+        // already been opened; never guess an input on the normal home page.
+        if (input == null && stationPhase != StationSelectionPhase.IDLE) {
+            input = findStationPickerInput(root)
+            if (input != null) {
+                currentValue = input.text?.toString().orEmpty()
+                pickerVisible = true
+            }
+        }
         val visibleCandidates = findFieldScopedCandidates(root, input, field, stationName, pickerVisible)
         val currentFingerprint = stationSnapshotFingerprint(root)
+        val displayedStation = hasConfirmedStationDisplay(root, input, field, stationName)
         if (pickerVisible) stationPickerSeen = true
         if (visibleCandidates.isNotEmpty()) stationCandidateSeen = true
         val candidates = visibleCandidates
@@ -65,7 +78,8 @@ class OfficialSearchInteractor(
                     snapshotChanged
                 ) ||
                 (snapshotChanged && (stationPickerSeen || stationCandidateSeen) &&
-                    confirmedStationDisplay(root, input, field, stationName))
+                    confirmedStationDisplay(root, input, field, stationName)) ||
+                (snapshotChanged && stationActionSent && !pickerVisible && displayedStation)
             ) {
                 completeStationFlow()
                 record("${field.actionName()}候选站已确认")
@@ -75,13 +89,22 @@ class OfficialSearchInteractor(
             return InteractionResult.WAITING
         }
 
+        if (stationPhase == StationSelectionPhase.WAITING_CANDIDATE) {
+            val snapshotChanged = stationBeforeClickFingerprint?.let { it != currentFingerprint } == true
+            if (!pickerVisible && snapshotChanged && stationActionSent && displayedStation) {
+                completeStationFlow()
+                record("${field.actionName()}已在官方表单显示并确认")
+                return InteractionResult.DONE
+            }
+        }
+
         // A pre-filled value is acceptable only when there is no active
         // picker. Values entered by the previous ACTION_SET_TEXT path are
         // handled by WAITING_CANDIDATE and cannot arrive here prematurely.
         if (stationPhase == StationSelectionPhase.IDLE &&
             !pickerVisible &&
             candidates.isEmpty() &&
-            stationCandidateMatches(currentValue, stationName)
+            (stationCandidateMatches(currentValue, stationName) || displayedStation)
         ) {
             completeStationFlow()
             record("${field.actionName()}已是目标站")
@@ -99,6 +122,7 @@ class OfficialSearchInteractor(
             }
             stationPhase = StationSelectionPhase.WAITING_CONFIRMATION
             stationBeforeClickFingerprint = currentFingerprint
+            stationActionSent = true
             record("已选择${field.actionName()}候选站，等待字段值确认")
             return InteractionResult.WAITING
         }
@@ -121,6 +145,8 @@ class OfficialSearchInteractor(
                 return InteractionResult.FAILED
             }
             stationPhase = StationSelectionPhase.WAITING_CANDIDATE
+            stationBeforeClickFingerprint = currentFingerprint
+            stationActionSent = true
             record("已填写${field.actionName()}，等待候选站")
             return InteractionResult.WAITING
         }
@@ -135,6 +161,8 @@ class OfficialSearchInteractor(
             return InteractionResult.FAILED
         }
         stationPhase = StationSelectionPhase.WAITING_CANDIDATE
+        stationBeforeClickFingerprint = currentFingerprint
+        stationActionSent = true
         record("已打开${field.actionName()}选择控件，等待站点列表")
         return InteractionResult.WAITING
     }
@@ -147,6 +175,7 @@ class OfficialSearchInteractor(
         stationPickerSeen = false
         stationCandidateSeen = false
         stationBeforeClickFingerprint = null
+        stationActionSent = false
     }
 
     private fun completeStationFlow() {
@@ -156,16 +185,102 @@ class OfficialSearchInteractor(
         stationPickerSeen = false
         stationCandidateSeen = false
         stationBeforeClickFingerprint = null
+        stationActionSent = false
     }
 
-    private fun isStationPickerVisible(root: AccessibilityNodeInfo): Boolean {
+    private fun isStationPickerVisible(
+        root: AccessibilityNodeInfo,
+        field: SearchField,
+        stationName: String,
+        input: AccessibilityNodeInfo?
+    ): Boolean {
         val markers = listOf("选择出发站", "选择到达站", "站点列表", "热门站点", "车站选择", "常用站点")
-        return findNodes(root) { node ->
+        val markerVisible = findNodes(root) { node ->
             node.isVisibleToUser && nodeValues(node).any { value ->
                 val normalized = normalizeText(value)
-                markers.any(normalized::contains)
+                markers.any { marker ->
+                    normalized.contains(marker) &&
+                        (marker != "常用站点" || hasPickerAncestor(node))
+                }
             }
-        }.any { node -> hasPickerAncestor(node) || node.isClickable }
+        }.any { node ->
+            hasPickerAncestor(node) ||
+                nodeValues(node).any { value ->
+                    val normalized = normalizeText(value)
+                    listOf("选择出发站", "选择到达站", "站点列表", "热门站点", "车站选择")
+                        .any(normalized::contains)
+                }
+        }
+        if (markerVisible) return true
+        if (stationPhase == StationSelectionPhase.IDLE) return false
+
+        // Some builds omit picker titles entirely. A unique, clickable target
+        // station outside the current form control is still strong picker
+        // evidence, while the station already displayed in the form is not.
+        val fieldControl = findStationFieldControl(root, field)
+        return findStationCandidateNodes(root) { node ->
+            nodeValues(node).any { stationCandidateMatches(it, stationName) }
+        }.any { node ->
+            val clickable = clickableNode(node) ?: return@any false
+            val inInput = input?.let {
+                isDescendantOrSelf(node, it) || isDescendantOrSelf(it, node)
+            } == true
+            val inFieldControl = fieldControl?.let {
+                clickable === it || isDescendantOrSelf(node, it) || isDescendantOrSelf(it, node)
+            } == true
+            !inInput && !inFieldControl
+        }
+    }
+
+    private fun findStationPickerInput(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val candidates = findNodes(root) { node ->
+            if (!node.isEditable) return@findNodes false
+            val values = nodeValues(node).joinToString(" ").lowercase()
+            val context = fieldContextKind(values, SearchField.DEPARTURE)
+            val arrivalContext = fieldContextKind(values, SearchField.ARRIVAL)
+            val looksLikeSearch = listOf("搜索", "输入", "城市", "车站", "站点", "拼音")
+                .any(values::contains)
+            context == FieldContext.NONE && arrivalContext == FieldContext.NONE && looksLikeSearch
+        }
+        if (candidates.size == 1) return candidates.single()
+        if (candidates.isNotEmpty()) return null
+        val unlabelled = findNodes(root) { node ->
+            node.isEditable && fieldContextKind(nodeValues(node).joinToString(" "), SearchField.DEPARTURE) == FieldContext.NONE &&
+                fieldContextKind(nodeValues(node).joinToString(" "), SearchField.ARRIVAL) == FieldContext.NONE
+        }
+        return unlabelled.singleOrNull()
+    }
+
+    private fun hasConfirmedStationDisplay(
+        root: AccessibilityNodeInfo,
+        input: AccessibilityNodeInfo?,
+        field: SearchField,
+        target: String
+    ): Boolean {
+        val container = input?.let { findFieldContainer(it, field) }
+        val control = findStationFieldControl(root, field)
+        val scoped = findNodes(root) { node ->
+            if (!node.isVisibleToUser || node.isEditable) return@findNodes false
+            if (!nodeValues(node).any { stationCandidateMatches(it, target) }) return@findNodes false
+            val association = nearestFieldContext(node, field)
+            if (association == FieldContext.OPPOSITE || association == FieldContext.AMBIGUOUS) return@findNodes false
+            val inContainer = container?.let { isDescendantOrSelf(node, it) } == true
+            val clickable = clickableNode(node)
+            val inControl = control?.let {
+                clickable === it || isDescendantOrSelf(node, it) || isDescendantOrSelf(it, node)
+            } == true
+            association == FieldContext.TARGET || inContainer || inControl
+        }
+        if (scoped.isNotEmpty()) return true
+
+        // A few releases expose only the two route values without any labels.
+        // Accept that fallback only when the target occurs exactly once.
+        val unscoped = findNodes(root) { node ->
+            node.isVisibleToUser && !node.isEditable && (node.childCount == 0 || node.isClickable) &&
+                nodeValues(node).any { stationCandidateMatches(it, target) }
+        }
+        val displayControls = unscoped.mapNotNull(::clickableNode).distinctBy(::nodeIdentity)
+        return displayControls.size == 1 || (displayControls.isEmpty() && unscoped.size == 1)
     }
 
     private fun confirmedStationDisplay(
@@ -230,6 +345,11 @@ class OfficialSearchInteractor(
         }
 
         val pickerVisible = isDatePickerVisible(root)
+        if (datePhase == DateSelectionPhase.IDLE && !pickerVisible && hasConfirmedDateDisplay(root, date)) {
+            completeDateFlow()
+            record("乘车日期已在官方表单显示")
+            return InteractionResult.DONE
+        }
         if (datePhase == DateSelectionPhase.WAITING_CONFIRMATION) {
             val snapshotChanged = dateBeforeClickFingerprint?.let { it != currentFingerprint } == true
             if (dateSelectionConfirmed(
@@ -281,6 +401,24 @@ class OfficialSearchInteractor(
             return InteractionResult.FAILED
         }
         return InteractionResult.WAITING
+    }
+
+    private fun hasConfirmedDateDisplay(root: AccessibilityNodeInfo, date: String): Boolean {
+        val values = findNodes(root) { node ->
+            if (!node.isVisibleToUser || node.isEditable) return@findNodes false
+            matchesTravelDate(nodeValues(node).joinToString(" "), date)
+        }
+        val scoped = values.filter { nearestFieldContext(it, SearchField.DATE) == FieldContext.TARGET }
+        if (scoped.isNotEmpty()) return true
+        val text = rootText(root)
+        val formEvidence = listOf("出发地", "出发站", "到达地", "到达站")
+            .count(text.replace(Regex("\\s+"), "")::contains) >= 2 &&
+            listOf("查询", "查询车票", "搜索车票").any(text.replace(Regex("\\s+"), "")::contains)
+        val displayControls = values.filter { it.childCount == 0 || it.isClickable }
+            .mapNotNull(::clickableNode)
+            .distinctBy(::nodeIdentity)
+        return formEvidence && (displayControls.size == 1 ||
+            (displayControls.isEmpty() && values.count { it.childCount == 0 || it.isClickable } == 1))
     }
 
     private fun prepareDateFlow(date: String) {
@@ -351,8 +489,8 @@ class OfficialSearchInteractor(
         stationName: String,
         pickerVisible: Boolean
     ): List<AccessibilityNodeInfo> {
-        if (!pickerVisible) return emptyList()
         val fieldContainer = input?.let { findFieldContainer(it, field) }
+        val fieldControl = findStationFieldControl(root, field)
         val matches = findStationCandidateNodes(root) { node ->
             !node.isEditable && listOfNotNull(node.text?.toString(), node.contentDescription?.toString())
                 .any { stationCandidateMatches(it, stationName) }
@@ -367,13 +505,18 @@ class OfficialSearchInteractor(
                 (isDescendantOrSelf(input, stationNode) ||
                     clickable?.let { isDescendantOrSelf(input, it) } == true)
             ) return@mapNotNull null
+            val inFieldControl = fieldControl?.let {
+                clickable === it || isDescendantOrSelf(stationNode, it) || isDescendantOrSelf(it, stationNode)
+            } == true
+            if (inFieldControl && !pickerVisible) return@mapNotNull null
             val association = nearestFieldContext(stationNode, field)
             val inContainer = fieldContainer?.let { isDescendantOrSelf(stationNode, it) } == true
-            val pickerScoped = pickerVisible || hasPickerAncestor(stationNode)
+            val pickerScoped = pickerVisible || hasPickerAncestor(stationNode) ||
+                (stationPhase != StationSelectionPhase.IDLE && !inFieldControl)
             when {
                 association == FieldContext.OPPOSITE || association == FieldContext.AMBIGUOUS -> null
                 association == FieldContext.TARGET && pickerScoped && (pickerVisible || fieldContainer == null || inContainer) -> clickable
-                association == FieldContext.NONE && pickerScoped && stationField == field && matches.size == 1 -> clickable
+                association == FieldContext.NONE && pickerScoped && stationField == field -> clickable
                 else -> null
             }
         }.distinctBy(::nodeIdentity)

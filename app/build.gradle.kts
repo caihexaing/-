@@ -29,8 +29,8 @@ android {
         applicationId = "com.example.ticketassistant"
         minSdk = 26
         targetSdk = 36
-        versionCode = 25
-        versionName = "0.4.3-unified-state"
+        versionCode = 26
+        versionName = "0.4.4-video-flow"
     }
 
     signingConfigs {
