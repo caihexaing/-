@@ -17,6 +17,8 @@ class OfficialSearchInteractor(
     private var dateTarget: String? = null
     private var datePhase = DateSelectionPhase.IDLE
     private var dateBeforeClickFingerprint: String? = null
+    private var datePickerDateSelected = false
+    private var datePickerConfirmationSent = false
 
     fun reset() {
         stationField = null
@@ -302,9 +304,12 @@ class OfficialSearchInteractor(
         prepareDateFlow(date)
         val currentFingerprint = stationSnapshotFingerprint(root)
         val input = findEditableField(root, SearchField.DATE)
+        val pickerVisible = isDatePickerVisible(root)
+        if (datePhase == DateSelectionPhase.WAITING_CONFIRMATION) {
+            maybeConfirmDatePicker(root, pickerVisible, currentFingerprint)?.let { return it }
+        }
         if (input != null) {
             val currentValue = input.text?.toString().orEmpty()
-            val pickerVisible = isDatePickerVisible(root)
             if (datePhase == DateSelectionPhase.WAITING_CONFIRMATION) {
                 val snapshotChanged = dateBeforeClickFingerprint?.let { it != currentFingerprint } == true
                 if (dateSelectionConfirmed(
@@ -339,12 +344,13 @@ class OfficialSearchInteractor(
                 return InteractionResult.FAILED
             }
             datePhase = DateSelectionPhase.WAITING_CONFIRMATION
+            datePickerDateSelected = true
+            datePickerConfirmationSent = false
             dateBeforeClickFingerprint = currentFingerprint
             record("已填写乘车日期，等待页面更新")
             return InteractionResult.WAITING
         }
 
-        val pickerVisible = isDatePickerVisible(root)
         if (datePhase == DateSelectionPhase.IDLE && !pickerVisible && hasConfirmedDateDisplay(root, date)) {
             completeDateFlow()
             record("乘车日期已在官方表单显示")
@@ -376,6 +382,8 @@ class OfficialSearchInteractor(
         if (exactDateNodes.size == 1) {
             if (!clickNodeOrParent(exactDateNodes.single())) return InteractionResult.FAILED
             datePhase = DateSelectionPhase.WAITING_CONFIRMATION
+            datePickerDateSelected = true
+            datePickerConfirmationSent = false
             dateBeforeClickFingerprint = currentFingerprint
             record("已选择目标日期，等待页面更新")
             return InteractionResult.WAITING
@@ -392,6 +400,8 @@ class OfficialSearchInteractor(
         if (controls.size == 1) {
             if (!clickNodeOrParent(controls.single())) return InteractionResult.FAILED
             datePhase = DateSelectionPhase.WAITING_CONFIRMATION
+            datePickerDateSelected = false
+            datePickerConfirmationSent = false
             dateBeforeClickFingerprint = currentFingerprint
             record("已打开日期选择器，等待页面更新")
             return InteractionResult.WAITING
@@ -441,12 +451,84 @@ class OfficialSearchInteractor(
         dateTarget = date
         datePhase = DateSelectionPhase.IDLE
         dateBeforeClickFingerprint = null
+        datePickerDateSelected = false
+        datePickerConfirmationSent = false
     }
 
     private fun completeDateFlow() {
         dateTarget = null
         datePhase = DateSelectionPhase.IDLE
         dateBeforeClickFingerprint = null
+        datePickerDateSelected = false
+        datePickerConfirmationSent = false
+    }
+
+    /**
+     * Some official builds keep the calendar open after a day is selected and
+     * require a separate confirmation button. Only click a unique button
+     * inside the date-picker subtree; never use a global back action here.
+     */
+    private fun maybeConfirmDatePicker(
+        root: AccessibilityNodeInfo,
+        pickerVisible: Boolean,
+        currentFingerprint: String
+    ): InteractionResult? {
+        if (!pickerVisible || !datePickerDateSelected || datePickerConfirmationSent) return null
+        val confirmations = findDatePickerConfirmationNodes(root)
+        return when (datePickerConfirmationDecision(true, true, confirmations.size)) {
+            DatePickerConfirmationDecision.CLICK -> {
+                if (!clickNodeOrParent(confirmations.single())) {
+                    record("日期选择器确认按钮点击未派发")
+                    InteractionResult.FAILED
+                } else {
+                    datePickerConfirmationSent = true
+                    dateBeforeClickFingerprint = currentFingerprint
+                    record("已点击日期选择器确认按钮，等待选择器关闭")
+                    InteractionResult.WAITING
+                }
+            }
+            DatePickerConfirmationDecision.AMBIGUOUS -> {
+                record("日期选择器确认按钮不唯一（${confirmations.size} 个），等待人工核对")
+                InteractionResult.WAITING
+            }
+            DatePickerConfirmationDecision.WAITING -> {
+                record("已选目标日期，等待日期选择器确认按钮")
+                InteractionResult.WAITING
+            }
+        }
+    }
+
+    private fun findDatePickerConfirmationNodes(root: AccessibilityNodeInfo): List<AccessibilityNodeInfo> {
+        val pickerMarkers = findNodes(root) { node ->
+            node.isVisibleToUser && nodeValues(node).any { value ->
+                val normalized = normalizeText(value)
+                listOf("日期选择", "选择日期", "日历", "上一月", "下一月").any(normalized::contains)
+            }
+        }
+        if (pickerMarkers.isEmpty()) return emptyList()
+        return findNodes(root) { node ->
+            node.isVisibleToUser && nodeValues(node).any(::datePickerConfirmationLabelMatches) &&
+                belongsToDatePicker(node, pickerMarkers)
+        }.mapNotNull(::clickableNode).distinctBy(::nodeIdentity)
+    }
+
+    private fun belongsToDatePicker(
+        node: AccessibilityNodeInfo,
+        pickerMarkers: List<AccessibilityNodeInfo>
+    ): Boolean {
+        if (pickerMarkers.any { marker ->
+                isDescendantOrSelf(node, marker) || isDescendantOrSelf(marker, node)
+            }) return true
+        var current: AccessibilityNodeInfo? = node.parent
+        repeat(MAX_PARENT_DEPTH + 2) {
+            if (current == null) return@repeat
+            val markerText = (nodeValues(current).joinToString(" ") + " " + current.className + " " + current.viewIdResourceName)
+                .lowercase()
+            if (listOf("datepicker", "date_picker", "calendar", "日期选择", "选择日期", "日历", "上一月", "下一月")
+                    .any(markerText::contains)) return true
+            current = current.parent
+        }
+        return false
     }
 
     private fun isDatePickerVisible(root: AccessibilityNodeInfo): Boolean {

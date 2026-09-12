@@ -20,6 +20,40 @@ class SearchFormMatcherTest {
     }
 
     @Test
+    fun `date picker confirmation labels stay narrow`() {
+        assertTrue(datePickerConfirmationLabelMatches("确定"))
+        assertTrue(datePickerConfirmationLabelMatches("完成选择"))
+        assertTrue(datePickerConfirmationLabelMatches("确认日期"))
+        assertFalse(datePickerConfirmationLabelMatches("选择日期"))
+        assertFalse(datePickerConfirmationLabelMatches("查询"))
+        assertFalse(datePickerConfirmationLabelMatches("下一步"))
+    }
+
+    @Test
+    fun `date picker confirmation only clicks one button after a date is selected`() {
+        assertEquals(
+            DatePickerConfirmationDecision.CLICK,
+            datePickerConfirmationDecision(pickerVisible = true, dateSelected = true, confirmationCount = 1)
+        )
+        assertEquals(
+            DatePickerConfirmationDecision.WAITING,
+            datePickerConfirmationDecision(pickerVisible = true, dateSelected = false, confirmationCount = 1)
+        )
+        assertEquals(
+            DatePickerConfirmationDecision.WAITING,
+            datePickerConfirmationDecision(pickerVisible = true, dateSelected = true, confirmationCount = 0)
+        )
+        assertEquals(
+            DatePickerConfirmationDecision.AMBIGUOUS,
+            datePickerConfirmationDecision(pickerVisible = true, dateSelected = true, confirmationCount = 2)
+        )
+        assertEquals(
+            DatePickerConfirmationDecision.WAITING,
+            datePickerConfirmationDecision(pickerVisible = false, dateSelected = true, confirmationCount = 1)
+        )
+    }
+
+    @Test
     fun `order confirmation requires an adult ticket selection`() {
         assertTrue(hasAdultTicketSelection("确认订单 蔡某 成人票 二等座 提交订单"))
         assertTrue(hasAdultTicketSelection("确认订单 蔡某 成人（默认） 二等座 提交订单"))

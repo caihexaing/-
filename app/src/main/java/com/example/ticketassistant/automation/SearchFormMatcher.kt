@@ -153,6 +153,28 @@ internal enum class DateSelectionPhase {
     WAITING_CONFIRMATION
 }
 
+/** Exact actions that can close a date picker; broader labels may belong to the search form. */
+internal fun datePickerConfirmationLabelMatches(text: String): Boolean {
+    return normalizeLabel(text) in setOf("确定", "完成", "确认", "确定日期", "确认日期", "完成选择", "应用")
+}
+
+internal enum class DatePickerConfirmationDecision {
+    WAITING,
+    CLICK,
+    AMBIGUOUS
+}
+
+internal fun datePickerConfirmationDecision(
+    pickerVisible: Boolean,
+    dateSelected: Boolean,
+    confirmationCount: Int
+): DatePickerConfirmationDecision = when {
+    !pickerVisible || !dateSelected -> DatePickerConfirmationDecision.WAITING
+    confirmationCount == 1 -> DatePickerConfirmationDecision.CLICK
+    confirmationCount > 1 -> DatePickerConfirmationDecision.AMBIGUOUS
+    else -> DatePickerConfirmationDecision.WAITING
+}
+
 /** Input text alone is never proof that a picker selection was confirmed. */
 internal fun stationSelectionConfirmed(
     phase: StationSelectionPhase,
