@@ -679,7 +679,13 @@ private fun TaskScreen(vm: TicketViewModel, modifier: Modifier = Modifier) {
         }, modifier = Modifier.fillMaxWidth()) { Text("允许后台不受电池优化限制") }
     }
     Spacer(Modifier.height(8.dp))
-    OutlinedButton(onClick = { TaskScheduler(context).cancel(); TaskStore(context).clear(); vm.storedTask = null; vm.page.value = Page.HOME }, modifier = Modifier.fillMaxWidth()) { Text("停用任务") }
+    OutlinedButton(onClick = {
+        TaskScheduler(context).cancel()
+        context.stopService(Intent(context, com.example.ticketassistant.automation.TicketAutomationService::class.java))
+        TaskStore(context).clear()
+        vm.storedTask = null
+        vm.page.value = Page.HOME
+    }, modifier = Modifier.fillMaxWidth()) { Text("停用任务") }
     Spacer(Modifier.height(12.dp))
     Text("可靠模式请在开售前保持手机已解锁、屏幕可用，并在官方 12306 保持登录。Android 16 可能限制后台唤起，因此后台尝试不能保证执行。", style = MaterialTheme.typography.bodySmall)
     }

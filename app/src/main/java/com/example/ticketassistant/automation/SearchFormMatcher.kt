@@ -173,14 +173,15 @@ internal fun stationSelectionConfirmed(
 internal fun dateSelectionConfirmed(
     phase: DateSelectionPhase,
     fieldValue: String,
-    pageText: String,
+    fieldContextText: String,
     date: String,
     pickerVisible: Boolean,
     snapshotChanged: Boolean
 ): Boolean = phase == DateSelectionPhase.WAITING_CONFIRMATION &&
     snapshotChanged &&
     !pickerVisible &&
-    (matchesTravelDate(fieldValue, date) || matchesTravelDate(pageText, date))
+    (matchesTravelDate(fieldValue, date) ||
+        (fieldContextMatches(fieldContextText, SearchField.DATE) && matchesTravelDate(fieldContextText, date)))
 
 fun matchesTravelDate(text: String, date: String): Boolean {
     val expected = parseDate(date) ?: return false
@@ -196,9 +197,22 @@ fun matchesTravelDate(text: String, date: String): Boolean {
 /** The task only supports one adult passenger; never submit without this evidence. */
 internal fun hasAdultTicketSelection(text: String): Boolean {
     val normalized = normalizeText(text)
-    return normalized.contains("成人票") &&
-        !normalized.contains("未选择成人票") &&
-        !normalized.contains("请选择成人票")
+    if (listOf(
+            "未选择成人票", "请选择成人票", "成人票未选择", "未选择成人", "请选择成人",
+            "请选择票种", "未选择票种", "票种未选择", "非成人票"
+        )
+            .any(normalized::contains)) return false
+    if (listOf("学生票", "儿童票").any(normalized::contains)) return false
+    if (normalized.contains("成人票")) return true
+    return Regex("(?<!非)成人(?=$|[^\\p{IsHan}])").containsMatchIn(text)
+}
+
+/** Returns true only for an unavailable marker belonging to the requested seat. */
+internal fun seatUnavailableEvidence(pageText: String, seat: String): Boolean {
+    val target = normalizeText(seat)
+    if (target.isBlank()) return false
+    val normalized = normalizeText(pageText)
+    return Regex("${Regex.escape(target)}.{0,12}(?:无票|--|\\*)").containsMatchIn(normalized)
 }
 
 fun fieldLabelMatches(text: String, field: SearchField): Boolean {

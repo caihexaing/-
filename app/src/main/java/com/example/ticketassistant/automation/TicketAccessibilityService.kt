@@ -813,7 +813,7 @@ class TicketAccessibilityService : AccessibilityService() {
             return InteractionResult.DONE
         }
         val pageText = root.textContent()
-        val unavailable = Regex("${Regex.escape(seat)}.{0,12}(?:无票|无|--|\\*)").containsMatchIn(pageText)
+        val unavailable = seatUnavailableEvidence(pageText, seat)
         if (unavailable) {
             takeover("官方 12306 中所选席别当前无票，请手动选择")
             return InteractionResult.FAILED
@@ -950,21 +950,7 @@ class TicketAccessibilityService : AccessibilityService() {
 
     /** Structural, short-lived fingerprint used to reject stale node actions. */
     private fun accessibilitySnapshotFingerprint(root: AccessibilityNodeInfo): String {
-        val snapshot = buildString {
-            fun walk(node: AccessibilityNodeInfo?, includeRoot: Boolean = false) {
-                if (node == null || (!includeRoot && !node.isVisibleToUser)) return
-                append(node.className).append('|')
-                append(node.viewIdResourceName).append('|')
-                append(node.text).append('|')
-                append(node.contentDescription).append('|')
-                append(node.isClickable).append('|').append(node.isEditable).append(';')
-                for (index in 0 until node.childCount) walk(node.getChild(index))
-            }
-            walk(root, includeRoot = true)
-        }
-        val digest = java.security.MessageDigest.getInstance("SHA-256")
-            .digest(snapshot.replace(Regex("\\s+"), "").toByteArray())
-        return digest.joinToString("") { "%02x".format(it.toInt() and 0xff) }.take(16)
+        return lightweightAccessibilityFingerprint(root)
     }
 
     private fun handleEmptyTree(reason: String) {

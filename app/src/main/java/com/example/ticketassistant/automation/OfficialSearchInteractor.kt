@@ -310,7 +310,7 @@ class OfficialSearchInteractor(
                 if (dateSelectionConfirmed(
                         datePhase,
                         currentValue,
-                        rootText(root),
+                        dateFieldContextText(root, input),
                         date,
                         pickerVisible,
                         snapshotChanged
@@ -355,7 +355,7 @@ class OfficialSearchInteractor(
             if (dateSelectionConfirmed(
                     datePhase,
                     "",
-                    rootText(root),
+                    dateFieldContextText(root, input = null),
                     date,
                     pickerVisible,
                     snapshotChanged
@@ -409,16 +409,31 @@ class OfficialSearchInteractor(
             matchesTravelDate(nodeValues(node).joinToString(" "), date)
         }
         val scoped = values.filter { nearestFieldContext(it, SearchField.DATE) == FieldContext.TARGET }
-        if (scoped.isNotEmpty()) return true
-        val text = rootText(root)
-        val formEvidence = listOf("出发地", "出发站", "到达地", "到达站")
-            .count(text.replace(Regex("\\s+"), "")::contains) >= 2 &&
-            listOf("查询", "查询车票", "搜索车票").any(text.replace(Regex("\\s+"), "")::contains)
-        val displayControls = values.filter { it.childCount == 0 || it.isClickable }
-            .mapNotNull(::clickableNode)
-            .distinctBy(::nodeIdentity)
-        return formEvidence && (displayControls.size == 1 ||
-            (displayControls.isEmpty() && values.count { it.childCount == 0 || it.isClickable } == 1))
+        return scoped.isNotEmpty()
+    }
+
+    private fun dateFieldContextText(root: AccessibilityNodeInfo, input: AccessibilityNodeInfo?): String {
+        val values = mutableListOf<String>()
+        if (input != null) {
+            values += nodeValues(input)
+            var parent = input.parent
+            repeat(MAX_PARENT_DEPTH) {
+                if (parent == null) return@repeat
+                val parentValues = nodeValues(parent)
+                values += parentValues
+                if (fieldContextKind(parentValues.joinToString(" "), SearchField.DATE) == FieldContext.TARGET) {
+                    parent = null
+                } else {
+                    parent = parent.parent
+                }
+            }
+        }
+        val scoped = findNodes(root) { node ->
+            !node.isEditable && node.isVisibleToUser &&
+                nearestFieldContext(node, SearchField.DATE) == FieldContext.TARGET
+        }
+        values += scoped.flatMap(::nodeValues)
+        return values.distinct().joinToString(" ")
     }
 
     private fun prepareDateFlow(date: String) {
@@ -740,22 +755,7 @@ class OfficialSearchInteractor(
     }
 
     private fun stationSnapshotFingerprint(root: AccessibilityNodeInfo): String {
-        val snapshot = buildString {
-            fun walk(node: AccessibilityNodeInfo?, includeRoot: Boolean = false) {
-                if (node == null || (!includeRoot && !node.isVisibleToUser)) return
-                append(node.className).append('|')
-                append(node.viewIdResourceName).append('|')
-                append(node.text).append('|')
-                append(node.contentDescription).append('|')
-                append(node.hintText).append('|')
-                append(node.isClickable).append('|').append(node.isEditable).append(';')
-                for (index in 0 until node.childCount) walk(node.getChild(index))
-            }
-            walk(root, includeRoot = true)
-        }
-        val digest = java.security.MessageDigest.getInstance("SHA-256")
-            .digest(snapshot.toString().replace(Regex("\\s+"), "").toByteArray())
-        return digest.joinToString("") { "%02x".format(it) }.take(16)
+        return lightweightAccessibilityFingerprint(root)
     }
 
     private fun nodeIdentity(node: AccessibilityNodeInfo): Int = System.identityHashCode(node)

@@ -56,6 +56,20 @@ class PageStateClassifierTest {
         )
     }
 
+    @Test fun `legacy seat page without a seat header is classified as seat selection`() {
+        assertEquals(
+            OfficialPageState.SEAT_SELECTION,
+            detectOfficialPageState("D353 09:00-09:50 二等座 ¥51.5 充足 一等座 ¥73.5 8张 确定")
+        )
+    }
+
+    @Test fun `seat page availability text does not become a search result`() {
+        assertEquals(
+            OfficialPageState.SEAT_SELECTION,
+            detectOfficialPageState("D353 二等座 余票充足 一等座 有票 确定")
+        )
+    }
+
     @Test fun `home search form is not treated as results`() {
         assertEquals(OfficialPageState.HOME_PAGE, detectOfficialPageState("首页 我的 订单 车票 查询车票 出发地 到达地"))
         assertEquals(OfficialPageState.HOME_PAGE, detectOfficialPageState("首页 我的 订单 车票 查询车票 2026-09-19 出发地 到达地"))

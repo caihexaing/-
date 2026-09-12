@@ -22,8 +22,16 @@ class SearchFormMatcherTest {
     @Test
     fun `order confirmation requires an adult ticket selection`() {
         assertTrue(hasAdultTicketSelection("确认订单 蔡某 成人票 二等座 提交订单"))
+        assertTrue(hasAdultTicketSelection("确认订单 蔡某 成人（默认） 二等座 提交订单"))
+        assertTrue(hasAdultTicketSelection("确认订单 蔡某 1张成人 二等座 提交订单"))
+        assertTrue(hasAdultTicketSelection("确认订单 蔡某 成人 1张 二等座 提交订单"))
+        assertTrue(hasAdultTicketSelection("确认订单 蔡某 成人 ¥51 提交订单"))
         assertFalse(hasAdultTicketSelection("确认订单 蔡某 学生票 二等座 提交订单"))
+        assertFalse(hasAdultTicketSelection("确认订单 蔡某 儿童票 二等座 提交订单"))
         assertFalse(hasAdultTicketSelection("确认订单 请选择成人票"))
+        assertFalse(hasAdultTicketSelection("确认订单 成人票未选择 二等座 提交订单"))
+        assertFalse(hasAdultTicketSelection("确认订单 蔡某 成人身份证已填写 二等座 提交订单"))
+        assertFalse(hasAdultTicketSelection("确认订单 非成人票 二等座 提交订单"))
     }
 
     @Test
@@ -156,7 +164,7 @@ class SearchFormMatcherTest {
             dateSelectionConfirmed(
                 phase = DateSelectionPhase.WAITING_CONFIRMATION,
                 fieldValue = "2026-09-19",
-                pageText = "2026-09-19",
+                fieldContextText = "活动 2026-09-19",
                 date = "2026-09-19",
                 pickerVisible = false,
                 snapshotChanged = false
@@ -165,13 +173,35 @@ class SearchFormMatcherTest {
         assertTrue(
             dateSelectionConfirmed(
                 phase = DateSelectionPhase.WAITING_CONFIRMATION,
-                fieldValue = "2026-09-19",
-                pageText = "",
+                fieldValue = "",
+                fieldContextText = "出发日期 2026-09-19",
                 date = "2026-09-19",
                 pickerVisible = false,
                 snapshotChanged = true
             )
         )
+    }
+
+    @Test
+    fun `date elsewhere on the page cannot confirm a selection`() {
+        assertFalse(
+            dateSelectionConfirmed(
+                phase = DateSelectionPhase.WAITING_CONFIRMATION,
+                fieldValue = "",
+                fieldContextText = "搜索历史 2026-09-19",
+                date = "2026-09-19",
+                pickerVisible = false,
+                snapshotChanged = true
+            )
+        )
+    }
+
+    @Test
+    fun `seat unavailable evidence excludes no seat`() {
+        assertTrue(seatUnavailableEvidence("二等座 无票 一等座 有票", "二等座"))
+        assertTrue(seatUnavailableEvidence("二等座 -- 一等座 有票", "二等座"))
+        assertTrue(seatUnavailableEvidence("二等座 * 一等座 有票", "二等座"))
+        assertFalse(seatUnavailableEvidence("二等座 有票 无座 5张", "二等座"))
     }
 
     @Test
