@@ -128,6 +128,35 @@ fun dateVariants(date: String): Set<String> {
 fun exactStationCandidate(text: String, stationName: String): Boolean =
     normalizeStation(text) == normalizeStation(stationName)
 
+/**
+ * Matches station labels used by the picker without accepting arbitrary
+ * substring matches. Some official builds append the display suffix "站".
+ */
+internal fun stationCandidateMatches(text: String, stationName: String): Boolean {
+    val candidate = normalizeStation(text)
+    val target = normalizeStation(stationName)
+    if (candidate == target) return true
+    return !target.endsWith("站") && candidate == target + "站"
+}
+
+internal enum class StationSelectionPhase {
+    IDLE,
+    WAITING_CANDIDATE,
+    WAITING_CONFIRMATION
+}
+
+/** Input text alone is never proof that a picker selection was confirmed. */
+internal fun stationSelectionConfirmed(
+    phase: StationSelectionPhase,
+    fieldValue: String,
+    stationName: String,
+    pickerVisible: Boolean,
+    candidateCount: Int
+): Boolean = phase == StationSelectionPhase.WAITING_CONFIRMATION &&
+    !pickerVisible &&
+    candidateCount == 0 &&
+    stationCandidateMatches(fieldValue, stationName)
+
 fun matchesTravelDate(text: String, date: String): Boolean {
     val expected = parseDate(date) ?: return false
     val normalized = normalizeDateText(text)

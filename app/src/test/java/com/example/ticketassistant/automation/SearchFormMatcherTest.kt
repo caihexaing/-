@@ -78,6 +78,48 @@ class SearchFormMatcherTest {
     }
 
     @Test
+    fun `station picker suffix is accepted only as a supported display variant`() {
+        assertTrue(stationCandidateMatches("汉口站", "汉口"))
+        assertTrue(stationCandidateMatches("汉口", "汉口"))
+        assertFalse(stationCandidateMatches("汉口南", "汉口"))
+    }
+
+    @Test
+    fun `typed station text cannot confirm before candidate click`() {
+        assertFalse(
+            stationSelectionConfirmed(
+                phase = StationSelectionPhase.WAITING_CANDIDATE,
+                fieldValue = "汉口",
+                stationName = "汉口",
+                pickerVisible = false,
+                candidateCount = 0
+            )
+        )
+    }
+
+    @Test
+    fun `candidate click requires refreshed form confirmation`() {
+        assertFalse(
+            stationSelectionConfirmed(
+                phase = StationSelectionPhase.WAITING_CONFIRMATION,
+                fieldValue = "汉口",
+                stationName = "汉口",
+                pickerVisible = true,
+                candidateCount = 0
+            )
+        )
+        assertTrue(
+            stationSelectionConfirmed(
+                phase = StationSelectionPhase.WAITING_CONFIRMATION,
+                fieldValue = "汉口",
+                stationName = "汉口",
+                pickerVisible = false,
+                candidateCount = 0
+            )
+        )
+    }
+
+    @Test
     fun `generic next step is not a search action`() {
         assertFalse(actionLabelMatches("下一步", SearchAction.SUBMIT_SEARCH))
         assertTrue(actionLabelMatches("查询车票", SearchAction.SUBMIT_SEARCH))

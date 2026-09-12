@@ -6,7 +6,7 @@
 
 `app/build/outputs/apk/debug/app-debug.apk`
 
-当前版本为 `0.4.0-cold-start`（`versionCode` 22），支持 Android 8.0（API 26）及以上，目标 Android 16（API 36）。APK 包名为 `com.example.ticketassistant`。
+当前版本为 `0.4.1-station-fix`（`versionCode` 23），支持 Android 8.0（API 26）及以上，目标 Android 16（API 36）。APK 包名为 `com.example.ticketassistant`。
 
 ## 构建
 

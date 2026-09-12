@@ -7,7 +7,11 @@ import android.view.accessibility.AccessibilityNodeInfo
 class OfficialSearchInteractor(
     private val record: (String) -> Unit = {}
 ) {
-    private var activeStationField: SearchField? = null
+    private var stationField: SearchField? = null
+    private var stationTarget: String? = null
+    private var stationPhase = StationSelectionPhase.IDLE
+    private var stationPickerSeen = false
+    private var stationCandidateSeen = false
 
     fun openTickets(root: AccessibilityNodeInfo): InteractionResult {
         val action = findActionNode(root, SearchAction.OPEN_TICKETS) ?: return InteractionResult.WAITING
@@ -19,17 +23,56 @@ class OfficialSearchInteractor(
         field: SearchField,
         stationName: String
     ): InteractionResult {
+        prepareStationFlow(field, stationName)
         val input = findEditableField(root, field)
         val currentValue = input?.text?.toString().orEmpty()
-        if (exactStationCandidate(currentValue, stationName)) {
-            activeStationField = null
+        val pickerVisible = isStationPickerVisible(root)
+        val visibleCandidates = findFieldScopedCandidates(root, input, field, stationName)
+        if (pickerVisible) stationPickerSeen = true
+        if (visibleCandidates.isNotEmpty()) stationCandidateSeen = true
+        // A selected form value can itself be a clickable station control. It
+        // is not a suggestion row once the picker is closed, so exclude it
+        // from candidate matching during confirmation and pre-filled checks.
+        val candidates = if (pickerVisible || stationPhase == StationSelectionPhase.WAITING_CANDIDATE) {
+            visibleCandidates
+        } else {
+            emptyList()
+        }
+
+        // ACTION_SET_TEXT only changes the query. It is not proof that the
+        // picker row was selected, so wait for a post-click page refresh.
+        if (stationPhase == StationSelectionPhase.WAITING_CONFIRMATION) {
+            val pickerVisible = isStationPickerVisible(root)
+            if (pickerVisible || candidates.isNotEmpty()) {
+                record("等待${field.actionName()}候选站点击后的页面刷新（候选数=${candidates.size}）")
+                return InteractionResult.WAITING
+            }
+            if (stationSelectionConfirmed(stationPhase, currentValue, stationName, pickerVisible, candidates.size) ||
+                confirmedStationDisplay(root, input, field, stationName)
+            ) {
+                completeStationFlow()
+                record("${field.actionName()}候选站已确认")
+                return InteractionResult.DONE
+            }
+            record("${field.actionName()}候选站已点击，等待字段值确认")
+            return InteractionResult.WAITING
+        }
+
+        // A pre-filled value is acceptable only when there is no active
+        // picker. Values entered by the previous ACTION_SET_TEXT path are
+        // handled by WAITING_CANDIDATE and cannot arrive here prematurely.
+        if (stationPhase == StationSelectionPhase.IDLE &&
+            !pickerVisible &&
+            candidates.isEmpty() &&
+            stationCandidateMatches(currentValue, stationName)
+        ) {
+            completeStationFlow()
             record("${field.actionName()}已是目标站")
             return InteractionResult.DONE
         }
 
-        val candidates = findFieldScopedCandidates(root, input, field, stationName)
         if (candidates.size > 1) {
-            record("${field.actionName()}候选站不唯一")
+            record("${field.actionName()}候选站不唯一（候选数=${candidates.size}）")
             return InteractionResult.FAILED
         }
         if (candidates.size == 1) {
@@ -37,7 +80,18 @@ class OfficialSearchInteractor(
                 record("${field.actionName()}候选站点击未派发")
                 return InteractionResult.FAILED
             }
+            stationPhase = StationSelectionPhase.WAITING_CONFIRMATION
             record("已选择${field.actionName()}候选站，等待字段值确认")
+            return InteractionResult.WAITING
+        }
+
+        if (stationPhase == StationSelectionPhase.WAITING_CANDIDATE) {
+            if (!pickerVisible && (stationPickerSeen || stationCandidateSeen) && stationCandidateMatches(currentValue, stationName)) {
+                completeStationFlow()
+                record("${field.actionName()}候选站已确认")
+                return InteractionResult.DONE
+            }
+            record("等待${field.actionName()}候选站（候选数=0）")
             return InteractionResult.WAITING
         }
 
@@ -53,7 +107,7 @@ class OfficialSearchInteractor(
                 record("${field.actionName()}输入动作未派发")
                 return InteractionResult.FAILED
             }
-            activeStationField = field
+            stationPhase = StationSelectionPhase.WAITING_CANDIDATE
             record("已填写${field.actionName()}，等待候选站")
             return InteractionResult.WAITING
         }
@@ -67,9 +121,47 @@ class OfficialSearchInteractor(
             record("${field.actionName()}选择控件点击未派发")
             return InteractionResult.FAILED
         }
-        activeStationField = field
+        stationPhase = StationSelectionPhase.WAITING_CANDIDATE
         record("已打开${field.actionName()}选择控件，等待站点列表")
         return InteractionResult.WAITING
+    }
+
+    private fun prepareStationFlow(field: SearchField, target: String) {
+        if (stationField == field && stationTarget == target) return
+        stationField = field
+        stationTarget = target
+        stationPhase = StationSelectionPhase.IDLE
+        stationPickerSeen = false
+        stationCandidateSeen = false
+    }
+
+    private fun completeStationFlow() {
+        stationField = null
+        stationTarget = null
+        stationPhase = StationSelectionPhase.IDLE
+        stationPickerSeen = false
+        stationCandidateSeen = false
+    }
+
+    private fun isStationPickerVisible(root: AccessibilityNodeInfo): Boolean {
+        val text = rootText(root).replace(Regex("\\s+"), "")
+        return listOf("选择出发站", "选择到达站", "站点列表", "热门站点", "车站选择", "常用站点")
+            .any(text::contains)
+    }
+
+    private fun confirmedStationDisplay(
+        root: AccessibilityNodeInfo,
+        input: AccessibilityNodeInfo?,
+        field: SearchField,
+        target: String
+    ): Boolean {
+        val container = input?.let { findFieldContainer(it, field) }
+        return findNodes(root) { node ->
+            if (!node.isVisibleToUser || node.isEditable) return@findNodes false
+            if (!nodeValues(node).any { stationCandidateMatches(it, target) }) return@findNodes false
+            val inContainer = container?.let { isDescendantOrSelf(node, it) } == true
+            inContainer || nearestFieldContext(node, field) == FieldContext.TARGET
+        }.isNotEmpty()
     }
 
     fun fillDate(root: AccessibilityNodeInfo, date: String): InteractionResult {
@@ -167,16 +259,24 @@ class OfficialSearchInteractor(
         val fieldContainer = input?.let { findFieldContainer(it, field) }
         val matches = findStationCandidateNodes(root) { node ->
             !node.isEditable && listOfNotNull(node.text?.toString(), node.contentDescription?.toString())
-                .any { exactStationCandidate(it, stationName) }
+                .any { stationCandidateMatches(it, stationName) }
         }
         val eligible = matches.mapNotNull { stationNode ->
             if (hasEditableAncestor(stationNode, input)) return@mapNotNull null
+            val clickable = clickableNode(stationNode)
+            // The form's selected station control can be a clickable parent
+            // of the EditText and may contain the same text as the query.
+            // It is not a picker row and must never be clicked again.
+            if (input != null &&
+                (isDescendantOrSelf(input, stationNode) ||
+                    clickable?.let { isDescendantOrSelf(input, it) } == true)
+            ) return@mapNotNull null
             val association = nearestFieldContext(stationNode, field)
             val inContainer = fieldContainer?.let { isDescendantOrSelf(stationNode, it) } == true
             when {
                 association == FieldContext.OPPOSITE || association == FieldContext.AMBIGUOUS -> null
-                association == FieldContext.TARGET && (fieldContainer == null || inContainer) -> clickableNode(stationNode)
-                association == FieldContext.NONE && activeStationField == field && matches.size == 1 -> clickableNode(stationNode)
+                association == FieldContext.TARGET && (fieldContainer == null || inContainer) -> clickable
+                association == FieldContext.NONE && stationField == field && matches.size == 1 -> clickable
                 else -> null
             }
         }.distinctBy(::nodeIdentity)
@@ -372,6 +472,17 @@ class OfficialSearchInteractor(
             parent.viewIdResourceName?.let { append(' ').append(it) }
             parent = parent.parent
         }
+    }
+
+    private fun rootText(root: AccessibilityNodeInfo): String = buildString {
+        fun walk(node: AccessibilityNodeInfo?, includeRoot: Boolean = false) {
+            if (node == null) return
+            if (!includeRoot && !node.isVisibleToUser) return
+            node.text?.let { append(' ').append(it) }
+            node.contentDescription?.let { append(' ').append(it) }
+            for (index in 0 until node.childCount) walk(node.getChild(index))
+        }
+        walk(root, includeRoot = true)
     }
 
     private fun nodeIdentity(node: AccessibilityNodeInfo): Int = System.identityHashCode(node)
