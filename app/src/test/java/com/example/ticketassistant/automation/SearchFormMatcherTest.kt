@@ -1,5 +1,8 @@
 package com.example.ticketassistant.automation
 
+import com.example.ticketassistant.data.Station
+import com.example.ticketassistant.data.TicketTask
+import com.example.ticketassistant.data.Train
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -137,6 +140,47 @@ class SearchFormMatcherTest {
                 pickerEvidenceSeen = false,
                 snapshotChanged = true
             )
+        )
+    }
+
+    @Test
+    fun `date text alone cannot confirm an action`() {
+        assertFalse(
+            dateSelectionConfirmed(
+                phase = DateSelectionPhase.WAITING_CONFIRMATION,
+                fieldValue = "2026-09-19",
+                pageText = "2026-09-19",
+                date = "2026-09-19",
+                pickerVisible = false,
+                snapshotChanged = false
+            )
+        )
+        assertTrue(
+            dateSelectionConfirmed(
+                phase = DateSelectionPhase.WAITING_CONFIRMATION,
+                fieldValue = "2026-09-19",
+                pageText = "",
+                date = "2026-09-19",
+                pickerVisible = false,
+                snapshotChanged = true
+            )
+        )
+    }
+
+    @Test
+    fun `reversed route is a conflict`() {
+        val task = TicketTask(
+            date = "2026-09-19",
+            from = Station("汉口", "HKN"),
+            to = Station("潜江", "QJN"),
+            train = Train("D353", "汉口", "潜江", "07:25", "08:16", "00:51", emptyMap()),
+            seat = "二等座",
+            passengerName = "乘客",
+            saleDateTime = null
+        )
+        assertEquals(
+            SearchContextStatus.CONFLICT,
+            classifySearchContext("查询车票 2026-09-19 潜江 汉口 D353 二等座 余票", task).status
         )
     }
 

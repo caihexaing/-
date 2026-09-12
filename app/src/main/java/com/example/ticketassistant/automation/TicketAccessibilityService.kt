@@ -32,6 +32,7 @@ class TicketAccessibilityService : AccessibilityService() {
     }
     private var lastActionAt = 0L
     private var activeTaskKey: String? = null
+    private var activeAutomationRunId: String? = null
     private var stage = Stage.WAITING_PAGE
     private var pageState = OfficialPageState.LAUNCHING
     private var emptyTreeEvents = 0
@@ -50,7 +51,9 @@ class TicketAccessibilityService : AccessibilityService() {
     private var coldStartWaitEvents = 0
     private var lastObservedRootPackage: String? = null
     private var seatSelected = false
+    private var seatBeforeClickFingerprint: String? = null
     private var passengerSelected = false
+    private var passengerBeforeClickFingerprint: String? = null
     private var actionWaitEvents = 0
     private val searchInteractor by lazy {
         OfficialSearchInteractor { action -> recordDiagnostic(pageState, action) }
@@ -82,9 +85,16 @@ class TicketAccessibilityService : AccessibilityService() {
         val task = TaskStore(this).load() ?: return
         if (!task.enabled || task.status !in ACTIVE_STATUSES) return
 
+        if (stage == Stage.DONE && task.status in ACTIVE_STATUSES) {
+            // A manual retry reuses the same task configuration but must start
+            // a fresh in-memory flow instead of remaining in the terminal stage.
+            activeTaskKey = null
+        }
         val key = taskSnapshotKey(task)
-        if (activeTaskKey != key) {
+        val runChanged = task.automationRunId != activeAutomationRunId
+        if (activeTaskKey != key || runChanged) {
             activeTaskKey = key
+            activeAutomationRunId = task.automationRunId
             stage = stageFor(task.status)
             pageState = OfficialPageState.LAUNCHING
             lastActionAt = 0L
@@ -104,8 +114,11 @@ class TicketAccessibilityService : AccessibilityService() {
             coldStartWaitEvents = 0
             lastObservedRootPackage = null
             seatSelected = false
+            seatBeforeClickFingerprint = null
             passengerSelected = false
+            passengerBeforeClickFingerprint = null
             actionWaitEvents = 0
+            searchInteractor.reset()
         }
         if (task.status in COLD_START_STATUSES && stage in setOf(Stage.WAITING_PAGE, Stage.PREWARM, Stage.SALE_T0)) {
             stage = stageFor(task.status)
@@ -726,10 +739,10 @@ class TicketAccessibilityService : AccessibilityService() {
     private fun handleSubmitResult(text: String, task: TicketTask, rootPackage: String?) {
         resultEvents++
         val now = System.currentTimeMillis()
-        val evidenceWindowOpen = pendingEvidence.isNotBlank() &&
+        val evidenceWindowOpen = pendingEvidenceStartedAt > 0L &&
             now - pendingEvidenceStartedAt <= PENDING_EVIDENCE_WINDOW_MS &&
             pendingEvidenceEvents < MAX_PENDING_EVIDENCE_EVENTS
-        if (hasPendingPaymentCandidate(text) || evidenceWindowOpen) {
+        if (pendingEvidenceStartedAt == 0L || evidenceWindowOpen) {
             if (!evidenceWindowOpen) {
                 pendingEvidence = ""
                 pendingEvidenceStartedAt = now
@@ -775,9 +788,17 @@ class TicketAccessibilityService : AccessibilityService() {
 
     private fun selectSeatStep(root: AccessibilityNodeInfo, seat: String): InteractionResult {
         if (seatSelected) {
+            val snapshotChanged = seatBeforeClickFingerprint?.let {
+                it != accessibilitySnapshotFingerprint(root)
+            } == true
+            if (!snapshotChanged) {
+                recordDiagnostic(pageState, "等待席别点击后的页面刷新（快照未变化）", evidenceSource = "SEAT_ACTION_WAIT")
+                return InteractionResult.WAITING
+            }
             val next = findActionNode(root, listOf("预订", "下一步", "确认")) ?: return InteractionResult.WAITING
             if (!clickNodeOrParent(next)) return InteractionResult.FAILED
             seatSelected = false
+            seatBeforeClickFingerprint = null
             lastActionAt = System.currentTimeMillis()
             recordDiagnostic(pageState, "已刷新席别页面并点击继续")
             return InteractionResult.DONE
@@ -791,8 +812,10 @@ class TicketAccessibilityService : AccessibilityService() {
         val matches = findTextNodes(root) { value -> normalizeText(value) == normalizeText(seat) }
             .filter { it.childCount == 0 }
         if (matches.size != 1) return InteractionResult.WAITING
+        val beforeClickFingerprint = accessibilitySnapshotFingerprint(root)
         if (!clickNodeOrParent(matches.first())) return InteractionResult.FAILED
         seatSelected = true
+        seatBeforeClickFingerprint = beforeClickFingerprint
         lastActionAt = System.currentTimeMillis()
         recordDiagnostic(pageState, "已点击席别：$seat")
         return InteractionResult.WAITING
@@ -800,9 +823,17 @@ class TicketAccessibilityService : AccessibilityService() {
 
     private fun selectPassengerAndContinue(root: AccessibilityNodeInfo, passenger: String): PassengerResult {
         if (passengerSelected) {
+            val snapshotChanged = passengerBeforeClickFingerprint?.let {
+                it != accessibilitySnapshotFingerprint(root)
+            } == true
+            if (!snapshotChanged) {
+                recordDiagnostic(pageState, "等待乘车人点击后的页面刷新（快照未变化）", evidenceSource = "PASSENGER_ACTION_WAIT")
+                return PassengerResult.WAITING
+            }
             val next = findActionNode(root, listOf("确认", "下一步")) ?: return PassengerResult.WAITING
             if (!clickNodeOrParent(next)) return PassengerResult.NOT_FOUND
             passengerSelected = false
+            passengerBeforeClickFingerprint = null
             lastActionAt = System.currentTimeMillis()
             recordDiagnostic(pageState, "已刷新乘车人页面并点击继续")
             return PassengerResult.CONTINUED
@@ -811,8 +842,10 @@ class TicketAccessibilityService : AccessibilityService() {
             .filter { it.childCount == 0 }
         if (matches.isEmpty()) return PassengerResult.WAITING
         if (matches.size > 1) return PassengerResult.AMBIGUOUS
+        val beforeClickFingerprint = accessibilitySnapshotFingerprint(root)
         if (!clickNodeOrParent(matches.first())) return PassengerResult.NOT_FOUND
         passengerSelected = true
+        passengerBeforeClickFingerprint = beforeClickFingerprint
         lastActionAt = System.currentTimeMillis()
         recordDiagnostic(pageState, "已选择目标乘车人（姓名已脱敏）")
         return PassengerResult.SELECTED
@@ -906,6 +939,25 @@ class TicketAccessibilityService : AccessibilityService() {
         walk(this@textContent, includeRoot = true)
     }
 
+    /** Structural, short-lived fingerprint used to reject stale node actions. */
+    private fun accessibilitySnapshotFingerprint(root: AccessibilityNodeInfo): String {
+        val snapshot = buildString {
+            fun walk(node: AccessibilityNodeInfo?, includeRoot: Boolean = false) {
+                if (node == null || (!includeRoot && !node.isVisibleToUser)) return
+                append(node.className).append('|')
+                append(node.viewIdResourceName).append('|')
+                append(node.text).append('|')
+                append(node.contentDescription).append('|')
+                append(node.isClickable).append('|').append(node.isEditable).append(';')
+                for (index in 0 until node.childCount) walk(node.getChild(index))
+            }
+            walk(root, includeRoot = true)
+        }
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(snapshot.replace(Regex("\\s+"), "").toByteArray())
+        return digest.joinToString("") { "%02x".format(it.toInt() and 0xff) }.take(16)
+    }
+
     private fun handleEmptyTree(reason: String) {
         emptyTreeEvents++
         recordDiagnostic(OfficialPageState.UNKNOWN, "$reason（连续 ${emptyTreeEvents} 次）")
@@ -927,6 +979,13 @@ class TicketAccessibilityService : AccessibilityService() {
         missingEvidence: String? = null,
         snapshotFingerprint: String? = null
     ) {
+        val actionOutcome = action?.let {
+            when {
+                it.contains("失败") || it.contains("未派发") || it.contains("无法") -> "REJECTED"
+                it.contains("等待") -> "WAITING"
+                else -> "SENT_OR_OBSERVED"
+            }
+        }
         TaskStore(this).recordAccessibilityEvent(
             pageState = page.name,
             action = action,
@@ -936,7 +995,9 @@ class TicketAccessibilityService : AccessibilityService() {
             contextStatus = contextStatus,
             missingEvidence = missingEvidence,
             contextAt = if (contextStatus != null) System.currentTimeMillis() else null,
-            snapshotFingerprint = snapshotFingerprint
+            snapshotFingerprint = snapshotFingerprint,
+            actionAt = if (action != null) System.currentTimeMillis() else null,
+            actionOutcome = actionOutcome
         )
     }
 
@@ -1050,15 +1111,15 @@ class TicketAccessibilityService : AccessibilityService() {
         private const val NOTIFICATION_ID = 102
         private const val ACTION_COOLDOWN_MS = 900L
         private const val MAX_EMPTY_TREE_EVENTS = 3
-        private const val MAX_FORM_WAIT_EVENTS = 8
-        private const val FORM_TIMEOUT_MS = 10_000L
+        private const val MAX_FORM_WAIT_EVENTS = 40
+        private const val FORM_TIMEOUT_MS = 30_000L
         private const val MAX_UNKNOWN_RESULT_EVENTS = 3
         private const val MAX_FAST_PATH_WAIT_EVENTS = 3
-        private const val MAX_COLD_START_WAIT_EVENTS = 40
-        private const val COLD_START_TIMEOUT_MS = 30_000L
-        private const val MAX_RESULT_CONTEXT_WAIT_EVENTS = 4
-        private const val MAX_PAGE_REFRESH_WAIT_EVENTS = 4
-        private const val MAX_ACTION_WAIT_EVENTS = 4
+        private const val MAX_COLD_START_WAIT_EVENTS = 120
+        private const val COLD_START_TIMEOUT_MS = 90_000L
+        private const val MAX_RESULT_CONTEXT_WAIT_EVENTS = 12
+        private const val MAX_PAGE_REFRESH_WAIT_EVENTS = 12
+        private const val MAX_ACTION_WAIT_EVENTS = 12
         private const val STATIC_REFRESH_INTERVAL_MS = 750L
         private val STATIC_REFRESH_STATUSES = setOf(
             TaskStatus.SALE_T0,
@@ -1151,7 +1212,7 @@ internal fun isPendingPaymentPage(text: String): Boolean {
     val normalized = normalizeText(text)
     val hasPaymentState = listOf("待支付", "待付款", "订单待支付", "未支付订单", "支付倒计时")
         .any(normalized::contains)
-    val hasOrderContext = listOf("订单号", "订单编号", "支付倒计时", "剩余支付", "去支付", "取消订单", "订单详情")
+    val hasOrderContext = listOf("订单号", "订单编号", "剩余支付", "去支付", "取消订单", "订单详情")
         .any(normalized::contains) || (normalized.contains("订单") && normalized.contains("剩余"))
     return hasPaymentState && hasOrderContext
 }

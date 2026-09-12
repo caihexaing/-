@@ -379,6 +379,7 @@ private fun HomeScreen(vm: TicketViewModel, busy: Boolean) {
     val stations by vm.stations.collectAsStateCompat()
     var fromQuery by rememberSaveable { mutableStateOf(vm.from?.name.orEmpty()) }
     var toQuery by rememberSaveable { mutableStateOf(vm.to?.name.orEmpty()) }
+    Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
     Text("查询真实车次", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
     Spacer(Modifier.height(10.dp))
     StationField(
@@ -422,6 +423,7 @@ private fun HomeScreen(vm: TicketViewModel, busy: Boolean) {
     }
     Spacer(Modifier.height(16.dp))
     Text("查询结果来自 12306 官方接口。验证码、登录、身份核验、候补协议与支付均需要你在官方 App 中处理。", style = MaterialTheme.typography.bodySmall)
+    }
 }
 
 @Composable
@@ -504,6 +506,7 @@ private fun ConfigureScreen(vm: TicketViewModel) {
     var saleDateTime by remember { mutableStateOf("") }
     var confirmNotYetOnSale by remember(train) { mutableStateOf(false) }
     var allowed by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
     Text("配置任务", style = MaterialTheme.typography.titleLarge)
     Text("${train.trainNo}  ${train.from} ${train.depart} → ${train.to} ${train.arrive}")
     Spacer(Modifier.height(12.dp))
@@ -531,6 +534,7 @@ private fun ConfigureScreen(vm: TicketViewModel) {
         if (busy) CircularProgressIndicator(Modifier.height(18.dp), strokeWidth = 2.dp) else Text("查询确认并启用任务")
     }
     Spacer(Modifier.height(8.dp)); Text("保存时会重新查询官方车次：已确认有票则立即执行；确认未开售才要求填写未来开售时间。查询不明确时不会盲目启用。", style = MaterialTheme.typography.bodySmall)
+    }
 }
 
 @Composable
@@ -598,6 +602,8 @@ private fun TaskScreen(vm: TicketViewModel, modifier: Modifier = Modifier) {
         Text("当前窗口：${task.lastRootPackage ?: "暂无"}")
         Text("证据来源：${task.lastEvidenceSource ?: "暂无"}")
         Text("结果页校验：${task.lastSearchContextStatus ?: "暂无"}")
+        Text("运行代次：${task.automationRunId?.take(8) ?: "暂无"}")
+        Text("动作结果：${task.lastActionOutcome ?: "暂无"}")
         Text("冷启动：${task.coldStartAttempts} 次${task.coldStartAt?.let { "，已开始" } ?: "，未开始"}")
         task.coldStartLastFailure?.let { Text("冷启动原因：$it", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
         task.lastWindowChangedAt?.let {
@@ -612,6 +618,16 @@ private fun TaskScreen(vm: TicketViewModel, modifier: Modifier = Modifier) {
         } ?: "暂无"
         Text("最近事件：$eventTime（累计 ${task.accessibilityEventCount} 次）")
         Text("提交锁：${if (submitLocked) "已锁定，禁止自动重试" else "未锁定"}")
+        val timingText = listOfNotNull(
+            task.lastSaleT0At?.let { "T0 ${formatDiagnosticTime(it)}" },
+            task.lastResultPageAt?.let { "T1 ${formatDiagnosticTime(it)}" },
+            task.lastTargetControlAt?.let { "T2 ${formatDiagnosticTime(it)}" },
+            task.lastBookingActionAt?.let { "T3 ${formatDiagnosticTime(it)}" },
+            task.lastPassengerActionAt?.let { "T4 ${formatDiagnosticTime(it)}" },
+            task.lastSubmitAt?.let { "T5 ${formatDiagnosticTime(it)}" },
+            task.lastOrderEvidenceAt?.let { "T6 ${formatDiagnosticTime(it)}" }
+        )
+        Text("关键时间：${timingText.ifEmpty { listOf("暂无") }.joinToString(" · ")}", style = MaterialTheme.typography.bodySmall)
     } }
     Spacer(Modifier.height(10.dp))
     OutlinedButton(onClick = {
@@ -645,7 +661,7 @@ private fun TaskScreen(vm: TicketViewModel, modifier: Modifier = Modifier) {
     Spacer(Modifier.height(12.dp))
     Button(onClick = {
         val launcher = OfficialAppLauncher(context)
-        if (!launcher.isInstalled()) vm.error.value = "未安装官方 12306 App，请先安装并登录后再执行任务"
+        if (!launcher.isInstalled()) vm.error.value = "系统未识别官方 12306 App，请确认已安装、未停用，并先手动打开一次"
         else launcher.launch().onFailure { vm.error.value = it.message ?: "无法打开官方 12306" }
     }, modifier = Modifier.fillMaxWidth()) { Text("立即测试打开官方 12306") }
     Spacer(Modifier.height(8.dp))
@@ -671,6 +687,10 @@ private fun TaskScreen(vm: TicketViewModel, modifier: Modifier = Modifier) {
 
 @Composable
 private fun ErrorBanner(message: String) = Card(Modifier.fillMaxWidth().padding(bottom = 12.dp)) { Text(message, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(12.dp)) }
+
+private fun formatDiagnosticTime(value: Long): String =
+    java.time.Instant.ofEpochMilli(value).atZone(ZoneId.systemDefault())
+        .format(DateTimeFormatter.ofPattern("HH:mm:ss"))
 
 @Composable
 private fun <T> kotlinx.coroutines.flow.StateFlow<T>.collectAsStateCompat() = collectAsState()

@@ -56,6 +56,9 @@ fun classifySearchContext(text: String, task: com.example.ticketassistant.data.T
     if (!hasFrom) missing += "出发站:${task.from.name}"
     if (!hasTo) missing += "到达站:${task.to.name}"
     if (hasFrom.xor(hasTo)) conflicts += "路线字段不完整"
+    if (hasFrom && hasTo && normalized.indexOf(from) > normalized.indexOf(to)) {
+        conflicts += "路线顺序不一致"
+    }
     val dateMatches = matchesTravelDate(text, task.date)
     val hasDateToken = Regex("(?:\\d{4}年\\d{1,2}月\\d{1,2}日|\\d{4}[-/]\\d{1,2}[-/]\\d{1,2}|\\d{1,2}月\\d{1,2}日)")
         .containsMatchIn(text.replace(Regex("\\s+"), ""))
@@ -145,6 +148,11 @@ internal enum class StationSelectionPhase {
     WAITING_CONFIRMATION
 }
 
+internal enum class DateSelectionPhase {
+    IDLE,
+    WAITING_CONFIRMATION
+}
+
 /** Input text alone is never proof that a picker selection was confirmed. */
 internal fun stationSelectionConfirmed(
     phase: StationSelectionPhase,
@@ -160,6 +168,19 @@ internal fun stationSelectionConfirmed(
     !pickerVisible &&
     candidateCount == 0 &&
     stationCandidateMatches(fieldValue, stationName)
+
+/** A typed date is not confirmation until the official page reflects the action. */
+internal fun dateSelectionConfirmed(
+    phase: DateSelectionPhase,
+    fieldValue: String,
+    pageText: String,
+    date: String,
+    pickerVisible: Boolean,
+    snapshotChanged: Boolean
+): Boolean = phase == DateSelectionPhase.WAITING_CONFIRMATION &&
+    snapshotChanged &&
+    !pickerVisible &&
+    (matchesTravelDate(fieldValue, date) || matchesTravelDate(pageText, date))
 
 fun matchesTravelDate(text: String, date: String): Boolean {
     val expected = parseDate(date) ?: return false

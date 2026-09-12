@@ -49,6 +49,16 @@ class TaskStore(context: Context) {
             task.lastWindowChangedAt?.let { put("lastWindowChangedAt", it) }
             task.lastAccessibilityEventAt?.let { put("lastAccessibilityEventAt", it) }
             put("accessibilityEventCount", task.accessibilityEventCount)
+            task.automationRunId?.let { put("automationRunId", it) }
+            task.stageEnteredAt?.let { put("stageEnteredAt", it) }
+            task.lastActionAt?.let { put("lastActionAt", it) }
+            task.lastActionOutcome?.let { put("lastActionOutcome", it) }
+            task.lastResultPageAt?.let { put("lastResultPageAt", it) }
+            task.lastTargetControlAt?.let { put("lastTargetControlAt", it) }
+            task.lastBookingActionAt?.let { put("lastBookingActionAt", it) }
+            task.lastPassengerActionAt?.let { put("lastPassengerActionAt", it) }
+            task.lastSubmitAt?.let { put("lastSubmitAt", it) }
+            task.lastOrderEvidenceAt?.let { put("lastOrderEvidenceAt", it) }
         }
         prefs.edit().putString(KEY, json.toString()).apply()
     }
@@ -117,7 +127,17 @@ class TaskStore(context: Context) {
             coldStartLastFailure = j.optString("coldStartLastFailure").ifBlank { null },
             lastWindowChangedAt = j.optLong("lastWindowChangedAt").takeIf { it > 0L },
             lastAccessibilityEventAt = j.optLong("lastAccessibilityEventAt").takeIf { it > 0L },
-            accessibilityEventCount = j.optInt("accessibilityEventCount", 0).coerceAtLeast(0)
+            accessibilityEventCount = j.optInt("accessibilityEventCount", 0).coerceAtLeast(0),
+            automationRunId = j.optString("automationRunId").ifBlank { null },
+            stageEnteredAt = j.optLong("stageEnteredAt").takeIf { it > 0L },
+            lastActionAt = j.optLong("lastActionAt").takeIf { it > 0L },
+            lastActionOutcome = j.optString("lastActionOutcome").ifBlank { null },
+            lastResultPageAt = j.optLong("lastResultPageAt").takeIf { it > 0L },
+            lastTargetControlAt = j.optLong("lastTargetControlAt").takeIf { it > 0L },
+            lastBookingActionAt = j.optLong("lastBookingActionAt").takeIf { it > 0L },
+            lastPassengerActionAt = j.optLong("lastPassengerActionAt").takeIf { it > 0L },
+            lastSubmitAt = j.optLong("lastSubmitAt").takeIf { it > 0L },
+            lastOrderEvidenceAt = j.optLong("lastOrderEvidenceAt").takeIf { it > 0L }
         )
     }.getOrNull()
 
@@ -148,10 +168,16 @@ class TaskStore(context: Context) {
         missingEvidence: String? = null,
         contextAt: Long? = null,
         snapshotFingerprint: String? = null,
-        saleT0At: Long? = null
+        saleT0At: Long? = null,
+        actionAt: Long? = null,
+        actionOutcome: String? = null
     ) {
         val task = load() ?: return
         val now = System.currentTimeMillis()
+        val stageChanged = automationStage != null && automationStage != task.lastAutomationStage
+        val actionText = action.orEmpty()
+        val resultPageObserved = pageState == "SEARCH_RESULT" || pageState == "SEARCH_RESULT_PARTIAL"
+        val orderEvidenceObserved = evidenceSource == "VERIFIED_ORDER_FIELDS"
         save(task.copy(
             lastPageState = pageState ?: task.lastPageState,
             lastAction = action ?: task.lastAction,
@@ -164,7 +190,16 @@ class TaskStore(context: Context) {
             lastSearchSnapshotFingerprint = snapshotFingerprint ?: task.lastSearchSnapshotFingerprint,
             lastSaleT0At = saleT0At ?: task.lastSaleT0At,
             lastAccessibilityEventAt = now,
-            accessibilityEventCount = task.accessibilityEventCount + 1
+            accessibilityEventCount = task.accessibilityEventCount + 1,
+            stageEnteredAt = if (stageChanged) now else task.stageEnteredAt,
+            lastActionAt = actionAt ?: if (action != null) now else task.lastActionAt,
+            lastActionOutcome = actionOutcome ?: task.lastActionOutcome,
+            lastResultPageAt = if (resultPageObserved) now else task.lastResultPageAt,
+            lastTargetControlAt = if (actionText.contains("目标车次") || actionText.contains("目标席别")) now else task.lastTargetControlAt,
+            lastBookingActionAt = if (actionText.contains("预订")) now else task.lastBookingActionAt,
+            lastPassengerActionAt = if (actionText.contains("乘车人")) now else task.lastPassengerActionAt,
+            lastSubmitAt = if (actionText.contains("提交订单点击已派发")) now else task.lastSubmitAt,
+            lastOrderEvidenceAt = if (orderEvidenceObserved) now else task.lastOrderEvidenceAt
         ))
     }
 
@@ -176,7 +211,17 @@ class TaskStore(context: Context) {
             enabled = true,
             lastEvent = event,
             lastEventAt = now,
-            lastSaleT0At = now
+            lastSaleT0At = now,
+            automationRunId = java.util.UUID.randomUUID().toString(),
+            stageEnteredAt = now,
+            lastActionAt = null,
+            lastActionOutcome = null,
+            lastResultPageAt = null,
+            lastTargetControlAt = null,
+            lastBookingActionAt = null,
+            lastPassengerActionAt = null,
+            lastSubmitAt = null,
+            lastOrderEvidenceAt = null
         ))
     }
 
@@ -192,7 +237,8 @@ class TaskStore(context: Context) {
             lastError = failure,
             coldStartAt = task.coldStartAt ?: now,
             coldStartAttempts = task.coldStartAttempts + 1,
-            coldStartLastFailure = failure
+            coldStartLastFailure = failure,
+            stageEnteredAt = now
         ))
     }
 
@@ -207,7 +253,8 @@ class TaskStore(context: Context) {
             lastEventAt = now,
             lastError = failure,
             coldStartAt = task.coldStartAt ?: now,
-            coldStartLastFailure = failure
+            coldStartLastFailure = failure,
+            stageEnteredAt = if (status.name != task.lastAutomationStage) now else task.stageEnteredAt
         ))
     }
 
@@ -218,7 +265,12 @@ class TaskStore(context: Context) {
             lastRootPackage = rootPackage ?: task.lastRootPackage,
             lastWindowChangedAt = now,
             lastEvent = event,
-            lastEventAt = now
+            lastEventAt = now,
+            // A window change invalidates all evidence from the previous tree.
+            lastSearchContextStatus = null,
+            lastMissingEvidence = null,
+            lastSearchContextAt = null,
+            lastSearchSnapshotFingerprint = null
         ))
     }
 
@@ -229,6 +281,8 @@ class TaskStore(context: Context) {
         save(task.copy(
             enabled = true,
             status = TaskStatus.PREPARING,
+            automationRunId = java.util.UUID.randomUUID().toString(),
+            stageEnteredAt = System.currentTimeMillis(),
             lastEvent = "用户请求重新尝试官方 App 冷启动",
             lastEventAt = System.currentTimeMillis(),
             lastError = null,

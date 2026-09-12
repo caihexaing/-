@@ -35,6 +35,7 @@ class TakeoverReasonTest {
         assertTrue(isPendingPaymentPage("订单待支付 剩余 15 分钟"))
         assertTrue(isPendingPaymentPage("订单待\n支付\n剩余 15 分钟"))
         assertTrue(isPendingPaymentPage("订单号 1234567890 待支付 ￥45.00"))
+        assertFalse(isPendingPaymentPage("首页 支付倒计时 活动说明"))
         assertFalse(isPendingPaymentPage("首页 待支付"))
         assertFalse(isPendingPaymentPage("订单中心 待支付"))
     }

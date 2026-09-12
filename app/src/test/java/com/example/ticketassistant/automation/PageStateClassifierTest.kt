@@ -49,6 +49,13 @@ class PageStateClassifierTest {
         )
     }
 
+    @Test fun `result row with route and booking action stays search result without a column header`() {
+        assertEquals(
+            OfficialPageState.SEARCH_RESULT,
+            detectOfficialPageState("首页 查询车票 2026年9月19日 出发地 汉口 到达地 潜江 D353 二等座 预订")
+        )
+    }
+
     @Test fun `home search form is not treated as results`() {
         assertEquals(OfficialPageState.HOME_PAGE, detectOfficialPageState("首页 我的 订单 车票 查询车票 出发地 到达地"))
         assertEquals(OfficialPageState.HOME_PAGE, detectOfficialPageState("首页 我的 订单 车票 查询车票 2026-09-19 出发地 到达地"))

@@ -28,12 +28,18 @@ internal fun detectOfficialPageState(text: String): OfficialPageState {
     val hasHomeNavigation = homeNavigationCount >= 2 &&
         listOf("查询车票", "搜索车票", "出发地", "到达地", "乘车日期", "出发日期", "火车票")
             .any(normalized::contains)
-    val hasTrainRowEvidence = hasTrainLikeToken && normalized.contains("车次") &&
+    val hasRouteEvidence = listOf("出发地", "出发站", "到达地", "到达站").any(normalized::contains)
+    val hasTrainRowEvidence = hasTrainLikeToken &&
+        (normalized.contains("车次") || normalized.contains("余票") ||
+            (normalized.contains("预订") && hasRouteEvidence)) &&
         !listOf("正在加载", "加载中").any(normalized::contains)
-    val hasStrongResultEvidence = listOf("筛选条件", "余票", "有票", "车次列表")
-        .any(normalized::contains) || hasTrainRowEvidence
+    val hasStrongResultEvidence = listOf("筛选条件", "车次列表").any(normalized::contains) ||
+        (hasTrainLikeToken && listOf("余票", "有票").any(normalized::contains)) ||
+        hasTrainRowEvidence
     val hasWeakResultEvidence = hasTrainLikeToken && normalized.contains("查询车票")
-    val hasResultEvidence = hasStrongResultEvidence || (hasWeakResultEvidence && !hasHomeNavigation)
+    val hasAvailabilityOnlyEvidence = listOf("余票", "有票").any(normalized::contains) && !hasHomeNavigation
+    val hasResultEvidence = hasStrongResultEvidence || hasAvailabilityOnlyEvidence ||
+        (hasWeakResultEvidence && !hasHomeNavigation)
     val formFields = listOf("出发地", "出发站", "到达地", "到达站", "乘车日期", "出发日期")
         .count(normalized::contains)
     val hasSearchForm = formFields >= 2 && listOf("查询", "搜索车票", "查询车票").any(normalized::contains)
@@ -56,7 +62,7 @@ internal fun detectOfficialPageState(text: String): OfficialPageState {
         (listOf("席别", "商务座", "一等座", "二等座", "硬卧", "软卧").any(normalized::contains) &&
             listOf("预订", "下一步").any(normalized::contains))
     if (hasSeatPickerEvidence) return OfficialPageState.SEAT_SELECTION
-    if (listOf("公告", "活动", "优惠", "温馨提示").any(normalized::contains) &&
+    if (listOf("温馨提示", "系统提示", "提示").any(normalized::contains) &&
         listOf("关闭", "知道了", "暂不").any(normalized::contains)) return OfficialPageState.POPUP
     if (listOf("启动", "加载", "请稍候", "正在加载").any(normalized::contains)) return OfficialPageState.LAUNCHING
     return OfficialPageState.UNKNOWN

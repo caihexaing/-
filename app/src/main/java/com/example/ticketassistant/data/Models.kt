@@ -45,7 +45,17 @@ data class TicketTask(
     val coldStartLastFailure: String? = null,
     val lastWindowChangedAt: Long? = null,
     val lastAccessibilityEventAt: Long? = null,
-    val accessibilityEventCount: Int = 0
+    val accessibilityEventCount: Int = 0,
+    val automationRunId: String? = null,
+    val stageEnteredAt: Long? = null,
+    val lastActionAt: Long? = null,
+    val lastActionOutcome: String? = null,
+    val lastResultPageAt: Long? = null,
+    val lastTargetControlAt: Long? = null,
+    val lastBookingActionAt: Long? = null,
+    val lastPassengerActionAt: Long? = null,
+    val lastSubmitAt: Long? = null,
+    val lastOrderEvidenceAt: Long? = null
 )
 
 enum class TaskStatus {

@@ -31,7 +31,7 @@ internal object PopupMatcher {
 
     internal fun isOrdinaryPopupText(text: String): Boolean {
         val normalized = normalize(text)
-        return listOf("公告", "活动", "优惠", "温馨提示", "提示").any(normalized::contains) &&
+        return listOf("温馨提示", "系统提示", "提示").any(normalized::contains) &&
             listOf("关闭", "知道了", "暂不").any(normalized::contains)
     }
 

@@ -13,7 +13,7 @@ import java.time.format.DateTimeFormatter
 /** Builds a report that is useful for debugging without exporting account or payment data. */
 fun buildDiagnosticReport(task: TicketTask, generatedAt: Instant = Instant.now()): String {
     val fields = linkedMapOf<String, String?>()
-    fields["formatVersion"] = "5"
+    fields["formatVersion"] = "6"
     fields["generatedAt"] = generatedAt.toString()
     fields["automationMode"] = "任务信息自动查询（诊断）"
     fields["taskId"] = task.taskId
@@ -45,6 +45,16 @@ fun buildDiagnosticReport(task: TicketTask, generatedAt: Instant = Instant.now()
     fields["lastWindowChangedAt"] = task.lastWindowChangedAt?.toString()
     fields["lastAccessibilityEventAt"] = task.lastAccessibilityEventAt?.toString()
     fields["accessibilityEventCount"] = task.accessibilityEventCount.toString()
+    fields["automationRunId"] = task.automationRunId
+    fields["stageEnteredAt"] = task.stageEnteredAt?.toString()
+    fields["lastActionAt"] = task.lastActionAt?.toString()
+    fields["lastActionOutcome"] = task.lastActionOutcome
+    fields["lastResultPageAt"] = task.lastResultPageAt?.toString()
+    fields["lastTargetControlAt"] = task.lastTargetControlAt?.toString()
+    fields["lastBookingActionAt"] = task.lastBookingActionAt?.toString()
+    fields["lastPassengerActionAt"] = task.lastPassengerActionAt?.toString()
+    fields["lastSubmitAt"] = task.lastSubmitAt?.toString()
+    fields["lastOrderEvidenceAt"] = task.lastOrderEvidenceAt?.toString()
     fields["containsCredentials"] = "false"
     fields["containsPaymentData"] = "false"
     return fields.entries.joinToString(",\n", prefix = "{\n", postfix = "\n}") { (key, value) ->

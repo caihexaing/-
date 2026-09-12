@@ -13,6 +13,19 @@ class OfficialSearchInteractor(
     private var stationPickerSeen = false
     private var stationCandidateSeen = false
     private var stationBeforeClickFingerprint: String? = null
+    private var dateTarget: String? = null
+    private var datePhase = DateSelectionPhase.IDLE
+    private var dateBeforeClickFingerprint: String? = null
+
+    fun reset() {
+        stationField = null
+        stationTarget = null
+        stationPhase = StationSelectionPhase.IDLE
+        stationPickerSeen = false
+        stationCandidateSeen = false
+        stationBeforeClickFingerprint = null
+        completeDateFlow()
+    }
 
     fun openTickets(root: AccessibilityNodeInfo): InteractionResult {
         val action = findActionNode(root, SearchAction.OPEN_TICKETS) ?: return InteractionResult.WAITING
@@ -146,9 +159,13 @@ class OfficialSearchInteractor(
     }
 
     private fun isStationPickerVisible(root: AccessibilityNodeInfo): Boolean {
-        val text = rootText(root).replace(Regex("\\s+"), "")
-        return listOf("选择出发站", "选择到达站", "站点列表", "热门站点", "车站选择", "常用站点")
-            .any(text::contains)
+        val markers = listOf("选择出发站", "选择到达站", "站点列表", "热门站点", "车站选择", "常用站点")
+        return findNodes(root) { node ->
+            node.isVisibleToUser && nodeValues(node).any { value ->
+                val normalized = normalizeText(value)
+                markers.any(normalized::contains)
+            }
+        }.any { node -> hasPickerAncestor(node) || node.isClickable }
     }
 
     private fun confirmedStationDisplay(
@@ -167,9 +184,31 @@ class OfficialSearchInteractor(
     }
 
     fun fillDate(root: AccessibilityNodeInfo, date: String): InteractionResult {
+        prepareDateFlow(date)
+        val currentFingerprint = stationSnapshotFingerprint(root)
         val input = findEditableField(root, SearchField.DATE)
         if (input != null) {
-            if (matchesTravelDate(input.text?.toString().orEmpty(), date)) {
+            val currentValue = input.text?.toString().orEmpty()
+            val pickerVisible = isDatePickerVisible(root)
+            if (datePhase == DateSelectionPhase.WAITING_CONFIRMATION) {
+                val snapshotChanged = dateBeforeClickFingerprint?.let { it != currentFingerprint } == true
+                if (dateSelectionConfirmed(
+                        datePhase,
+                        currentValue,
+                        rootText(root),
+                        date,
+                        pickerVisible,
+                        snapshotChanged
+                    )
+                ) {
+                    completeDateFlow()
+                    record("乘车日期候选已确认")
+                    return InteractionResult.DONE
+                }
+                record("等待乘车日期动作后的页面刷新（快照变化=$snapshotChanged）")
+                return InteractionResult.WAITING
+            }
+            if (!pickerVisible && matchesTravelDate(currentValue, date)) {
                 record("乘车日期已是目标日期")
                 return InteractionResult.DONE
             }
@@ -184,7 +223,29 @@ class OfficialSearchInteractor(
                 record("日期输入动作未派发")
                 return InteractionResult.FAILED
             }
+            datePhase = DateSelectionPhase.WAITING_CONFIRMATION
+            dateBeforeClickFingerprint = currentFingerprint
             record("已填写乘车日期，等待页面更新")
+            return InteractionResult.WAITING
+        }
+
+        val pickerVisible = isDatePickerVisible(root)
+        if (datePhase == DateSelectionPhase.WAITING_CONFIRMATION) {
+            val snapshotChanged = dateBeforeClickFingerprint?.let { it != currentFingerprint } == true
+            if (dateSelectionConfirmed(
+                    datePhase,
+                    "",
+                    rootText(root),
+                    date,
+                    pickerVisible,
+                    snapshotChanged
+                )
+            ) {
+                completeDateFlow()
+                record("乘车日期候选已确认")
+                return InteractionResult.DONE
+            }
+            record("等待乘车日期选择器关闭（快照变化=$snapshotChanged）")
             return InteractionResult.WAITING
         }
 
@@ -192,7 +253,13 @@ class OfficialSearchInteractor(
             val value = listOfNotNull(node.text?.toString(), node.contentDescription?.toString())
             value.any { text -> dateVariants(date).any { normalizeDateText(it) == normalizeDateText(text) } }
         }.mapNotNull(::clickableNode).distinctBy(::nodeIdentity)
-        if (exactDateNodes.size == 1) return click(exactDateNodes.single(), "选择目标日期")
+        if (exactDateNodes.size == 1) {
+            if (!clickNodeOrParent(exactDateNodes.single())) return InteractionResult.FAILED
+            datePhase = DateSelectionPhase.WAITING_CONFIRMATION
+            dateBeforeClickFingerprint = currentFingerprint
+            record("已选择目标日期，等待页面更新")
+            return InteractionResult.WAITING
+        }
         if (exactDateNodes.size > 1) {
             record("目标日期控件不唯一")
             return InteractionResult.FAILED
@@ -202,12 +269,37 @@ class OfficialSearchInteractor(
             listOfNotNull(node.text?.toString(), node.contentDescription?.toString(), node.hintText?.toString())
                 .any { fieldLabelMatches(it, SearchField.DATE) }
         }.mapNotNull(::clickableNode).distinctBy(::nodeIdentity)
-        if (controls.size == 1) return click(controls.single(), "打开日期选择器")
+        if (controls.size == 1) {
+            if (!clickNodeOrParent(controls.single())) return InteractionResult.FAILED
+            datePhase = DateSelectionPhase.WAITING_CONFIRMATION
+            dateBeforeClickFingerprint = currentFingerprint
+            record("已打开日期选择器，等待页面更新")
+            return InteractionResult.WAITING
+        }
         if (controls.size > 1) {
             record("日期控件不唯一")
             return InteractionResult.FAILED
         }
         return InteractionResult.WAITING
+    }
+
+    private fun prepareDateFlow(date: String) {
+        if (dateTarget == date) return
+        dateTarget = date
+        datePhase = DateSelectionPhase.IDLE
+        dateBeforeClickFingerprint = null
+    }
+
+    private fun completeDateFlow() {
+        dateTarget = null
+        datePhase = DateSelectionPhase.IDLE
+        dateBeforeClickFingerprint = null
+    }
+
+    private fun isDatePickerVisible(root: AccessibilityNodeInfo): Boolean {
+        val text = rootText(root).replace(Regex("\\s+"), "")
+        return listOf("日期选择", "选择日期", "日历", "上一月", "下一月")
+            .any(text::contains)
     }
 
     fun submitSearch(root: AccessibilityNodeInfo): InteractionResult {
@@ -277,10 +369,11 @@ class OfficialSearchInteractor(
             ) return@mapNotNull null
             val association = nearestFieldContext(stationNode, field)
             val inContainer = fieldContainer?.let { isDescendantOrSelf(stationNode, it) } == true
+            val pickerScoped = pickerVisible || hasPickerAncestor(stationNode)
             when {
                 association == FieldContext.OPPOSITE || association == FieldContext.AMBIGUOUS -> null
-                association == FieldContext.TARGET && (fieldContainer == null || inContainer) -> clickable
-                association == FieldContext.NONE && stationField == field && matches.size == 1 -> clickable
+                association == FieldContext.TARGET && pickerScoped && (pickerVisible || fieldContainer == null || inContainer) -> clickable
+                association == FieldContext.NONE && pickerScoped && stationField == field && matches.size == 1 -> clickable
                 else -> null
             }
         }.distinctBy(::nodeIdentity)
@@ -306,6 +399,20 @@ class OfficialSearchInteractor(
         }
         walk(root)
         return result
+    }
+
+    private fun hasPickerAncestor(node: AccessibilityNodeInfo): Boolean {
+        var current: AccessibilityNodeInfo? = node
+        repeat(MAX_PARENT_DEPTH + 2) {
+            if (current == null) return@repeat
+            val marker = (nodeValues(current).joinToString(" ") + " " + current.className)
+                .lowercase()
+            if (listOf("picker", "stationlist", "station_picker", "站点列表", "热门站点", "车站选择", "dialog", "popup", "list")
+                    .any(marker::contains)
+            ) return true
+            current = current.parent
+        }
+        return false
     }
 
     private fun findStationFieldControl(root: AccessibilityNodeInfo, field: SearchField): AccessibilityNodeInfo? {
