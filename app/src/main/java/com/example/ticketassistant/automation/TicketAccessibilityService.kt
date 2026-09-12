@@ -638,7 +638,9 @@ class TicketAccessibilityService : AccessibilityService() {
     private fun waitForColdStart(reason: String) {
         coldStartWaitEvents++
         recordDiagnostic(pageState, "$reason（第 ${coldStartWaitEvents} 次等待）", evidenceSource = "COLD_START_WAIT")
-        if (coldStartWaitEvents >= MAX_COLD_START_WAIT_EVENTS) {
+        val startedAt = TaskStore(this).load()?.coldStartAt ?: 0L
+        val elapsed = if (startedAt > 0L) System.currentTimeMillis() - startedAt else 0L
+        if (elapsed >= COLD_START_TIMEOUT_MS || (startedAt == 0L && coldStartWaitEvents >= MAX_COLD_START_WAIT_EVENTS)) {
             takeover("官方 App 冷启动或首页导航超时：$reason")
         } else {
             val status = when (stage) {
@@ -1047,6 +1049,7 @@ class TicketAccessibilityService : AccessibilityService() {
         private const val MAX_UNKNOWN_RESULT_EVENTS = 3
         private const val MAX_FAST_PATH_WAIT_EVENTS = 3
         private const val MAX_COLD_START_WAIT_EVENTS = 40
+        private const val COLD_START_TIMEOUT_MS = 30_000L
         private const val MAX_RESULT_CONTEXT_WAIT_EVENTS = 4
         private const val MAX_PAGE_REFRESH_WAIT_EVENTS = 4
         private const val MAX_ACTION_WAIT_EVENTS = 4
