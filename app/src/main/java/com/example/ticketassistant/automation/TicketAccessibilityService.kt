@@ -570,7 +570,10 @@ class TicketAccessibilityService : AccessibilityService() {
                 lastActionAt = System.currentTimeMillis()
                 onDone()
             }
-            InteractionResult.WAITING -> waitForFormProgress("等待${if (field == SearchField.DEPARTURE) "出发站" else "到达站"}候选项")
+            InteractionResult.WAITING -> {
+                lastActionAt = System.currentTimeMillis()
+                waitForFormProgress("等待${if (field == SearchField.DEPARTURE) "出发站" else "到达站"}候选项")
+            }
             InteractionResult.FAILED -> takeover("官方 12306 ${if (field == SearchField.DEPARTURE) "出发站" else "到达站"}控件无法操作")
         }
     }
@@ -584,7 +587,10 @@ class TicketAccessibilityService : AccessibilityService() {
                 stage = Stage.SUBMIT_SEARCH
                 TaskStore(this).updateStatus(TaskStatus.SUBMITTING_SEARCH, "日期已确认，正在查询目标车次")
             }
-            InteractionResult.WAITING -> waitForFormProgress("等待乘车日期控件更新")
+            InteractionResult.WAITING -> {
+                lastActionAt = System.currentTimeMillis()
+                waitForFormProgress("等待乘车日期控件更新")
+            }
             InteractionResult.FAILED -> takeover("官方 12306 乘车日期控件无法操作")
         }
     }
