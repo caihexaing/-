@@ -42,6 +42,13 @@ class PageStateClassifierTest {
         assertEquals(OfficialPageState.PASSENGER_SELECTION, detectOfficialPageState("首页 订单 乘车人 蔡贺翔 下一步"))
     }
 
+    @Test fun `result list with seat columns and booking action stays search result`() {
+        assertEquals(
+            OfficialPageState.SEARCH_RESULT,
+            detectOfficialPageState("首页 我的 订单 车票 查询车票 2026年9月19日 出发地 汉口 到达地 潜江 车次 D5995 二等座 预订")
+        )
+    }
+
     @Test fun `home search form is not treated as results`() {
         assertEquals(OfficialPageState.HOME_PAGE, detectOfficialPageState("首页 我的 订单 车票 查询车票 出发地 到达地"))
         assertEquals(OfficialPageState.HOME_PAGE, detectOfficialPageState("首页 我的 订单 车票 查询车票 2026-09-19 出发地 到达地"))

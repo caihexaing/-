@@ -6,7 +6,9 @@
 
 `app/build/outputs/apk/debug/app-debug.apk`
 
-当前版本为 `0.4.1-station-fix`（`versionCode` 23），支持 Android 8.0（API 26）及以上，目标 Android 16（API 36）。APK 包名为 `com.example.ticketassistant`。
+当前版本为 `0.4.2-result-state-fix`（`versionCode` 24），支持 Android 8.0（API 26）及以上，目标 Android 16（API 36）。APK 包名为 `com.example.ticketassistant`。
+
+本版本修复查询结果页同时包含席别和“预订”时被误判为席别页的问题，并要求站点候选点击后出现新的页面证据、选择器关闭且目标字段匹配后才推进流程，避免重复打开出发站或在站点选择未完成时超时。该修复仍需在用户设备和当前 12306 版本上进行真实端到端验收，不保证自动生成订单。
 
 ## 构建
 

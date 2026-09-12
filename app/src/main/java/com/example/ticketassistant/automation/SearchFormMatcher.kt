@@ -151,8 +151,12 @@ internal fun stationSelectionConfirmed(
     fieldValue: String,
     stationName: String,
     pickerVisible: Boolean,
-    candidateCount: Int
+    candidateCount: Int,
+    pickerEvidenceSeen: Boolean,
+    snapshotChanged: Boolean
 ): Boolean = phase == StationSelectionPhase.WAITING_CONFIRMATION &&
+    pickerEvidenceSeen &&
+    snapshotChanged &&
     !pickerVisible &&
     candidateCount == 0 &&
     stationCandidateMatches(fieldValue, stationName)

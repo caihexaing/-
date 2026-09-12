@@ -92,7 +92,9 @@ class SearchFormMatcherTest {
                 fieldValue = "汉口",
                 stationName = "汉口",
                 pickerVisible = false,
-                candidateCount = 0
+                candidateCount = 0,
+                pickerEvidenceSeen = true,
+                snapshotChanged = false
             )
         )
     }
@@ -105,7 +107,9 @@ class SearchFormMatcherTest {
                 fieldValue = "汉口",
                 stationName = "汉口",
                 pickerVisible = true,
-                candidateCount = 0
+                candidateCount = 0,
+                pickerEvidenceSeen = true,
+                snapshotChanged = true
             )
         )
         assertTrue(
@@ -114,7 +118,24 @@ class SearchFormMatcherTest {
                 fieldValue = "汉口",
                 stationName = "汉口",
                 pickerVisible = false,
-                candidateCount = 0
+                candidateCount = 0,
+                pickerEvidenceSeen = true,
+                snapshotChanged = true
+            )
+        )
+    }
+
+    @Test
+    fun `matching text without picker evidence cannot confirm`() {
+        assertFalse(
+            stationSelectionConfirmed(
+                phase = StationSelectionPhase.WAITING_CONFIRMATION,
+                fieldValue = "汉口",
+                stationName = "汉口",
+                pickerVisible = false,
+                candidateCount = 0,
+                pickerEvidenceSeen = false,
+                snapshotChanged = true
             )
         )
     }

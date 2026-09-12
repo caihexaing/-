@@ -12,6 +12,7 @@ class OfficialSearchInteractor(
     private var stationPhase = StationSelectionPhase.IDLE
     private var stationPickerSeen = false
     private var stationCandidateSeen = false
+    private var stationBeforeClickFingerprint: String? = null
 
     fun openTickets(root: AccessibilityNodeInfo): InteractionResult {
         val action = findActionNode(root, SearchAction.OPEN_TICKETS) ?: return InteractionResult.WAITING
@@ -27,28 +28,31 @@ class OfficialSearchInteractor(
         val input = findEditableField(root, field)
         val currentValue = input?.text?.toString().orEmpty()
         val pickerVisible = isStationPickerVisible(root)
-        val visibleCandidates = findFieldScopedCandidates(root, input, field, stationName)
+        val visibleCandidates = findFieldScopedCandidates(root, input, field, stationName, pickerVisible)
+        val currentFingerprint = stationSnapshotFingerprint(root)
         if (pickerVisible) stationPickerSeen = true
         if (visibleCandidates.isNotEmpty()) stationCandidateSeen = true
-        // A selected form value can itself be a clickable station control. It
-        // is not a suggestion row once the picker is closed, so exclude it
-        // from candidate matching during confirmation and pre-filled checks.
-        val candidates = if (pickerVisible || stationPhase == StationSelectionPhase.WAITING_CANDIDATE) {
-            visibleCandidates
-        } else {
-            emptyList()
-        }
+        val candidates = visibleCandidates
 
         // ACTION_SET_TEXT only changes the query. It is not proof that the
         // picker row was selected, so wait for a post-click page refresh.
         if (stationPhase == StationSelectionPhase.WAITING_CONFIRMATION) {
-            val pickerVisible = isStationPickerVisible(root)
+            val snapshotChanged = stationBeforeClickFingerprint?.let { it != currentFingerprint } == true
             if (pickerVisible || candidates.isNotEmpty()) {
-                record("等待${field.actionName()}候选站点击后的页面刷新（候选数=${candidates.size}）")
+                record("等待${field.actionName()}候选站点击后的页面刷新（候选数=${candidates.size}，快照变化=${snapshotChanged}）")
                 return InteractionResult.WAITING
             }
-            if (stationSelectionConfirmed(stationPhase, currentValue, stationName, pickerVisible, candidates.size) ||
-                confirmedStationDisplay(root, input, field, stationName)
+            if (stationSelectionConfirmed(
+                    stationPhase,
+                    currentValue,
+                    stationName,
+                    pickerVisible,
+                    candidates.size,
+                    stationPickerSeen || stationCandidateSeen,
+                    snapshotChanged
+                ) ||
+                (snapshotChanged && (stationPickerSeen || stationCandidateSeen) &&
+                    confirmedStationDisplay(root, input, field, stationName))
             ) {
                 completeStationFlow()
                 record("${field.actionName()}候选站已确认")
@@ -81,16 +85,12 @@ class OfficialSearchInteractor(
                 return InteractionResult.FAILED
             }
             stationPhase = StationSelectionPhase.WAITING_CONFIRMATION
+            stationBeforeClickFingerprint = currentFingerprint
             record("已选择${field.actionName()}候选站，等待字段值确认")
             return InteractionResult.WAITING
         }
 
         if (stationPhase == StationSelectionPhase.WAITING_CANDIDATE) {
-            if (!pickerVisible && (stationPickerSeen || stationCandidateSeen) && stationCandidateMatches(currentValue, stationName)) {
-                completeStationFlow()
-                record("${field.actionName()}候选站已确认")
-                return InteractionResult.DONE
-            }
             record("等待${field.actionName()}候选站（候选数=0）")
             return InteractionResult.WAITING
         }
@@ -133,6 +133,7 @@ class OfficialSearchInteractor(
         stationPhase = StationSelectionPhase.IDLE
         stationPickerSeen = false
         stationCandidateSeen = false
+        stationBeforeClickFingerprint = null
     }
 
     private fun completeStationFlow() {
@@ -141,6 +142,7 @@ class OfficialSearchInteractor(
         stationPhase = StationSelectionPhase.IDLE
         stationPickerSeen = false
         stationCandidateSeen = false
+        stationBeforeClickFingerprint = null
     }
 
     private fun isStationPickerVisible(root: AccessibilityNodeInfo): Boolean {
@@ -254,8 +256,10 @@ class OfficialSearchInteractor(
         root: AccessibilityNodeInfo,
         input: AccessibilityNodeInfo?,
         field: SearchField,
-        stationName: String
+        stationName: String,
+        pickerVisible: Boolean
     ): List<AccessibilityNodeInfo> {
+        if (!pickerVisible) return emptyList()
         val fieldContainer = input?.let { findFieldContainer(it, field) }
         val matches = findStationCandidateNodes(root) { node ->
             !node.isEditable && listOfNotNull(node.text?.toString(), node.contentDescription?.toString())
@@ -483,6 +487,25 @@ class OfficialSearchInteractor(
             for (index in 0 until node.childCount) walk(node.getChild(index))
         }
         walk(root, includeRoot = true)
+    }
+
+    private fun stationSnapshotFingerprint(root: AccessibilityNodeInfo): String {
+        val snapshot = buildString {
+            fun walk(node: AccessibilityNodeInfo?, includeRoot: Boolean = false) {
+                if (node == null || (!includeRoot && !node.isVisibleToUser)) return
+                append(node.className).append('|')
+                append(node.viewIdResourceName).append('|')
+                append(node.text).append('|')
+                append(node.contentDescription).append('|')
+                append(node.hintText).append('|')
+                append(node.isClickable).append('|').append(node.isEditable).append(';')
+                for (index in 0 until node.childCount) walk(node.getChild(index))
+            }
+            walk(root, includeRoot = true)
+        }
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(snapshot.toString().replace(Regex("\\s+"), "").toByteArray())
+        return digest.joinToString("") { "%02x".format(it) }.take(16)
     }
 
     private fun nodeIdentity(node: AccessibilityNodeInfo): Int = System.identityHashCode(node)
