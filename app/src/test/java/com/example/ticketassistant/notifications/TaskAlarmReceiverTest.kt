@@ -10,6 +10,9 @@ class TaskAlarmReceiverTest {
         assertTrue(isSalePhaseEligible(TaskStatus.WAITING_FOR_SALE))
         assertTrue(isSalePhaseEligible(TaskStatus.PREPARING))
         assertTrue(isSalePhaseEligible(TaskStatus.SALE_T0))
+        assertTrue(isSalePhaseEligible(TaskStatus.COLD_START))
+        assertTrue(isSalePhaseEligible(TaskStatus.OPENING_OFFICIAL_APP))
+        assertTrue(isSalePhaseEligible(TaskStatus.WAITING_SEARCH_RESULT))
         assertTrue(isSalePhaseEligible(TaskStatus.VALIDATING_SEARCH_RESULT))
     }
 

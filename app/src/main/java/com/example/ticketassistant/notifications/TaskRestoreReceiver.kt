@@ -26,6 +26,11 @@ class TaskRestoreReceiver : BroadcastReceiver() {
         if (task.status in setOf(
                 TaskStatus.WAITING_OFFICIAL_PAGE,
                 TaskStatus.SALE_T0,
+                TaskStatus.COLD_START,
+                TaskStatus.OPENING_OFFICIAL_APP,
+                TaskStatus.OPENING_HOME,
+                TaskStatus.FILLING_SEARCH_FORM,
+                TaskStatus.WAITING_SEARCH_RESULT,
                 TaskStatus.OPENING_SEARCH,
                 TaskStatus.FILLING_DEPARTURE,
                 TaskStatus.FILLING_ARRIVAL,

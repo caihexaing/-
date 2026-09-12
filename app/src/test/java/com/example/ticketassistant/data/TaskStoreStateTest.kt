@@ -22,6 +22,11 @@ class TaskStoreStateTest {
         assertTrue(TaskStatus.SUBMITTING_SEARCH.isAccessibilityActive())
         assertTrue(TaskStatus.PREPARING.isAccessibilityActive())
         assertTrue(TaskStatus.SALE_T0.isAccessibilityActive())
+        assertTrue(TaskStatus.COLD_START.isAccessibilityActive())
+        assertTrue(TaskStatus.OPENING_OFFICIAL_APP.isAccessibilityActive())
+        assertTrue(TaskStatus.OPENING_HOME.isAccessibilityActive())
+        assertTrue(TaskStatus.FILLING_SEARCH_FORM.isAccessibilityActive())
+        assertTrue(TaskStatus.WAITING_SEARCH_RESULT.isAccessibilityActive())
         assertNotEquals(taskSnapshotKey(task), taskSnapshotKey(task.copy(seat = "一等座")))
     }
 }

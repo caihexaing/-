@@ -77,10 +77,22 @@ class TicketAutomationService : Service() {
                     stopSelfResult(startId)
                     return START_NOT_STICKY
                 }
-                store.recordSaleT0("已到开售时刻（SALE_T0），保留当前官方页面并开始快速校验")
+                store.recordSaleT0("已到开售时刻（SALE_T0），开始官方 App 冷启动导航")
+                store.recordColdStartState(TaskStatus.COLD_START, "冷启动阶段已开始：检查官方 12306 前台窗口")
                 store.recordEvent("开售阶段：旁路查询已启动，官方页面操作不等待查询结果")
-                updateNotification("已到开售时间，正在定位预热的官方结果页")
+                updateNotification("已到开售时间，正在准备官方 12306 页面")
                 startSideChannelProbe(task, store)
+                if (!TicketAccessibilityService.hasRecentOfficialWindow(this)) {
+                    store.recordColdStartAttempt("未检测到官方 12306 前台窗口，正在尝试启动官方 App")
+                    OfficialAppLauncher(this).launch().onFailure {
+                        store.recordColdStartState(TaskStatus.COLD_START, "官方 12306 冷启动失败，等待人工处理", it.message)
+                        store.updateStatus(TaskStatus.TAKEOVER, "官方 12306 启动失败，请手动打开官方 App", it.message)
+                        message("无法启动官方 12306：${it.message ?: "请手动打开后重新开始"}")
+                        stopSelf()
+                    }
+                } else {
+                    store.recordEvent("已检测到官方 12306 前台窗口，继续读取当前页面")
+                }
                 TicketAccessibilityService.signalSaleT0(this, task.taskId)
             }
             else -> {

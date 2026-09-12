@@ -35,7 +35,7 @@ class DiagnosticReportTest {
         )
 
         val report = buildDiagnosticReport(task, Instant.parse("2026-09-11T06:00:00Z"))
-        assertTrue(report.contains("\"formatVersion\": \"4\""))
+        assertTrue(report.contains("\"formatVersion\": \"5\""))
         assertTrue(report.contains("\"status\": \"FILLING_DEPARTURE\""))
         assertTrue(report.contains("\"automationMode\": \"任务信息自动查询（诊断）\""))
         assertTrue(report.contains("\"lastPageState\": \"HOME_PAGE\""))

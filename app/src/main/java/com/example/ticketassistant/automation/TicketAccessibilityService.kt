@@ -24,7 +24,7 @@ class TicketAccessibilityService : AccessibilityService() {
         override fun run() {
             val task = TaskStore(this@TicketAccessibilityService).load()
             if (task?.enabled == true && task.status in STATIC_REFRESH_STATUSES &&
-                (task.status == TaskStatus.SALE_T0 || lastOfficialRootAt > 0L)) {
+                (task.status in COLD_START_STATUSES || task.status == TaskStatus.SALE_T0 || lastOfficialRootAt > 0L)) {
                 processCurrentWindow("STATIC_REFRESH")
             }
             mainHandler.postDelayed(this, STATIC_REFRESH_INTERVAL_MS)
@@ -47,6 +47,8 @@ class TicketAccessibilityService : AccessibilityService() {
     private var popupDismissSent = false
     private var fastPathWaitEvents = 0
     private var expectedPageWaitEvents = 0
+    private var coldStartWaitEvents = 0
+    private var lastObservedRootPackage: String? = null
     private var seatSelected = false
     private var passengerSelected = false
     private var actionWaitEvents = 0
@@ -63,15 +65,17 @@ class TicketAccessibilityService : AccessibilityService() {
 
     private fun activateSaleT0(taskId: String) {
         val task = TaskStore(this).load()
-        if (task?.taskId == taskId && task.status == TaskStatus.SALE_T0) {
+        if (task?.taskId == taskId && task.status in COLD_START_STATUSES) {
             processCurrentWindow("SALE_T0")
         }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         val eventPackage = event?.packageName?.toString()
-        if (eventPackage != OFFICIAL_PACKAGE) return
-        processCurrentWindow("ACCESSIBILITY_EVENT")
+        val task = TaskStore(this).load()
+        if (eventPackage == OFFICIAL_PACKAGE || task?.status in ACTIVE_STATUSES) {
+            processCurrentWindow(if (eventPackage == OFFICIAL_PACKAGE) "ACCESSIBILITY_EVENT" else "WINDOW_CHANGE")
+        }
     }
 
     private fun processCurrentWindow(source: String) {
@@ -97,15 +101,17 @@ class TicketAccessibilityService : AccessibilityService() {
             popupDismissSent = false
             fastPathWaitEvents = 0
             expectedPageWaitEvents = 0
+            coldStartWaitEvents = 0
+            lastObservedRootPackage = null
             seatSelected = false
             passengerSelected = false
             actionWaitEvents = 0
         }
-        if (task.status == TaskStatus.SALE_T0 && stage != Stage.SALE_T0 && stage != Stage.DONE) {
-            stage = Stage.SALE_T0
+        if (task.status in COLD_START_STATUSES && stage in setOf(Stage.WAITING_PAGE, Stage.PREWARM, Stage.SALE_T0)) {
+            stage = stageFor(task.status)
             fastPathWaitEvents = 0
             expectedPageWaitEvents = 0
-            recordDiagnostic(OfficialPageState.LAUNCHING, "收到 SALE_T0 信号，重新读取当前官方窗口", evidenceSource = "SALE_T0_SIGNAL")
+            recordDiagnostic(OfficialPageState.LAUNCHING, "收到 SALE_T0 信号，进入官方 App 冷启动导航", evidenceSource = "SALE_T0_SIGNAL")
         }
 
         val gate = PersistentSubmitGate(getSharedPreferences("submit_gate", MODE_PRIVATE), submitGateKey(task))
@@ -123,6 +129,10 @@ class TicketAccessibilityService : AccessibilityService() {
             return
         }
         val rootPackage = root.packageName?.toString()
+        if (rootPackage != lastObservedRootPackage) {
+            lastObservedRootPackage = rootPackage
+            TaskStore(this).recordWindowChange(rootPackage, "检测到前台窗口变化")
+        }
         if (!isOfficialRootPackage(root.packageName)) {
             recordDiagnostic(
                 OfficialPageState.UNKNOWN,
@@ -130,7 +140,9 @@ class TicketAccessibilityService : AccessibilityService() {
                 rootPackage = rootPackage ?: "UNKNOWN",
                 evidenceSource = "ROOT_PACKAGE_MISMATCH"
             )
-            if (task.status != TaskStatus.PREPARING) {
+            if (isColdStartStage(stage)) {
+                waitForColdStart("官方 12306 尚未出现在前台（当前窗口 ${rootPackage ?: "未知"}）")
+            } else if (task.status != TaskStatus.PREPARING) {
                 TaskStore(this).clearSearchSnapshot()
                 takeover("官方 12306 不在前台，当前窗口为 ${rootPackage ?: "未知"}")
             }
@@ -139,10 +151,6 @@ class TicketAccessibilityService : AccessibilityService() {
         lastOfficialRootAt = System.currentTimeMillis()
         val text = root.textContent()
         if (text.isBlank()) {
-            if (source == "SALE_T0") {
-                takeover("开售 T0 读取到的官方页面树为空，请手动确认 12306 页面")
-                return
-            }
             handleEmptyTree("官方 12306 页面节点为空（来源=$source）")
             return
         }
@@ -212,6 +220,7 @@ class TicketAccessibilityService : AccessibilityService() {
             handleSubmitResult(text, task, rootPackage)
             return
         }
+        if (stage != Stage.DONE && System.currentTimeMillis() - lastActionAt < ACTION_COOLDOWN_MS) return
         if (stage == Stage.SALE_T0) {
             when (pageState) {
                 OfficialPageState.SEARCH_RESULT -> when (contextCheck?.status) {
@@ -240,11 +249,34 @@ class TicketAccessibilityService : AccessibilityService() {
                     }
                     return
                 }
+                OfficialPageState.HOME_PAGE, OfficialPageState.SEARCH_FORM -> {
+                    handleColdStartPage(root, text, task)
+                    return
+                }
                 else -> {
-                    takeover("开售 T0 当前不是任务一致的官方结果页（${pageState.name}），未执行返回或首页跳转")
+                    waitForColdStart("开售 T0 尚未读取到官方首页或查询表单")
                     return
                 }
             }
+        }
+        if (isColdStartStage(stage)) {
+            when (pageState) {
+                OfficialPageState.HOME_PAGE, OfficialPageState.SEARCH_FORM -> {
+                    handleColdStartPage(root, text, task)
+                }
+                OfficialPageState.SEARCH_RESULT -> {
+                    stage = Stage.VALIDATING_SEARCH
+                    TaskStore(this).updateStatus(TaskStatus.VALIDATING_SEARCH_RESULT, "已发现官方查询结果页，正在核对任务上下文")
+                    validateAndSelectTrain(root, text, task)
+                }
+                OfficialPageState.SEARCH_RESULT_LOADING, OfficialPageState.SEARCH_RESULT_PARTIAL,
+                OfficialPageState.LAUNCHING, OfficialPageState.UNKNOWN -> waitForColdStart("等待官方首页或车票查询页面")
+                else -> takeover("冷启动时官方页面状态未知（${pageState.name}），已停止自动操作")
+            }
+            // The handler may advance several form stages in one tree read.
+            // Stop here so the same accessibility event cannot repeat the
+            // station/date/action that was just dispatched.
+            return
         }
         if (pageState == OfficialPageState.PROCESSING) {
             takeover("官方 12306 正在处理，但任务尚未发送提交点击，请手动确认页面")
@@ -266,7 +298,10 @@ class TicketAccessibilityService : AccessibilityService() {
 
         val expectedPage = when (stage) {
             Stage.WAITING_PAGE, Stage.OPEN_SEARCH, Stage.DEPARTURE, Stage.ARRIVAL,
-            Stage.DATE, Stage.SUBMIT_SEARCH, Stage.PREWARM, Stage.SALE_T0, Stage.WAITING_RESULT, Stage.DONE -> null
+            Stage.DATE, Stage.SUBMIT_SEARCH, Stage.PREWARM, Stage.SALE_T0,
+            Stage.COLD_START, Stage.OPENING_OFFICIAL_APP, Stage.OPENING_HOME,
+            Stage.FILLING_SEARCH_FORM, Stage.WAITING_SEARCH_RESULT,
+            Stage.WAITING_RESULT, Stage.DONE -> null
             Stage.VALIDATING_SEARCH, Stage.TRAIN -> OfficialPageState.SEARCH_RESULT
             Stage.SEAT -> OfficialPageState.SEAT_SELECTION
             Stage.PASSENGER -> OfficialPageState.PASSENGER_SELECTION
@@ -291,6 +326,8 @@ class TicketAccessibilityService : AccessibilityService() {
             Stage.WAITING_PAGE -> handleWaitingPage(root, text, task)
             Stage.PREWARM -> handlePrewarm(text, task)
             Stage.SALE_T0 -> Unit
+            Stage.COLD_START, Stage.OPENING_OFFICIAL_APP, Stage.OPENING_HOME -> Unit
+            Stage.FILLING_SEARCH_FORM -> handleFillingSearchForm(root, text, task)
             Stage.OPEN_SEARCH -> handleOpeningSearch(root, text)
             Stage.DEPARTURE -> handleStationField(root, SearchField.DEPARTURE, task.from.name) {
                 stage = Stage.ARRIVAL
@@ -302,6 +339,7 @@ class TicketAccessibilityService : AccessibilityService() {
             }
             Stage.DATE -> handleDateField(root, task)
             Stage.SUBMIT_SEARCH -> handleSearchSubmission(root, text, task)
+            Stage.WAITING_SEARCH_RESULT -> handleSearchSubmission(root, text, task)
             Stage.VALIDATING_SEARCH -> validateAndSelectTrain(root, text, task)
             Stage.TRAIN -> {
                 val check = classifySearchContext(text, task)
@@ -407,6 +445,35 @@ class TicketAccessibilityService : AccessibilityService() {
         }
     }
 
+    private fun handleColdStartPage(root: AccessibilityNodeInfo, text: String, task: TicketTask) {
+        when (pageState) {
+            OfficialPageState.HOME_PAGE -> {
+                stage = Stage.OPENING_HOME
+                TaskStore(this).recordColdStartState(TaskStatus.OPENING_HOME, "已检测到官方 12306 首页，正在定位车票入口")
+                handleOpeningSearch(root, text)
+            }
+            OfficialPageState.SEARCH_FORM -> {
+                stage = Stage.FILLING_SEARCH_FORM
+                TaskStore(this).recordColdStartState(TaskStatus.FILLING_SEARCH_FORM, "已检测到车票查询表单，开始填写任务信息")
+                handleFillingSearchForm(root, text, task)
+            }
+            else -> waitForColdStart("等待官方首页或车票查询表单")
+        }
+    }
+
+    private fun handleFillingSearchForm(root: AccessibilityNodeInfo, text: String, task: TicketTask) {
+        if (pageState != OfficialPageState.HOME_PAGE && pageState != OfficialPageState.SEARCH_FORM) {
+            waitForColdStart("等待官方车票查询表单")
+            return
+        }
+        stage = Stage.DEPARTURE
+        TaskStore(this).updateStatus(TaskStatus.FILLING_DEPARTURE, "正在自动填写出发站")
+        handleStationField(root, SearchField.DEPARTURE, task.from.name) {
+            stage = Stage.ARRIVAL
+            TaskStore(this).updateStatus(TaskStatus.FILLING_ARRIVAL, "出发站已确认，正在填写到达站")
+        }
+    }
+
     private fun handlePrewarm(text: String, task: TicketTask) {
         when (pageState) {
             OfficialPageState.SEARCH_RESULT -> {
@@ -460,6 +527,8 @@ class TicketAccessibilityService : AccessibilityService() {
             }
             OfficialPageState.HOME_PAGE, OfficialPageState.SEARCH_FORM -> {
                 if (hasSearchForm(text)) {
+                    stage = Stage.FILLING_SEARCH_FORM
+                    TaskStore(this).recordColdStartState(TaskStatus.FILLING_SEARCH_FORM, "已定位官方车票查询表单，开始填写任务信息")
                     stage = Stage.DEPARTURE
                     TaskStore(this).updateStatus(TaskStatus.FILLING_DEPARTURE, "正在自动填写出发站")
                     handleStationField(root, SearchField.DEPARTURE, TaskStore(this).load()?.from?.name.orEmpty()) {
@@ -471,6 +540,8 @@ class TicketAccessibilityService : AccessibilityService() {
                 when (searchInteractor.openTickets(root)) {
                     InteractionResult.DONE -> {
                         lastActionAt = System.currentTimeMillis()
+                        stage = Stage.FILLING_SEARCH_FORM
+                        TaskStore(this).recordColdStartState(TaskStatus.FILLING_SEARCH_FORM, "已打开官方车票查询，开始填写任务信息")
                         stage = Stage.DEPARTURE
                         TaskStore(this).updateStatus(TaskStatus.FILLING_DEPARTURE, "已打开车票查询，正在填写出发站")
                     }
@@ -538,7 +609,8 @@ class TicketAccessibilityService : AccessibilityService() {
                 searchActionSent = true
                 formWaitEvents = 0
                 lastActionAt = System.currentTimeMillis()
-                TaskStore(this).updateStatus(TaskStatus.SUBMITTING_SEARCH, "已发送查询动作，等待官方结果页")
+                stage = Stage.WAITING_SEARCH_RESULT
+                TaskStore(this).recordColdStartState(TaskStatus.WAITING_SEARCH_RESULT, "已发送查询动作，等待官方结果页")
             }
             InteractionResult.WAITING -> waitForFormProgress("正在定位查询按钮")
             InteractionResult.FAILED -> takeover("官方 12306 查询按钮动作未派发")
@@ -562,6 +634,30 @@ class TicketAccessibilityService : AccessibilityService() {
             TaskStore(this).recordEvent(reason)
         }
     }
+
+    private fun waitForColdStart(reason: String) {
+        coldStartWaitEvents++
+        recordDiagnostic(pageState, "$reason（第 ${coldStartWaitEvents} 次等待）", evidenceSource = "COLD_START_WAIT")
+        if (coldStartWaitEvents >= MAX_COLD_START_WAIT_EVENTS) {
+            takeover("官方 App 冷启动或首页导航超时：$reason")
+        } else {
+            val status = when (stage) {
+                Stage.COLD_START, Stage.SALE_T0 -> TaskStatus.COLD_START
+                Stage.OPENING_OFFICIAL_APP -> TaskStatus.OPENING_OFFICIAL_APP
+                Stage.OPENING_HOME -> TaskStatus.OPENING_HOME
+                Stage.FILLING_SEARCH_FORM, Stage.OPEN_SEARCH, Stage.DEPARTURE, Stage.ARRIVAL, Stage.DATE -> TaskStatus.FILLING_SEARCH_FORM
+                else -> TaskStatus.WAITING_SEARCH_RESULT
+            }
+            TaskStore(this).recordColdStartState(status, reason)
+        }
+    }
+
+    private fun isColdStartStage(value: Stage): Boolean = value in setOf(
+        Stage.COLD_START,
+        Stage.OPENING_OFFICIAL_APP,
+        Stage.OPENING_HOME,
+        Stage.FILLING_SEARCH_FORM
+    )
 
     private fun waitForSearchContext(missing: List<String>) {
         fastPathWaitEvents++
@@ -805,10 +901,10 @@ class TicketAccessibilityService : AccessibilityService() {
     private fun handleEmptyTree(reason: String) {
         emptyTreeEvents++
         recordDiagnostic(OfficialPageState.UNKNOWN, "$reason（连续 ${emptyTreeEvents} 次）")
-        if (emptyTreeEvents >= MAX_EMPTY_TREE_EVENTS) {
+        if (isColdStartStage(stage) || stage == Stage.SALE_T0) {
+            waitForColdStart(reason)
+        } else if (emptyTreeEvents >= MAX_EMPTY_TREE_EVENTS) {
             takeover("连续多次无法读取官方 12306 页面，已停止自动操作；请确认无障碍服务已启用")
-        } else if (TaskStore(this).load()?.status == TaskStatus.SALE_T0) {
-            TaskStore(this).recordEvent("开售 T0 等待官方窗口节点恢复")
         } else {
             TaskStore(this).updateStatus(TaskStatus.WAITING_OFFICIAL_PAGE, reason)
         }
@@ -882,6 +978,11 @@ class TicketAccessibilityService : AccessibilityService() {
     private fun stageFor(status: TaskStatus): Stage = when (status) {
         TaskStatus.PREPARING -> Stage.PREWARM
         TaskStatus.SALE_T0 -> Stage.SALE_T0
+        TaskStatus.COLD_START -> Stage.COLD_START
+        TaskStatus.OPENING_OFFICIAL_APP -> Stage.OPENING_OFFICIAL_APP
+        TaskStatus.OPENING_HOME -> Stage.OPENING_HOME
+        TaskStatus.FILLING_SEARCH_FORM -> Stage.FILLING_SEARCH_FORM
+        TaskStatus.WAITING_SEARCH_RESULT -> Stage.WAITING_SEARCH_RESULT
         TaskStatus.WAITING_OFFICIAL_PAGE, TaskStatus.OBSERVING, TaskStatus.SEARCHING -> Stage.WAITING_PAGE
         TaskStatus.OPENING_SEARCH -> Stage.OPEN_SEARCH
         TaskStatus.FILLING_DEPARTURE -> Stage.DEPARTURE
@@ -904,7 +1005,15 @@ class TicketAccessibilityService : AccessibilityService() {
         fun signalSaleT0(context: Context, taskId: String) {
             val service = activeInstance
             if (service == null) {
-                TaskStore(context).updateStatus(TaskStatus.TAKEOVER, "开售时无障碍服务实例不可用，请手动打开官方 12306")
+                // The accessibility service may connect only after the cold
+                // start launches the official app. Keep the task recoverable
+                // and let onServiceConnected/staticRefresh pick up SALE_T0.
+                val task = TaskStore(context).load()
+                if (task?.taskId == taskId && task.status in setOf(TaskStatus.SALE_T0, TaskStatus.COLD_START, TaskStatus.OPENING_OFFICIAL_APP)) {
+                    TaskStore(context).recordColdStartState(TaskStatus.COLD_START, "等待无障碍服务连接后继续官方 App 冷启动")
+                } else {
+                    TaskStore(context).recordEvent("开售时无障碍服务实例暂不可用，等待服务连接")
+                }
                 return
             }
             service.mainHandler.post { service.activateSaleT0(taskId) }
@@ -919,7 +1028,12 @@ class TicketAccessibilityService : AccessibilityService() {
                     OfficialPageState.SEARCH_FORM.name,
                     OfficialPageState.SEARCH_RESULT.name,
                     OfficialPageState.SEARCH_RESULT_PARTIAL.name,
-                    OfficialPageState.SEARCH_RESULT_LOADING.name
+                    OfficialPageState.SEARCH_RESULT_LOADING.name,
+                    OfficialPageState.LAUNCHING.name,
+                    OfficialPageState.UNKNOWN.name,
+                    OfficialPageState.POPUP.name,
+                    OfficialPageState.STATION_PICKER.name,
+                    OfficialPageState.DATE_PICKER.name
                 ) && System.currentTimeMillis() - eventAt <= maxAgeMs &&
                 System.currentTimeMillis() - lastOfficialRootAt <= maxAgeMs
         }
@@ -932,12 +1046,18 @@ class TicketAccessibilityService : AccessibilityService() {
         private const val FORM_TIMEOUT_MS = 10_000L
         private const val MAX_UNKNOWN_RESULT_EVENTS = 3
         private const val MAX_FAST_PATH_WAIT_EVENTS = 3
+        private const val MAX_COLD_START_WAIT_EVENTS = 40
         private const val MAX_RESULT_CONTEXT_WAIT_EVENTS = 4
         private const val MAX_PAGE_REFRESH_WAIT_EVENTS = 4
         private const val MAX_ACTION_WAIT_EVENTS = 4
         private const val STATIC_REFRESH_INTERVAL_MS = 750L
         private val STATIC_REFRESH_STATUSES = setOf(
             TaskStatus.SALE_T0,
+            TaskStatus.COLD_START,
+            TaskStatus.OPENING_OFFICIAL_APP,
+            TaskStatus.OPENING_HOME,
+            TaskStatus.FILLING_SEARCH_FORM,
+            TaskStatus.WAITING_SEARCH_RESULT,
             TaskStatus.WAITING_OFFICIAL_PAGE,
             TaskStatus.OPENING_SEARCH,
             TaskStatus.FILLING_DEPARTURE,
@@ -954,9 +1074,21 @@ class TicketAccessibilityService : AccessibilityService() {
         private const val MAX_EVIDENCE_LENGTH = 8_000
         private const val MAX_PENDING_EVIDENCE_EVENTS = 5
         private const val PENDING_EVIDENCE_WINDOW_MS = 10_000L
+        private val COLD_START_STATUSES = setOf(
+            TaskStatus.COLD_START,
+            TaskStatus.OPENING_OFFICIAL_APP,
+            TaskStatus.OPENING_HOME,
+            TaskStatus.FILLING_SEARCH_FORM,
+            TaskStatus.WAITING_SEARCH_RESULT
+        )
         private val ACTIVE_STATUSES = setOf(
             TaskStatus.PREPARING,
             TaskStatus.SALE_T0,
+            TaskStatus.COLD_START,
+            TaskStatus.OPENING_OFFICIAL_APP,
+            TaskStatus.OPENING_HOME,
+            TaskStatus.FILLING_SEARCH_FORM,
+            TaskStatus.WAITING_SEARCH_RESULT,
             TaskStatus.WAITING_OFFICIAL_PAGE,
             TaskStatus.OPENING_SEARCH,
             TaskStatus.FILLING_DEPARTURE,
@@ -975,7 +1107,8 @@ class TicketAccessibilityService : AccessibilityService() {
     }
 
     private enum class Stage {
-        WAITING_PAGE, PREWARM, SALE_T0, OPEN_SEARCH, DEPARTURE, ARRIVAL, DATE, SUBMIT_SEARCH,
+        WAITING_PAGE, PREWARM, SALE_T0, COLD_START, OPENING_OFFICIAL_APP, OPENING_HOME,
+        FILLING_SEARCH_FORM, WAITING_SEARCH_RESULT, OPEN_SEARCH, DEPARTURE, ARRIVAL, DATE, SUBMIT_SEARCH,
         VALIDATING_SEARCH, TRAIN, SEAT, PASSENGER, ORDER, WAITING_RESULT, DONE
     }
     private enum class PassengerResult { SELECTED, CONTINUED, WAITING, AMBIGUOUS, NOT_FOUND }

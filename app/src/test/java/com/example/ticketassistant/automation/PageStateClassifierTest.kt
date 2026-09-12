@@ -48,6 +48,13 @@ class PageStateClassifierTest {
         assertEquals(OfficialPageState.SEARCH_FORM, detectOfficialPageState("出发地 到达地 乘车日期 查询"))
     }
 
+    @Test fun `home evidence wins over stray cached train text`() {
+        assertEquals(
+            OfficialPageState.HOME_PAGE,
+            detectOfficialPageState("首页 我的 订单 车票 出发地 到达地 查询车票 D353 待支付")
+        )
+    }
+
     @Test fun `explicit picker and loading states are distinct`() {
         assertEquals(OfficialPageState.STATION_PICKER, detectOfficialPageState("选择出发站 站点列表 汉口 潜江"))
         assertEquals(OfficialPageState.DATE_PICKER, detectOfficialPageState("日期选择 日历 9月19日"))

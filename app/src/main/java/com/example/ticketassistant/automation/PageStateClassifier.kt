@@ -26,13 +26,14 @@ internal fun detectOfficialPageState(text: String): OfficialPageState {
         listOf("预订", "下一步").any(normalized::contains)) return OfficialPageState.SEAT_SELECTION
     if (listOf("乘车人", "联系人").any(normalized::contains) &&
         listOf("确认", "下一步").any(normalized::contains)) return OfficialPageState.PASSENGER_SELECTION
-    val hasResultEvidence = listOf("筛选条件", "余票", "有票").any(normalized::contains) ||
-        (hasTrainLikeToken && normalized.contains("查询车票")) ||
-        (hasTrainLikeToken && normalized.contains("车次") && normalized.contains("余票"))
     val homeNavigationCount = listOf("首页", "我的", "订单", "车票").count(normalized::contains)
     val hasHomeNavigation = homeNavigationCount >= 2 &&
         listOf("查询车票", "搜索车票", "出发地", "到达地", "乘车日期", "出发日期", "火车票")
             .any(normalized::contains)
+    val hasStrongResultEvidence = listOf("筛选条件", "余票", "有票").any(normalized::contains) ||
+        (hasTrainLikeToken && normalized.contains("车次") && normalized.contains("余票"))
+    val hasWeakResultEvidence = hasTrainLikeToken && normalized.contains("查询车票")
+    val hasResultEvidence = hasStrongResultEvidence || (hasWeakResultEvidence && !hasHomeNavigation)
     val formFields = listOf("出发地", "出发站", "到达地", "到达站", "乘车日期", "出发日期")
         .count(normalized::contains)
     val hasSearchForm = formFields >= 2 && listOf("查询", "搜索车票", "查询车票").any(normalized::contains)
@@ -43,11 +44,13 @@ internal fun detectOfficialPageState(text: String): OfficialPageState {
     if (listOf("查询中", "正在查询", "加载车次", "正在加载车次").any(normalized::contains)) {
         return OfficialPageState.SEARCH_RESULT_LOADING
     }
+    // Home/form evidence must win over a stray train token from a hidden or
+    // cached node; it is unsafe to treat the home screen as a result list.
+    if (hasHomeNavigation && !hasResultEvidence) return OfficialPageState.HOME_PAGE
+    if (hasSearchForm && !hasResultEvidence) return OfficialPageState.SEARCH_FORM
     if ((hasTrainLikeToken || normalized.contains("车次")) && !hasResultEvidence) {
         return OfficialPageState.SEARCH_RESULT_PARTIAL
     }
-    if (hasHomeNavigation && !hasResultEvidence) return OfficialPageState.HOME_PAGE
-    if (hasSearchForm && !hasResultEvidence) return OfficialPageState.SEARCH_FORM
     if (hasResultEvidence) return OfficialPageState.SEARCH_RESULT
     if (listOf("公告", "活动", "优惠", "温馨提示").any(normalized::contains) &&
         listOf("关闭", "知道了", "暂不").any(normalized::contains)) return OfficialPageState.POPUP

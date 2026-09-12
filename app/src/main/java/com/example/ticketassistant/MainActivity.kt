@@ -541,7 +541,12 @@ private fun TaskScreen(vm: TicketViewModel, modifier: Modifier = Modifier) {
     val statusText = when (task.status) {
         TaskStatus.ENABLED, TaskStatus.WAITING_FOR_SALE -> "任务已启用，等待开售"
         TaskStatus.PREPARING -> "正在预热官方 12306 页面和查询连接"
-        TaskStatus.SALE_T0 -> "已到开售时刻，正在核对当前官方结果页"
+        TaskStatus.SALE_T0 -> "已到开售时刻，正在启动官方 12306"
+        TaskStatus.COLD_START -> "正在冷启动官方 12306"
+        TaskStatus.OPENING_OFFICIAL_APP -> "正在打开官方 12306"
+        TaskStatus.OPENING_HOME -> "正在打开官方首页并定位车票入口"
+        TaskStatus.FILLING_SEARCH_FORM -> "正在填写官方查询表单"
+        TaskStatus.WAITING_SEARCH_RESULT -> "正在等待官方查询结果页"
         TaskStatus.WAITING_OFFICIAL_PAGE -> "已发现余票，等待官方 12306 页面"
         TaskStatus.OPENING_SEARCH -> "正在定位官方 12306 查询入口"
         TaskStatus.FILLING_DEPARTURE -> "正在自动填写出发站"
@@ -593,6 +598,13 @@ private fun TaskScreen(vm: TicketViewModel, modifier: Modifier = Modifier) {
         Text("当前窗口：${task.lastRootPackage ?: "暂无"}")
         Text("证据来源：${task.lastEvidenceSource ?: "暂无"}")
         Text("结果页校验：${task.lastSearchContextStatus ?: "暂无"}")
+        Text("冷启动：${task.coldStartAttempts} 次${task.coldStartAt?.let { "，已开始" } ?: "，未开始"}")
+        task.coldStartLastFailure?.let { Text("冷启动原因：$it", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+        task.lastWindowChangedAt?.let {
+            val windowTime = java.time.Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault())
+                .format(DateTimeFormatter.ofPattern("MM-dd HH:mm:ss"))
+            Text("最近窗口变化：$windowTime")
+        }
         task.lastMissingEvidence?.let { Text("缺少证据：$it") }
         val eventTime = task.lastAccessibilityEventAt?.let {
             java.time.Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault())
@@ -608,6 +620,17 @@ private fun TaskScreen(vm: TicketViewModel, modifier: Modifier = Modifier) {
             context.startActivity(Intent.createChooser(DiagnosticExporter.shareIntent(context, report), "分享脱敏诊断"))
         }.onFailure { vm.error.value = "导出诊断失败：${it.message ?: "无法创建文件"}" }
     }, modifier = Modifier.fillMaxWidth()) { Text("导出脱敏诊断") }
+    if (task.status == TaskStatus.TAKEOVER && task.saleState == SaleState.ALREADY_ON_SALE && !submitLocked) {
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(onClick = {
+            runCatching {
+                val retryTask = TaskStore(context).prepareManualRetry()
+                    ?: error("任务不存在")
+                TaskScheduler(context).startImmediately(retryTask)
+                vm.refreshTask(context)
+            }.onFailure { vm.error.value = it.message ?: "无法重新启动任务" }
+        }, modifier = Modifier.fillMaxWidth()) { Text("人工核对后重新尝试冷启动") }
+    }
     Spacer(Modifier.height(10.dp))
     Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp)) {
         Text("${task.date}  ${task.train.trainNo}", fontWeight = FontWeight.Bold)
@@ -616,7 +639,7 @@ private fun TaskScreen(vm: TicketViewModel, modifier: Modifier = Modifier) {
     } }
     Spacer(Modifier.height(10.dp))
     Text(
-        "后台发现余票不代表已经下单。请在官方 12306 手动查询完全一致的日期、路线、车次和席别并停留在结果页；只有页面字段核对通过后才会继续辅助操作。验证码、身份核验、风控和支付必须由你手动完成。",
+        "开售时会尝试从首页自动填写并查询任务信息。后台启动受 Android 和厂商电池策略影响，官方页面改版、登录失效、验证码、身份核验、风控和支付必须由你手动完成；只有官方订单号和完整订单证据才算提交成功。",
         style = MaterialTheme.typography.bodySmall
     )
     Spacer(Modifier.height(12.dp))

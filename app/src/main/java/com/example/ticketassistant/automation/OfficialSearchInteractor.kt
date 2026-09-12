@@ -247,12 +247,33 @@ class OfficialSearchInteractor(
     }
 
     private fun findActionNode(root: AccessibilityNodeInfo, action: SearchAction): AccessibilityNodeInfo? {
+        data class Candidate(val control: AccessibilityNodeInfo, val labels: List<String>)
         val candidates = findNodes(root) { node ->
             listOfNotNull(node.text?.toString(), node.contentDescription?.toString())
                 .any { actionLabelMatches(it, action) }
-        }.mapNotNull(::clickableNode).distinctBy(::nodeIdentity)
+        }.mapNotNull { node ->
+            clickableNode(node)?.let { Candidate(it, listOfNotNull(node.text?.toString(), node.contentDescription?.toString())) }
+        }.distinctBy { nodeIdentity(it.control) }
+        if (candidates.isEmpty()) return null
+
+        // Prefer the dedicated ticket-search control over a bottom navigation
+        // item whose label is only "车票". The action still must be unique.
+        val preferred = when (action) {
+            SearchAction.OPEN_TICKETS -> candidates.filter { candidate ->
+                candidate.labels.any { value ->
+                    val normalized = normalizeText(value)
+                    normalized.contains("查询车票") || normalized.contains("余票查询") || normalized == "火车票"
+                }
+            }
+            SearchAction.SUBMIT_SEARCH -> candidates.filter { candidate ->
+                candidate.labels.any { value -> normalizeText(value) == "查询" || normalizeText(value) == "搜索" }
+            }
+            else -> emptyList()
+        }
         return when {
-            candidates.size == 1 -> candidates.single()
+            preferred.size == 1 -> preferred.single().control
+            preferred.isNotEmpty() -> null
+            candidates.size == 1 -> candidates.single().control
             else -> null
         }
     }

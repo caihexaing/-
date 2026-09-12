@@ -43,6 +43,10 @@ class TaskStore(context: Context) {
             task.lastSearchContextAt?.let { put("lastSearchContextAt", it) }
             task.lastSearchSnapshotFingerprint?.let { put("lastSearchSnapshotFingerprint", it) }
             task.lastSaleT0At?.let { put("lastSaleT0At", it) }
+            task.coldStartAt?.let { put("coldStartAt", it) }
+            put("coldStartAttempts", task.coldStartAttempts)
+            task.coldStartLastFailure?.let { put("coldStartLastFailure", it) }
+            task.lastWindowChangedAt?.let { put("lastWindowChangedAt", it) }
             task.lastAccessibilityEventAt?.let { put("lastAccessibilityEventAt", it) }
             put("accessibilityEventCount", task.accessibilityEventCount)
         }
@@ -66,6 +70,9 @@ class TaskStore(context: Context) {
         val status = if (invalidSaleData && storedStatus in setOf(
                 TaskStatus.ENABLED, TaskStatus.WAITING_FOR_SALE, TaskStatus.PREPARING,
                 TaskStatus.SALE_T0,
+                TaskStatus.COLD_START, TaskStatus.OPENING_OFFICIAL_APP,
+                TaskStatus.OPENING_HOME, TaskStatus.FILLING_SEARCH_FORM,
+                TaskStatus.WAITING_SEARCH_RESULT,
                 TaskStatus.WAITING_OFFICIAL_PAGE, TaskStatus.OPENING_SEARCH,
                 TaskStatus.FILLING_DEPARTURE, TaskStatus.FILLING_ARRIVAL,
                 TaskStatus.FILLING_DATE, TaskStatus.SUBMITTING_SEARCH,
@@ -105,6 +112,10 @@ class TaskStore(context: Context) {
             lastSearchContextAt = j.optLong("lastSearchContextAt").takeIf { it > 0L },
             lastSearchSnapshotFingerprint = j.optString("lastSearchSnapshotFingerprint").ifBlank { null },
             lastSaleT0At = j.optLong("lastSaleT0At").takeIf { it > 0L },
+            coldStartAt = j.optLong("coldStartAt").takeIf { it > 0L },
+            coldStartAttempts = j.optInt("coldStartAttempts", 0).coerceAtLeast(0),
+            coldStartLastFailure = j.optString("coldStartLastFailure").ifBlank { null },
+            lastWindowChangedAt = j.optLong("lastWindowChangedAt").takeIf { it > 0L },
             lastAccessibilityEventAt = j.optLong("lastAccessibilityEventAt").takeIf { it > 0L },
             accessibilityEventCount = j.optInt("accessibilityEventCount", 0).coerceAtLeast(0)
         )
@@ -169,6 +180,63 @@ class TaskStore(context: Context) {
         ))
     }
 
+    /** Persists the cold-start attempt without storing account or page content. */
+    fun recordColdStartAttempt(event: String, failure: String? = null) {
+        val task = load() ?: return
+        val now = System.currentTimeMillis()
+        save(task.copy(
+            status = TaskStatus.OPENING_OFFICIAL_APP,
+            enabled = true,
+            lastEvent = event,
+            lastEventAt = now,
+            lastError = failure,
+            coldStartAt = task.coldStartAt ?: now,
+            coldStartAttempts = task.coldStartAttempts + 1,
+            coldStartLastFailure = failure
+        ))
+    }
+
+    fun recordColdStartState(status: TaskStatus, event: String, failure: String? = null) {
+        require(status in COLD_START_STATUSES) { "不是冷启动状态：$status" }
+        val task = load() ?: return
+        val now = System.currentTimeMillis()
+        save(task.copy(
+            status = status,
+            enabled = true,
+            lastEvent = event,
+            lastEventAt = now,
+            lastError = failure,
+            coldStartAt = task.coldStartAt ?: now,
+            coldStartLastFailure = failure
+        ))
+    }
+
+    fun recordWindowChange(rootPackage: String?, event: String) {
+        val task = load() ?: return
+        val now = System.currentTimeMillis()
+        save(task.copy(
+            lastRootPackage = rootPackage ?: task.lastRootPackage,
+            lastWindowChangedAt = now,
+            lastEvent = event,
+            lastEventAt = now
+        ))
+    }
+
+    /** Re-enables only a pre-submit takeover for an already-on-sale task. */
+    fun prepareManualRetry(): TicketTask? {
+        val task = load() ?: return null
+        if (task.status != TaskStatus.TAKEOVER || task.saleState != SaleState.ALREADY_ON_SALE) return task
+        save(task.copy(
+            enabled = true,
+            status = TaskStatus.PREPARING,
+            lastEvent = "用户请求重新尝试官方 App 冷启动",
+            lastEventAt = System.currentTimeMillis(),
+            lastError = null,
+            coldStartLastFailure = null
+        ))
+        return load()
+    }
+
     fun clearSearchSnapshot() {
         val task = load() ?: return
         save(task.copy(
@@ -181,7 +249,16 @@ class TaskStore(context: Context) {
 
     fun clear() = prefs.edit().remove(KEY).apply()
 
-    private companion object { const val KEY = "active_task" }
+    private companion object {
+        const val KEY = "active_task"
+        val COLD_START_STATUSES = setOf(
+            TaskStatus.COLD_START,
+            TaskStatus.OPENING_OFFICIAL_APP,
+            TaskStatus.OPENING_HOME,
+            TaskStatus.FILLING_SEARCH_FORM,
+            TaskStatus.WAITING_SEARCH_RESULT
+        )
+    }
 }
 
 private class NameCrypto {
