@@ -29,8 +29,8 @@ android {
         applicationId = "com.example.ticketassistant"
         minSdk = 26
         targetSdk = 36
-        versionCode = 35
-        versionName = "0.4.13-train-first-flow"
+        versionCode = 36
+        versionName = "0.4.14-target-train-wait"
     }
 
     signingConfigs {

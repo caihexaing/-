@@ -57,6 +57,10 @@ class TicketAccessibilityService : AccessibilityService() {
     private var passengerSelected = false
     private var passengerBeforeClickFingerprint: String? = null
     private var actionWaitEvents = 0
+    private var targetTrainWaitEvents = 0
+    private var targetTrainScrollAttempts = 0
+    private var targetTrainWaitStartedAt = 0L
+    private var targetTrainLastScrollFingerprint: String? = null
     private var lastDiagnosticKey: String? = null
     private var lastDiagnosticAt = 0L
     private var lastProgressRecordAt = 0L
@@ -124,6 +128,10 @@ class TicketAccessibilityService : AccessibilityService() {
             passengerSelected = false
             passengerBeforeClickFingerprint = null
             actionWaitEvents = 0
+            targetTrainWaitEvents = 0
+            targetTrainScrollAttempts = 0
+            targetTrainWaitStartedAt = 0L
+            targetTrainLastScrollFingerprint = null
             lastDiagnosticKey = null
             lastDiagnosticAt = 0L
             lastProgressRecordAt = 0L
@@ -374,11 +382,13 @@ class TicketAccessibilityService : AccessibilityService() {
                 val check = classifySearchContext(text, task)
                 when (check.status) {
                     SearchContextStatus.MATCH -> {
-                        if (clickTrain(root, task)) {
-                            stage = Stage.SEAT
-                            TaskStore(this).updateStatus(TaskStatus.SELECTING_TRAIN_SEAT, "已定位目标车次，等待席别页面")
-                        } else {
-                            takeover("已核对查询结果，但未找到目标车次对应的可点击预订控件")
+                        when (clickTrain(root, task)) {
+                            TrainClickResult.CLICKED -> {
+                                stage = Stage.SEAT
+                                TaskStore(this).updateStatus(TaskStatus.SELECTING_TRAIN_SEAT, "已定位目标车次，等待席别页面")
+                            }
+                            TrainClickResult.NOT_FOUND -> waitForTargetTrain(root, task)
+                            TrainClickResult.CLICK_REJECTED -> takeover("已找到目标车次，但系统未派发点击；未继续操作")
                         }
                     }
                     SearchContextStatus.MISSING -> waitForSearchContext(check.missing)
@@ -743,11 +753,13 @@ class TicketAccessibilityService : AccessibilityService() {
         }
         stage = Stage.TRAIN
         TaskStore(this).updateStatus(TaskStatus.SELECTING_TRAIN_SEAT, "已核对查询结果页，正在定位目标车次")
-        if (clickTrain(root, task)) {
-            stage = Stage.SEAT
-            TaskStore(this).updateStatus(TaskStatus.SELECTING_TRAIN_SEAT, "已定位目标车次，等待席别页面")
-        } else {
-            takeover("已核对查询结果，但未找到目标车次对应的可点击预订控件")
+        when (clickTrain(root, task)) {
+            TrainClickResult.CLICKED -> {
+                stage = Stage.SEAT
+                TaskStore(this).updateStatus(TaskStatus.SELECTING_TRAIN_SEAT, "已定位目标车次，等待席别页面")
+            }
+            TrainClickResult.NOT_FOUND -> waitForTargetTrain(root, task)
+            TrainClickResult.CLICK_REJECTED -> takeover("已找到目标车次，但系统未派发点击；未继续操作")
         }
     }
 
@@ -797,12 +809,84 @@ class TicketAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun clickTrain(root: AccessibilityNodeInfo, task: TicketTask): Boolean {
-        val target = findTrainAction(root, task) ?: return false
+    private fun clickTrain(root: AccessibilityNodeInfo, task: TicketTask): TrainClickResult {
+        val targets = findTrainActions(root, task)
+        if (targets.isEmpty()) return TrainClickResult.NOT_FOUND
+        if (targets.size > 1) {
+            recordDiagnostic(
+                pageState,
+                "目标车次 ${task.train.trainNo} 对应的可点击控件不唯一，停止自动点击",
+                evidenceSource = "TARGET_TRAIN_AMBIGUOUS"
+            )
+            return TrainClickResult.CLICK_REJECTED
+        }
+        val target = targets.single()
         val clicked = clickNodeOrParent(target)
         recordDiagnostic(pageState, if (clicked) "已点击目标车次对应预订" else "目标车次预订点击失败")
         if (clicked) lastActionAt = System.currentTimeMillis()
-        return clicked
+        return if (clicked) TrainClickResult.CLICKED else TrainClickResult.CLICK_REJECTED
+    }
+
+    /**
+     * The result list can be exposed before its WebView rows are present in
+     * the accessibility tree. Keep the result page alive for a bounded time,
+     * and use only a real scrollable node when a finite scroll may reveal the
+     * target row. Never click another train or use coordinates as a fallback.
+     */
+    private fun waitForTargetTrain(root: AccessibilityNodeInfo, task: TicketTask) {
+        if (targetTrainWaitStartedAt == 0L) targetTrainWaitStartedAt = System.currentTimeMillis()
+        targetTrainWaitEvents++
+        val fingerprint = accessibilitySnapshotFingerprint(root)
+        val scrollable = findScrollableNode(root)
+        val decision = targetTrainWaitAction(
+            waitEvents = targetTrainWaitEvents,
+            scrollAttempts = targetTrainScrollAttempts,
+            elapsedMs = System.currentTimeMillis() - targetTrainWaitStartedAt,
+            scrollAvailable = scrollable != null,
+            alreadyScrolledCurrentTree = fingerprint == targetTrainLastScrollFingerprint,
+            maxWaitEvents = MAX_TARGET_TRAIN_WAIT_EVENTS,
+            maxScrollAttempts = MAX_TARGET_TRAIN_SCROLL_ATTEMPTS,
+            timeoutMs = TARGET_TRAIN_WAIT_TIMEOUT_MS
+        )
+        if (decision == TargetTrainWaitAction.TAKEOVER) {
+            takeover("结果页持续未读取到目标车次 ${task.train.trainNo} 卡片，已停止自动点击")
+            return
+        }
+        val scrolled = decision == TargetTrainWaitAction.SCROLL &&
+            scrollable?.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD) == true
+        if (scrolled) {
+            targetTrainScrollAttempts++
+            targetTrainLastScrollFingerprint = fingerprint
+            lastActionAt = System.currentTimeMillis()
+            recordDiagnostic(
+                pageState,
+                "结果页暂未读取到 ${task.train.trainNo}，已滚动查找（第 $targetTrainScrollAttempts 次）",
+                evidenceSource = "TARGET_TRAIN_SCROLL"
+            )
+        } else {
+            recordDiagnostic(
+                pageState,
+                "结果页暂未读取到 ${task.train.trainNo}，等待车次列表刷新（第 $targetTrainWaitEvents 次）",
+                evidenceSource = "TARGET_TRAIN_WAIT"
+            )
+        }
+        TaskStore(this).recordEvent("等待目标车次 ${task.train.trainNo} 卡片加载")
+    }
+
+    private fun findScrollableNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val candidates = mutableListOf<AccessibilityNodeInfo>()
+        fun walk(node: AccessibilityNodeInfo?) {
+            if (node == null || !node.isVisibleToUser) return
+            if (node.isScrollable && node.isEnabled) candidates += node
+            for (i in 0 until node.childCount) walk(node.getChild(i))
+        }
+        walk(root)
+        return candidates.sortedWith(
+            compareByDescending<AccessibilityNodeInfo> { node ->
+                val id = node.viewIdResourceName.orEmpty().lowercase()
+                listOf("train", "content", "scroll", "list", "webview").count(id::contains)
+            }.thenByDescending { it.childCount }
+        ).firstOrNull()
     }
 
     private fun selectSeatStep(root: AccessibilityNodeInfo, seat: String): InteractionResult {
@@ -895,9 +979,9 @@ class TicketAccessibilityService : AccessibilityService() {
         return SubmitResult.CLICKED
     }
 
-    private fun findTrainAction(root: AccessibilityNodeInfo, task: TicketTask): AccessibilityNodeInfo? {
+    private fun findTrainActions(root: AccessibilityNodeInfo, task: TicketTask): List<AccessibilityNodeInfo> {
         val trainNodes = findTextNodes(root) { value -> matchesToken(value, task.train.trainNo) }
-        val actions = trainNodes.mapNotNull { node ->
+        return trainNodes.mapNotNull { node ->
             var parent = node.parent
             repeat(8) {
                 if (parent == null) return@repeat
@@ -920,7 +1004,6 @@ class TicketAccessibilityService : AccessibilityService() {
             }
             null
         }.distinctBy { System.identityHashCode(it) }
-        return actions.singleOrNull()
     }
 
     private fun findActionNode(root: AccessibilityNodeInfo, labels: List<String>): AccessibilityNodeInfo? {
@@ -997,7 +1080,13 @@ class TicketAccessibilityService : AccessibilityService() {
         source: String,
         task: TicketTask
     ) {
-        if (stage != Stage.DATE && pageState !in setOf(OfficialPageState.DATE_PICKER, OfficialPageState.UNKNOWN)) return
+        if (stage != Stage.DATE && pageState !in setOf(
+                OfficialPageState.DATE_PICKER,
+                OfficialPageState.UNKNOWN,
+                OfficialPageState.SEARCH_RESULT_LOADING,
+                OfficialPageState.SEARCH_RESULT_PARTIAL,
+                OfficialPageState.SEARCH_RESULT
+            ) && stage !in setOf(Stage.VALIDATING_SEARCH, Stage.TRAIN)) return
         val fingerprint = accessibilitySnapshotFingerprint(root)
         val key = "${stage.name}|${pageState.name}|$fingerprint"
         if (key == lastSnapshotKey) return
@@ -1176,6 +1265,9 @@ class TicketAccessibilityService : AccessibilityService() {
         private const val MAX_RESULT_CONTEXT_WAIT_EVENTS = 12
         private const val MAX_PAGE_REFRESH_WAIT_EVENTS = 12
         private const val MAX_ACTION_WAIT_EVENTS = 12
+        private const val MAX_TARGET_TRAIN_WAIT_EVENTS = 30
+        private const val MAX_TARGET_TRAIN_SCROLL_ATTEMPTS = 6
+        private const val TARGET_TRAIN_WAIT_TIMEOUT_MS = 15_000L
         private const val STATIC_REFRESH_INTERVAL_MS = 300L
         private const val PROGRESS_RECORD_INTERVAL_MS = 750L
         private const val DIAGNOSTIC_REPEAT_INTERVAL_MS = 300L
@@ -1241,6 +1333,7 @@ class TicketAccessibilityService : AccessibilityService() {
     }
     private enum class PassengerResult { SELECTED, CONTINUED, WAITING, AMBIGUOUS, NOT_FOUND }
     private enum class SubmitResult { CLICKED, NO_BUTTON, ALREADY_LOCKED, CLICK_REJECTED }
+    private enum class TrainClickResult { CLICKED, NOT_FOUND, CLICK_REJECTED }
 }
 
 internal fun matchesToken(text: String, token: String): Boolean =
