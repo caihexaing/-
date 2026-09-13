@@ -643,6 +643,8 @@ private fun TaskScreen(vm: TicketViewModel, modifier: Modifier = Modifier) {
             task.lastSaleT0At?.let { "T0 ${formatDiagnosticTime(it)}" },
             task.lastResultPageAt?.let { "T1 ${formatDiagnosticTime(it)}" },
             task.lastTargetControlAt?.let { "T2 ${formatDiagnosticTime(it)}" },
+            task.lastTrainActionAt?.let { "T2车次 ${formatDiagnosticTime(it)}" },
+            task.lastSeatActionAt?.let { "T3席别 ${formatDiagnosticTime(it)}" },
             task.lastBookingActionAt?.let { "T3 ${formatDiagnosticTime(it)}" },
             task.lastPassengerActionAt?.let { "T4 ${formatDiagnosticTime(it)}" },
             task.lastSubmitAt?.let { "T5 ${formatDiagnosticTime(it)}" },

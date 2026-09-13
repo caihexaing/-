@@ -17,7 +17,7 @@ fun buildDiagnosticReport(
     accessibilitySnapshots: List<SanitizedAccessibilitySnapshot> = emptyList()
 ): String {
     val fields = linkedMapOf<String, String?>()
-    fields["formatVersion"] = "7"
+    fields["formatVersion"] = "8"
     fields["generatedAt"] = generatedAt.toString()
     fields["automationMode"] = "任务信息自动查询（诊断）"
     fields["taskId"] = task.taskId
@@ -55,6 +55,8 @@ fun buildDiagnosticReport(
     fields["lastActionOutcome"] = task.lastActionOutcome
     fields["lastResultPageAt"] = task.lastResultPageAt?.toString()
     fields["lastTargetControlAt"] = task.lastTargetControlAt?.toString()
+    fields["lastTrainActionAt"] = task.lastTrainActionAt?.toString()
+    fields["lastSeatActionAt"] = task.lastSeatActionAt?.toString()
     fields["lastBookingActionAt"] = task.lastBookingActionAt?.toString()
     fields["lastPassengerActionAt"] = task.lastPassengerActionAt?.toString()
     fields["lastSubmitAt"] = task.lastSubmitAt?.toString()

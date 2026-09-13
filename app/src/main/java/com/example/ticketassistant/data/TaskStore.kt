@@ -55,6 +55,8 @@ class TaskStore(context: Context) {
             task.lastActionOutcome?.let { put("lastActionOutcome", it) }
             task.lastResultPageAt?.let { put("lastResultPageAt", it) }
             task.lastTargetControlAt?.let { put("lastTargetControlAt", it) }
+            task.lastTrainActionAt?.let { put("lastTrainActionAt", it) }
+            task.lastSeatActionAt?.let { put("lastSeatActionAt", it) }
             task.lastBookingActionAt?.let { put("lastBookingActionAt", it) }
             task.lastPassengerActionAt?.let { put("lastPassengerActionAt", it) }
             task.lastSubmitAt?.let { put("lastSubmitAt", it) }
@@ -134,6 +136,8 @@ class TaskStore(context: Context) {
             lastActionOutcome = j.optString("lastActionOutcome").ifBlank { null },
             lastResultPageAt = j.optLong("lastResultPageAt").takeIf { it > 0L },
             lastTargetControlAt = j.optLong("lastTargetControlAt").takeIf { it > 0L },
+            lastTrainActionAt = j.optLong("lastTrainActionAt").takeIf { it > 0L },
+            lastSeatActionAt = j.optLong("lastSeatActionAt").takeIf { it > 0L },
             lastBookingActionAt = j.optLong("lastBookingActionAt").takeIf { it > 0L },
             lastPassengerActionAt = j.optLong("lastPassengerActionAt").takeIf { it > 0L },
             lastSubmitAt = j.optLong("lastSubmitAt").takeIf { it > 0L },
@@ -196,7 +200,11 @@ class TaskStore(context: Context) {
             lastActionOutcome = actionOutcome ?: task.lastActionOutcome,
             lastResultPageAt = if (resultPageObserved) now else task.lastResultPageAt,
             lastTargetControlAt = if (actionText.contains("目标车次") || actionText.contains("目标席别")) now else task.lastTargetControlAt,
-            lastBookingActionAt = if (actionText.contains("预订")) now else task.lastBookingActionAt,
+            lastTrainActionAt = if (actionText.contains("目标车次卡片点击已派发")) now else task.lastTrainActionAt,
+            lastSeatActionAt = if (actionText.contains("目标席别") && actionText.contains("点击已派发")) now else task.lastSeatActionAt,
+            lastBookingActionAt = if (
+                actionText.contains("席别") && actionText.contains("预订") && actionText.contains("点击已派发")
+            ) now else task.lastBookingActionAt,
             lastPassengerActionAt = if (actionText.contains("乘车人")) now else task.lastPassengerActionAt,
             lastSubmitAt = if (actionText.contains("提交订单点击已派发")) now else task.lastSubmitAt,
             lastOrderEvidenceAt = if (orderEvidenceObserved) now else task.lastOrderEvidenceAt
@@ -218,6 +226,8 @@ class TaskStore(context: Context) {
             lastActionOutcome = null,
             lastResultPageAt = null,
             lastTargetControlAt = null,
+            lastTrainActionAt = null,
+            lastSeatActionAt = null,
             lastBookingActionAt = null,
             lastPassengerActionAt = null,
             lastSubmitAt = null,

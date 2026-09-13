@@ -52,9 +52,8 @@ class TicketAccessibilityService : AccessibilityService() {
     private var expectedPageWaitEvents = 0
     private var coldStartWaitEvents = 0
     private var lastObservedRootPackage: String? = null
-    private var seatSelected = false
-    private var seatBeforeClickFingerprint: String? = null
-    private var seatBookingActionSent = false
+    private var seatActionSent = false
+    private var seatActionBeforeClickFingerprint: String? = null
     private var passengerSelected = false
     private var passengerBeforeClickFingerprint: String? = null
     private var actionWaitEvents = 0
@@ -124,9 +123,8 @@ class TicketAccessibilityService : AccessibilityService() {
             expectedPageWaitEvents = 0
             coldStartWaitEvents = 0
             lastObservedRootPackage = null
-            seatSelected = false
-            seatBeforeClickFingerprint = null
-            seatBookingActionSent = false
+            seatActionSent = false
+            seatActionBeforeClickFingerprint = null
             passengerSelected = false
             passengerBeforeClickFingerprint = null
             actionWaitEvents = 0
@@ -824,7 +822,7 @@ class TicketAccessibilityService : AccessibilityService() {
         }
         val target = targets.single()
         val clicked = clickNodeOrParent(target)
-        recordDiagnostic(pageState, if (clicked) "已点击目标车次对应预订" else "目标车次预订点击失败")
+        recordDiagnostic(pageState, if (clicked) "目标车次卡片点击已派发" else "目标车次卡片点击未派发")
         if (clicked) lastActionAt = System.currentTimeMillis()
         return if (clicked) TrainClickResult.CLICKED else TrainClickResult.CLICK_REJECTED
     }
@@ -893,54 +891,63 @@ class TicketAccessibilityService : AccessibilityService() {
 
     private fun selectSeatStep(root: AccessibilityNodeInfo, task: TicketTask): InteractionResult {
         val seat = task.seat
-        if (seatBookingActionSent) {
-            val snapshotChanged = seatBeforeClickFingerprint?.let {
+        if (seatActionSent) {
+            val snapshotChanged = seatActionBeforeClickFingerprint?.let {
                 it != accessibilitySnapshotFingerprint(root)
             } == true
             if (!snapshotChanged) {
-                recordDiagnostic(pageState, "等待席别对应预订动作后的页面刷新（快照未变化）", evidenceSource = "SEAT_ACTION_WAIT")
-                return InteractionResult.WAITING
-            }
-            seatBookingActionSent = false
-            seatBeforeClickFingerprint = null
-            lastActionAt = System.currentTimeMillis()
-            recordDiagnostic(pageState, "席别对应预订动作已刷新页面")
-            return InteractionResult.DONE
-        }
-        if (seatSelected) {
-            val snapshotChanged = seatBeforeClickFingerprint?.let {
-                it != accessibilitySnapshotFingerprint(root)
-            } == true
-            if (!snapshotChanged) {
-                recordDiagnostic(pageState, "等待席别点击后的页面刷新（快照未变化）", evidenceSource = "SEAT_ACTION_WAIT")
+                recordDiagnostic(pageState, "等待席别动作后的页面刷新（快照未变化）", evidenceSource = "SEAT_ACTION_WAIT")
                 return InteractionResult.WAITING
             }
 
-            // The train card may expose the reservation button only after it
-            // has been expanded. Re-read the target card and keep this lookup
-            // local; a page-wide "预订" search can select another train.
-            val targetCard = findTrainActions(root, task).singleOrNull() ?: return InteractionResult.WAITING
-            val refreshedSeatNode = findTextNodes(targetCard) { value ->
-                isTargetSeatCandidateText(value, task.train.trainNo, seat)
-            }.filter { it.childCount == 0 }.singleOrNull() ?: return InteractionResult.WAITING
-            val refreshedBooking = findSeatBookingAction(refreshedSeatNode)
-            if (refreshedBooking != null) {
-                val beforeBooking = accessibilitySnapshotFingerprint(root)
-                if (!clickNodeOrParent(refreshedBooking)) return InteractionResult.FAILED
-                seatSelected = false
-                seatBookingActionSent = true
-                seatBeforeClickFingerprint = beforeBooking
+            if (pageState in setOf(
+                    OfficialPageState.PASSENGER_SELECTION,
+                    OfficialPageState.ORDER_CONFIRM
+                )
+            ) {
+                seatActionSent = false
+                seatActionBeforeClickFingerprint = null
                 lastActionAt = System.currentTimeMillis()
-                recordDiagnostic(pageState, "已点击目标席别对应预订")
-                return InteractionResult.WAITING
+                recordDiagnostic(pageState, "席别动作后已进入下一页面")
+                return InteractionResult.DONE
             }
-            val next = findActionNode(targetCard, listOf("下一步", "确认")) ?: return InteractionResult.WAITING
-            if (!clickNodeOrParent(next)) return InteractionResult.FAILED
-            seatSelected = false
-            seatBeforeClickFingerprint = null
-            lastActionAt = System.currentTimeMillis()
-            recordDiagnostic(pageState, "已刷新席别页面并点击继续")
-            return InteractionResult.DONE
+
+            // Some builds first update the selected seat in-place. Re-read
+            // the target card after that update and only continue when a
+            // seat-row booking/continue control is explicitly exposed.
+            val targetCard = findTrainActions(root, task).singleOrNull()
+            if (targetCard != null) {
+                val refreshedSeatNode = findTargetSeatNodes(targetCard, task).singleOrNull()
+                val refreshedBooking = refreshedSeatNode?.let { findSeatBookingAction(it, targetCard) }
+                if (refreshedBooking != null) {
+                    return dispatchSeatAction(
+                        root = root,
+                        target = refreshedBooking,
+                        task = task,
+                        action = "目标席别行“预订”控件点击已派发",
+                        evidenceSource = "SEAT_BOOKING_ACTION"
+                    )
+                }
+                val next = findActionNode(targetCard, listOf("下一步", "确认"))
+                if (next != null && isDescendantOf(next, targetCard)) {
+                    return dispatchSeatAction(
+                        root = root,
+                        target = next,
+                        task = task,
+                        action = "目标席别页面继续控件点击已派发",
+                        evidenceSource = "SEAT_CONTINUE_ACTION"
+                    )
+                }
+            }
+            // Establish a fresh baseline while waiting for a later page event;
+            // never click the whole train card as a seat fallback.
+            seatActionBeforeClickFingerprint = accessibilitySnapshotFingerprint(root)
+            recordDiagnostic(
+                pageState,
+                "席别动作后仍未进入乘车人页面，未找到同一席别行的继续控件",
+                evidenceSource = "SEAT_ACTION_NO_NEXT"
+            )
+            return InteractionResult.WAITING
         }
         // Seat labels for every train are present in the result tree. Resolve
         // the target train card first so another train's availability cannot
@@ -962,62 +969,205 @@ class TicketAccessibilityService : AccessibilityService() {
             takeover("官方 12306 中所选席别当前无票，请手动选择")
             return InteractionResult.FAILED
         }
-        val matches = findTextNodes(targetCard) { value ->
-            isTargetSeatCandidateText(value, task.train.trainNo, seat)
-        }
-            .filter { it.childCount == 0 }
-        if (matches.isEmpty()) return InteractionResult.WAITING
 
-        // Prefer a booking control inside the same seat row. Some WebView
-        // builds expose the visible button; others expose only the seat label
-        // and a clickable card container.
-        val rowActions = matches.mapNotNull { findSeatBookingAction(it) }
+        val matches = findTargetSeatNodes(targetCard, task)
+        val rowBookings = matches.mapNotNull { findSeatBookingAction(it, targetCard) }
             .distinctBy(::trainNodeSemanticKey)
-        if (rowActions.size == 1) {
-            val beforeBooking = accessibilitySnapshotFingerprint(root)
-            if (!clickNodeOrParent(rowActions.single())) return InteractionResult.FAILED
-            seatBookingActionSent = true
-            seatBeforeClickFingerprint = beforeBooking
-            lastActionAt = System.currentTimeMillis()
-            recordDiagnostic(pageState, "已点击目标席别对应预订")
-            return InteractionResult.WAITING
+        val rowContainers = matches.mapNotNull { findSeatRowClickTarget(it, targetCard) }
+            .distinctBy(::trainNodeSemanticKey)
+        val seatNode = matches.singleOrNull()
+        val initialTarget = resolveSeatActionTarget(
+            seatMatchCount = matches.size,
+            explicitBookingCount = rowBookings.size,
+            seatNodeAvailable = seatNode?.isVisibleToUser == true && seatNode.isEnabled,
+            rowContainerCount = rowContainers.size
+        )
+        when (initialTarget) {
+            SeatActionTarget.EXPLICIT_BOOKING -> {
+                return dispatchSeatAction(
+                    root = root,
+                    target = rowBookings.single(),
+                    task = task,
+                    action = "目标席别行“预订”控件点击已派发",
+                    evidenceSource = "SEAT_BOOKING_ACTION"
+                )
+            }
+            SeatActionTarget.SEAT_NODE -> {
+                val result = dispatchSeatAction(
+                    root = root,
+                    target = seatNode!!,
+                    task = task,
+                    action = "目标席别节点点击已派发：$seat",
+                    evidenceSource = "SEAT_NODE_ACTION"
+                )
+                if (result == InteractionResult.WAITING) return result
+
+                // A WebView can expose the visible seat as a non-clickable
+                // TextView. If its direct accessibility action is rejected,
+                // use a distinct clickable row container only when it is
+                // unique and is not the whole train card.
+                val fallback = resolveSeatActionTarget(
+                    seatMatchCount = matches.size,
+                    explicitBookingCount = rowBookings.size,
+                    seatNodeAvailable = false,
+                    rowContainerCount = rowContainers.size
+                )
+                if (fallback == SeatActionTarget.ROW_CONTAINER) {
+                    return dispatchSeatAction(
+                        root = root,
+                        target = rowContainers.single(),
+                        task = task,
+                        action = "目标席别行容器点击已派发：$seat",
+                        evidenceSource = "SEAT_ROW_ACTION"
+                    )
+                }
+                recordDiagnostic(
+                    pageState,
+                    "目标席别节点动作未派发，且未找到独立的席别行控件；未点击整张车次卡片",
+                    evidenceSource = "SEAT_ACTION_UNAVAILABLE"
+                )
+                return InteractionResult.FAILED
+            }
+            SeatActionTarget.ROW_CONTAINER -> {
+                return dispatchSeatAction(
+                    root = root,
+                    target = rowContainers.single(),
+                    task = task,
+                    action = "目标席别行容器点击已派发：$seat",
+                    evidenceSource = "SEAT_ROW_ACTION"
+                )
+            }
+            SeatActionTarget.AMBIGUOUS -> {
+                recordDiagnostic(
+                    pageState,
+                    "目标席别节点或对应控件不唯一，未自动点击",
+                    evidenceSource = "SEAT_ACTION_AMBIGUOUS"
+                )
+                return InteractionResult.FAILED
+            }
+            SeatActionTarget.NONE -> {
+                if (matches.isEmpty()) return InteractionResult.WAITING
+                recordDiagnostic(
+                    pageState,
+                    "未找到目标席别的可操作节点，未点击整张车次卡片",
+                    evidenceSource = "SEAT_ACTION_UNAVAILABLE"
+                )
+                return InteractionResult.FAILED
+            }
         }
-        val seatControls = matches.mapNotNull { node ->
-            if (node.isClickable) node else clickableParent(node)
-        }.distinctBy(::trainNodeSemanticKey)
-        val target = when {
-            seatControls.size == 1 -> seatControls.single()
-            matches.size == 1 -> matches.single()
-            else -> return InteractionResult.WAITING
+    }
+
+    private fun findTargetSeatNodes(
+        targetCard: AccessibilityNodeInfo,
+        task: TicketTask
+    ): List<AccessibilityNodeInfo> = findTextNodes(targetCard) { value ->
+        isTargetSeatCandidateText(value, task.train.trainNo, task.seat) ||
+            (seatLabelMatches(value, task.seat) && isSeatAvailabilityText(value))
+    }.filter { it.childCount == 0 }
+
+    private fun isSeatAvailabilityText(value: String): Boolean {
+        val normalized = normalizeText(value)
+        return listOf("有票", "余票", "无票", "售罄", "候补", "--", "*")
+            .any(normalized::contains)
+    }
+
+    private fun dispatchSeatAction(
+        root: AccessibilityNodeInfo,
+        target: AccessibilityNodeInfo,
+        task: TicketTask,
+        action: String,
+        evidenceSource: String
+    ): InteractionResult {
+        val before = accessibilitySnapshotFingerprint(root)
+        val clicked = clickSeatControl(target)
+        if (!clicked) {
+            recordDiagnostic(pageState, action.replace("已派发", "未派发"), evidenceSource = "${evidenceSource}_REJECTED")
+            return InteractionResult.FAILED
         }
-        val beforeClickFingerprint = accessibilitySnapshotFingerprint(root)
-        if (!clickNodeOrParent(target)) return InteractionResult.FAILED
-        seatSelected = true
-        seatBookingActionSent = false
-        seatBeforeClickFingerprint = beforeClickFingerprint
+        seatActionSent = true
+        seatActionBeforeClickFingerprint = before
         lastActionAt = System.currentTimeMillis()
-        recordDiagnostic(pageState, "已点击席别：$seat")
+        recordDiagnostic(pageState, action, evidenceSource = evidenceSource)
         return InteractionResult.WAITING
     }
 
-    private fun findSeatBookingAction(seatNode: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+    /** Sends only the action exposed by the resolved seat node/control. */
+    private fun clickSeatControl(node: AccessibilityNodeInfo): Boolean {
+        if (!node.isVisibleToUser || !node.isEnabled) return false
+        return runCatching {
+            // WebView virtual nodes sometimes omit isClickable while still
+            // accepting ACTION_CLICK. This is the semantic seat action; it
+            // is intentionally attempted before any parent lookup.
+            node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        }.getOrDefault(false)
+    }
+
+    private fun findSeatBookingAction(
+        seatNode: AccessibilityNodeInfo,
+        targetCard: AccessibilityNodeInfo
+    ): AccessibilityNodeInfo? {
         val seatBounds = android.graphics.Rect()
         seatNode.getBoundsInScreen(seatBounds)
+        val cardKey = trainNodeSemanticKey(targetCard)
         var parent = seatNode.parent
-        repeat(4) {
-            if (parent == null) return@repeat
-            // Keep only controls that expose the booking label themselves;
-            // mapping arbitrary text to a clickable ancestor would collapse
-            // every seat row into the same train-card action.
+        var depth = 0
+        while (parent != null && depth++ < 6) {
             val actions = findTextNodes(parent) { value ->
                 normalizeText(value).contains(normalizeText("预订"))
-            }.filter { it.isClickable }
+            }.mapNotNull { clickableNodeBefore(it, cardKey) }
             val rowActions = actions.filter { nodesShareRow(it, seatBounds) }
             if (rowActions.size == 1) return rowActions.single()
             if (rowActions.size > 1) return null
+            if (trainNodeSemanticKey(parent) == cardKey) break
             parent = parent.parent
         }
         return null
+    }
+
+    private fun clickableNodeBefore(
+        node: AccessibilityNodeInfo,
+        stopKey: String
+    ): AccessibilityNodeInfo? {
+        if (trainNodeSemanticKey(node) == stopKey) return null
+        if (node.isClickable) return node
+        var parent = node.parent
+        var depth = 0
+        while (parent != null && depth++ < 6) {
+            if (trainNodeSemanticKey(parent) == stopKey) return null
+            if (parent.isClickable) return parent
+            parent = parent.parent
+        }
+        return null
+    }
+
+    private fun findSeatRowClickTarget(
+        seatNode: AccessibilityNodeInfo,
+        targetCard: AccessibilityNodeInfo
+    ): AccessibilityNodeInfo? {
+        val seatBounds = android.graphics.Rect()
+        seatNode.getBoundsInScreen(seatBounds)
+        val cardKey = trainNodeSemanticKey(targetCard)
+        var parent = seatNode.parent
+        var depth = 0
+        while (parent != null && depth++ < 6) {
+            if (trainNodeSemanticKey(parent) == cardKey) return null
+            if (parent.isVisibleToUser && parent.isEnabled && parent.isClickable &&
+                nodesShareRow(parent, seatBounds)
+            ) return parent
+            parent = parent.parent
+        }
+        return null
+    }
+
+    private fun isDescendantOf(node: AccessibilityNodeInfo, ancestor: AccessibilityNodeInfo): Boolean {
+        val ancestorKey = trainNodeSemanticKey(ancestor)
+        var current: AccessibilityNodeInfo? = node
+        var depth = 0
+        while (current != null && depth++ < 8) {
+            if (trainNodeSemanticKey(current) == ancestorKey) return true
+            current = current.parent
+        }
+        return false
     }
 
     private fun nodesShareRow(node: AccessibilityNodeInfo, rowBounds: android.graphics.Rect): Boolean {

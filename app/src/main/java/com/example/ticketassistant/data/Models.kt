@@ -52,6 +52,8 @@ data class TicketTask(
     val lastActionOutcome: String? = null,
     val lastResultPageAt: Long? = null,
     val lastTargetControlAt: Long? = null,
+    val lastTrainActionAt: Long? = null,
+    val lastSeatActionAt: Long? = null,
     val lastBookingActionAt: Long? = null,
     val lastPassengerActionAt: Long? = null,
     val lastSubmitAt: Long? = null,
