@@ -23,9 +23,15 @@ class SearchFormMatcherTest {
     fun `calendar date matcher scopes numeric day to the target month`() {
         assertTrue(calendarMonthMatches("2026年9月", "2026-09-19"))
         assertTrue(calendarMonthMatches("2026-09", "2026-09-19"))
+        assertTrue(calendarMonthMatches("2026年09月出行日历", "2026-09-19"))
+        assertTrue(calendarMonthMatches("9月", "2026-09-19", fallbackYear = 2026))
+        assertFalse(calendarMonthMatches("9月", "2026-09-19", fallbackYear = 2025))
         assertFalse(calendarMonthMatches("2026年10月", "2026-09-19"))
         assertTrue(calendarDayMatches("19", "2026-09-19"))
         assertTrue(calendarDayMatches("19初九", "2026-09-19"))
+        assertTrue(calendarDayMatches("今天19", "2026-09-19"))
+        assertTrue(calendarDayMatches("星期六19", "2026-09-19"))
+        assertTrue(calendarDayMatches("19初九星期六", "2026-09-19"))
         assertFalse(calendarDayMatches("190", "2026-09-19"))
         assertTrue(calendarDateCellMatches("19初九", "2026年9月", "2026-09-19"))
         assertFalse(calendarDateCellMatches("19", "2026年10月", "2026-09-19"))
@@ -81,6 +87,8 @@ class SearchFormMatcherTest {
         assertTrue(fieldContextMatches("到达地", SearchField.ARRIVAL))
         assertFalse(fieldContextMatches("出发日期", SearchField.DEPARTURE))
         assertFalse(fieldContextMatches("到达日期", SearchField.ARRIVAL))
+        assertFalse(fieldLabelMatches("日期", SearchField.DATE))
+        assertTrue(fieldLabelMatches("选择乘车日期", SearchField.DATE))
         assertFalse(fieldContextMatches("到达地 潜江", SearchField.DEPARTURE))
         assertFalse(fieldContextMatches("出发地 汉口 到达地 潜江", SearchField.DEPARTURE))
     }
@@ -230,6 +238,15 @@ class SearchFormMatcherTest {
                 snapshotChanged = true
             )
         )
+    }
+
+    @Test
+    fun `form fallback confirms only a unique date after picker closes`() {
+        assertTrue(dateDisplayFallbackConfirmed(true, false, 1, 1))
+        assertTrue(dateDisplayFallbackConfirmed(true, false, 0, 1))
+        assertFalse(dateDisplayFallbackConfirmed(true, true, 1, 1))
+        assertFalse(dateDisplayFallbackConfirmed(true, false, 2, 2))
+        assertFalse(dateDisplayFallbackConfirmed(false, false, 1, 1))
     }
 
     @Test

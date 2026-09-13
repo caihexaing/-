@@ -13,6 +13,8 @@ import com.example.ticketassistant.data.TaskStatus
 import com.example.ticketassistant.data.TaskStore
 import com.example.ticketassistant.data.TicketTask
 import com.example.ticketassistant.data.taskSnapshotKey
+import com.example.ticketassistant.diagnostics.AccessibilitySnapshotBuffer
+import com.example.ticketassistant.diagnostics.AccessibilityTreeSnapshotter
 
 /**
  * 仅辅助官方 12306 的公开页面操作。验证码、登录、身份核验、风控和未知页面永远交给用户。
@@ -58,6 +60,7 @@ class TicketAccessibilityService : AccessibilityService() {
     private var lastDiagnosticKey: String? = null
     private var lastDiagnosticAt = 0L
     private var lastProgressRecordAt = 0L
+    private var lastSnapshotKey: String? = null
     private val searchInteractor by lazy {
         OfficialSearchInteractor { action -> recordDiagnostic(pageState, action) }
     }
@@ -124,6 +127,8 @@ class TicketAccessibilityService : AccessibilityService() {
             lastDiagnosticKey = null
             lastDiagnosticAt = 0L
             lastProgressRecordAt = 0L
+            lastSnapshotKey = null
+            AccessibilitySnapshotBuffer.clear()
             searchInteractor.reset()
         }
         if (task.status in COLD_START_STATUSES && stage in setOf(Stage.WAITING_PAGE, Stage.PREWARM, Stage.SALE_T0)) {
@@ -202,6 +207,7 @@ class TicketAccessibilityService : AccessibilityService() {
             missingEvidence = contextCheck?.missing?.joinToString("、"),
             snapshotFingerprint = contextCheck?.let { searchSnapshotFingerprint(text) }
         )
+        maybeCaptureAccessibilitySnapshot(root, source, task)
         if (pageState == OfficialPageState.POPUP) {
             when (popupMatch) {
                 is PopupMatcher.Result.Unique -> {
@@ -963,6 +969,27 @@ class TicketAccessibilityService : AccessibilityService() {
         } else {
             TaskStore(this).updateStatus(TaskStatus.WAITING_OFFICIAL_PAGE, reason)
         }
+    }
+
+    /** Captures only a few redacted date-page trees for the user's explicit diagnostic export. */
+    private fun maybeCaptureAccessibilitySnapshot(
+        root: AccessibilityNodeInfo,
+        source: String,
+        task: TicketTask
+    ) {
+        if (stage != Stage.DATE && pageState !in setOf(OfficialPageState.DATE_PICKER, OfficialPageState.UNKNOWN)) return
+        val fingerprint = accessibilitySnapshotFingerprint(root)
+        val key = "${stage.name}|${pageState.name}|$fingerprint"
+        if (key == lastSnapshotKey) return
+        val snapshot = AccessibilityTreeSnapshotter.capture(
+            root = root,
+            source = source,
+            pageState = pageState.name,
+            automationStage = stage.name,
+            passengerName = task.passengerName
+        ) ?: return
+        AccessibilitySnapshotBuffer.add(snapshot)
+        lastSnapshotKey = key
     }
 
     private fun recordDiagnostic(

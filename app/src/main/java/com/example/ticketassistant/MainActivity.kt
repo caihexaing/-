@@ -82,6 +82,7 @@ import com.example.ticketassistant.update.AppUpdate
 import com.example.ticketassistant.update.UpdateChecker
 import com.example.ticketassistant.update.UpdateDownloadStage
 import com.example.ticketassistant.update.UpdateProgress
+import com.example.ticketassistant.diagnostics.AccessibilitySnapshotBuffer
 import com.example.ticketassistant.diagnostics.DiagnosticExporter
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -652,7 +653,11 @@ private fun TaskScreen(vm: TicketViewModel, modifier: Modifier = Modifier) {
     Spacer(Modifier.height(10.dp))
     OutlinedButton(onClick = {
         runCatching {
-            val report = DiagnosticExporter.export(context, task)
+            val report = DiagnosticExporter.export(
+                context,
+                task,
+                accessibilitySnapshots = AccessibilitySnapshotBuffer.list()
+            )
             context.startActivity(Intent.createChooser(DiagnosticExporter.shareIntent(context, report), "分享脱敏诊断"))
         }.onFailure { vm.error.value = "导出诊断失败：${it.message ?: "无法创建文件"}" }
     }, modifier = Modifier.fillMaxWidth()) { Text("导出脱敏诊断") }

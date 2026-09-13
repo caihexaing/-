@@ -17,6 +17,9 @@ class OfficialSearchInteractor(
     private var dateTarget: String? = null
     private var datePhase = DateSelectionPhase.IDLE
     private var dateBeforeClickFingerprint: String? = null
+    private var datePickerWaitEvents = 0
+    private var datePickerOpenRetries = 0
+    private var datePickerLastFingerprint: String? = null
 
     fun reset() {
         stationField = null
@@ -338,8 +341,44 @@ class OfficialSearchInteractor(
                 record("乘车日期已在官方表单显示")
                 return InteractionResult.DONE
             }
-            record("等待日期选择器打开")
+            val snapshotChanged = datePickerLastFingerprint?.let { it != currentFingerprint } == true
+            if (snapshotChanged) {
+                datePickerWaitEvents = 0
+                datePickerLastFingerprint = currentFingerprint
+            } else {
+                datePickerWaitEvents++
+            }
+            if (!snapshotChanged &&
+                datePickerWaitEvents >= DATE_PICKER_OPEN_RETRY_AFTER_EVENTS &&
+                datePickerOpenRetries < MAX_DATE_PICKER_OPEN_RETRIES
+            ) {
+                val controls = findDateControls(root)
+                when {
+                    controls.size > 1 -> {
+                        record("日期选择器未打开，日期控件不唯一（${controls.size} 个）")
+                        return InteractionResult.FAILED
+                    }
+                    controls.size == 1 -> {
+                        if (!clickNodeOrParent(controls.single())) {
+                            record("日期选择器重试打开动作未派发")
+                            return InteractionResult.FAILED
+                        }
+                        datePickerOpenRetries++
+                        datePickerWaitEvents = 0
+                        datePickerLastFingerprint = currentFingerprint
+                        dateBeforeClickFingerprint = currentFingerprint
+                        record("日期选择器未出现，已第 ${datePickerOpenRetries} 次重试打开")
+                        return InteractionResult.WAITING
+                    }
+                }
+            }
+            record("等待日期选择器打开（等待=${datePickerWaitEvents}，重试=${datePickerOpenRetries}）")
             return InteractionResult.WAITING
+        }
+
+        if (pickerVisible) {
+            datePickerWaitEvents = 0
+            datePickerLastFingerprint = currentFingerprint
         }
 
         // Only edit the form field when the picker is not covering it. When a
@@ -381,6 +420,8 @@ class OfficialSearchInteractor(
                 return InteractionResult.FAILED
             }
             datePhase = DateSelectionPhase.WAITING_CONFIRMATION
+            datePickerWaitEvents = 0
+            datePickerLastFingerprint = currentFingerprint
             dateBeforeClickFingerprint = currentFingerprint
             record(
                 if (target.selected) {
@@ -420,14 +461,14 @@ class OfficialSearchInteractor(
             return InteractionResult.WAITING
         }
 
-        val controls = findNodes(root) { node ->
-            listOfNotNull(node.text?.toString(), node.contentDescription?.toString(), node.hintText?.toString())
-                .any { fieldLabelMatches(it, SearchField.DATE) }
-        }.mapNotNull(::clickableNode).distinctBy(::nodeIdentity)
+        val controls = findDateControls(root)
         if (controls.size == 1) {
             if (!clickNodeOrParent(controls.single())) return InteractionResult.FAILED
             datePhase = DateSelectionPhase.WAITING_PICKER
             dateBeforeClickFingerprint = currentFingerprint
+            datePickerWaitEvents = 0
+            datePickerOpenRetries = 0
+            datePickerLastFingerprint = currentFingerprint
             record("已打开日期选择器，等待日历日期")
             return InteractionResult.WAITING
         }
@@ -454,13 +495,14 @@ class OfficialSearchInteractor(
     ): List<CalendarDateNode> {
         val byControl = linkedMapOf<Int, CalendarDateNode>()
         val numericDayCandidates = linkedMapOf<Int, CalendarDateNode>()
+        val fallbackYear = findCalendarYear(root)
 
         fun walkChildren(parent: AccessibilityNodeInfo?, inheritedMonth: String?) {
             if (parent == null) return
             var activeMonth = inheritedMonth
             for (index in 0 until parent.childCount) {
                 val child = parent.getChild(index) ?: continue
-                val header = nodeValues(child).firstOrNull(::isCalendarMonthHeader)
+                val header = nodeValues(child).firstOrNull { isCalendarMonthHeader(it) }
                 if (header != null) activeMonth = header
                 val values = nodeValues(child)
                 val clickable = clickableNode(child)
@@ -477,7 +519,7 @@ class OfficialSearchInteractor(
                     }
                 }
                 if (visibleOrInteractive && activeMonth != null && clickable != null &&
-                    values.any { calendarDateCellMatches(it, activeMonth, date) }
+                    values.any { calendarDateCellMatches(it, activeMonth, date, fallbackYear) }
                 ) {
                     val key = nodeIdentity(clickable)
                     val candidate = CalendarDateNode(clickable, isSelectedDateNode(child))
@@ -500,8 +542,30 @@ class OfficialSearchInteractor(
     }
 
     private fun isCalendarMonthHeader(value: String): Boolean {
+        return parseCalendarMonthContext(value) != null
+    }
+
+    private fun findCalendarYear(root: AccessibilityNodeInfo): Int? {
+        val year = Regex("(?<!\\d)(\\d{4})年").find(rootText(root))?.groupValues?.getOrNull(1)
+            ?: Regex("(?<!\\d)(\\d{4})[-/]\\d{1,2}").find(rootText(root))?.groupValues?.getOrNull(1)
+        return year?.toIntOrNull()
+    }
+
+    private fun hasCalendarGridEvidence(root: AccessibilityNodeInfo): Boolean {
+        val dayLabels = findNodes(root) { node ->
+            val control = clickableNode(node)
+            val visibleOrInteractive = node.isVisibleToUser || node.isClickable || control?.isVisibleToUser == true
+            visibleOrInteractive && control != null && nodeValues(node).any(::looksLikeCalendarDayLabel)
+        }.mapNotNull(::clickableNode).distinctBy(::nodeIdentity)
+        return dayLabels.size >= MIN_CALENDAR_DAY_NODES &&
+            dayLabels.map { nodeValues(it).joinToString(" ") }.distinct().size >= MIN_CALENDAR_DISTINCT_DAYS
+    }
+
+    private fun looksLikeCalendarDayLabel(value: String): Boolean {
         val normalized = normalizeDateText(value)
-        return Regex("^\\d{4}(?:年\\d{1,2}月|[-/]\\d{1,2}(?:月)?)$").matches(normalized)
+        val marker = "(?:日|号|今天|明天|后天|(?:周|星期)[一二三四五六日天]|初[一二三四五六七八九十]|十[一二三四五六七八九十]|廿[一二三四五六七八九十]|卅[一二三四五六七八九十])"
+        return Regex("^(?:$marker)*0?(?:[1-9]|[12]\\d|3[01])(?:$marker)*$")
+            .matches(normalized)
     }
 
     private fun isSelectedDateNode(node: AccessibilityNodeInfo): Boolean {
@@ -525,7 +589,19 @@ class OfficialSearchInteractor(
             matchesTravelDate(nodeValues(node).joinToString(" "), date)
         }
         val scoped = values.filter { nearestFieldContext(it, SearchField.DATE) == FieldContext.TARGET }
-        return scoped.isNotEmpty()
+        if (scoped.isNotEmpty()) return true
+        val normalized = normalizeText(rootText(root))
+        val formEvidence = listOf("出发地", "出发站", "到达地", "到达站")
+            .count(normalized::contains) >= 2 &&
+            listOf("查询", "查询车票", "搜索车票").any(normalized::contains)
+        val displayNodes = values.filter { it.childCount == 0 || it.isClickable }
+        val displayControls = displayNodes.mapNotNull(::clickableNode).distinctBy(::nodeIdentity)
+        return dateDisplayFallbackConfirmed(
+            formEvidence = formEvidence,
+            pickerVisible = isDatePickerVisible(root),
+            displayControlCount = displayControls.size,
+            displayLeafCount = displayNodes.size
+        )
     }
 
     private fun dateFieldContextText(root: AccessibilityNodeInfo, input: AccessibilityNodeInfo?): String {
@@ -557,19 +633,34 @@ class OfficialSearchInteractor(
         dateTarget = date
         datePhase = DateSelectionPhase.IDLE
         dateBeforeClickFingerprint = null
+        datePickerWaitEvents = 0
+        datePickerOpenRetries = 0
+        datePickerLastFingerprint = null
     }
 
     private fun completeDateFlow() {
         dateTarget = null
         datePhase = DateSelectionPhase.IDLE
         dateBeforeClickFingerprint = null
+        datePickerWaitEvents = 0
+        datePickerOpenRetries = 0
+        datePickerLastFingerprint = null
     }
 
     private fun isDatePickerVisible(root: AccessibilityNodeInfo): Boolean {
         val text = rootText(root).replace(Regex("\\s+"), "")
-        return listOf("日期选择", "选择日期", "日历", "上一月", "下一月")
-            .any(text::contains)
+        if (listOf("日期选择", "选择日期", "选择乘车日期", "日历", "上一月", "下一月")
+                .any(text::contains)
+        ) return true
+        if (findNodes(root) { node -> nodeValues(node).any(::isCalendarMonthHeader) }.isNotEmpty()) return true
+        return hasCalendarGridEvidence(root)
     }
+
+    private fun findDateControls(root: AccessibilityNodeInfo): List<AccessibilityNodeInfo> =
+        findNodes(root) { node ->
+            listOfNotNull(node.text?.toString(), node.contentDescription?.toString(), node.hintText?.toString())
+                .any { fieldLabelMatches(it, SearchField.DATE) }
+        }.mapNotNull(::clickableNode).distinctBy(::nodeIdentity)
 
     fun submitSearch(root: AccessibilityNodeInfo): InteractionResult {
         val action = findActionNode(root, SearchAction.SUBMIT_SEARCH) ?: return InteractionResult.WAITING
@@ -886,6 +977,10 @@ class OfficialSearchInteractor(
 
     companion object {
         private const val MAX_PARENT_DEPTH = 5
+        private const val DATE_PICKER_OPEN_RETRY_AFTER_EVENTS = 5
+        private const val MAX_DATE_PICKER_OPEN_RETRIES = 2
+        private const val MIN_CALENDAR_DAY_NODES = 14
+        private const val MIN_CALENDAR_DISTINCT_DAYS = 7
     }
 
     private enum class FieldContext { NONE, TARGET, OPPOSITE, AMBIGUOUS }

@@ -86,6 +86,7 @@ class PageStateClassifierTest {
     @Test fun `explicit picker and loading states are distinct`() {
         assertEquals(OfficialPageState.STATION_PICKER, detectOfficialPageState("选择出发站 站点列表 汉口 潜江"))
         assertEquals(OfficialPageState.DATE_PICKER, detectOfficialPageState("日期选择 日历 9月19日"))
+        assertEquals(OfficialPageState.DATE_PICKER, detectOfficialPageState("选择乘车日期 2026年9月 19 初九"))
         assertEquals(OfficialPageState.SEARCH_RESULT_LOADING, detectOfficialPageState("正在查询 加载车次"))
         assertEquals(OfficialPageState.SEARCH_RESULT_PARTIAL, detectOfficialPageState("车次 D353 正在加载"))
     }

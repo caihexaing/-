@@ -29,8 +29,8 @@ android {
         applicationId = "com.example.ticketassistant"
         minSdk = 26
         targetSdk = 36
-        versionCode = 31
-        versionName = "0.4.9-date-picker-selection"
+        versionCode = 32
+        versionName = "0.4.10-date-picker-diagnostic"
     }
 
     signingConfigs {

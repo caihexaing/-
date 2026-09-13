@@ -56,7 +56,9 @@ internal fun detectOfficialPageState(text: String): OfficialPageState {
     if (listOf("选择出发站", "选择到达站", "站点列表", "热门站点", "车站选择").any(normalized::contains)) {
         return OfficialPageState.STATION_PICKER
     }
-    if (listOf("日期选择", "选择日期", "日历").any(normalized::contains)) return OfficialPageState.DATE_PICKER
+    if (listOf("日期选择", "选择日期", "选择乘车日期", "日历", "上一月", "下一月")
+            .any(normalized::contains)
+    ) return OfficialPageState.DATE_PICKER
     if (listOf("查询中", "正在查询", "加载车次", "正在加载车次").any(normalized::contains)) {
         return OfficialPageState.SEARCH_RESULT_LOADING
     }

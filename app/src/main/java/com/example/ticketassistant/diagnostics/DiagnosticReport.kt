@@ -11,9 +11,13 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 /** Builds a report that is useful for debugging without exporting account or payment data. */
-fun buildDiagnosticReport(task: TicketTask, generatedAt: Instant = Instant.now()): String {
+fun buildDiagnosticReport(
+    task: TicketTask,
+    generatedAt: Instant = Instant.now(),
+    accessibilitySnapshots: List<SanitizedAccessibilitySnapshot> = emptyList()
+): String {
     val fields = linkedMapOf<String, String?>()
-    fields["formatVersion"] = "6"
+    fields["formatVersion"] = "7"
     fields["generatedAt"] = generatedAt.toString()
     fields["automationMode"] = "任务信息自动查询（诊断）"
     fields["taskId"] = task.taskId
@@ -57,8 +61,33 @@ fun buildDiagnosticReport(task: TicketTask, generatedAt: Instant = Instant.now()
     fields["lastOrderEvidenceAt"] = task.lastOrderEvidenceAt?.toString()
     fields["containsCredentials"] = "false"
     fields["containsPaymentData"] = "false"
-    return fields.entries.joinToString(",\n", prefix = "{\n", postfix = "\n}") { (key, value) ->
+    val body = fields.entries.joinToString(",\n") { (key, value) ->
         "  ${jsonString(key)}: ${value?.let(::jsonString) ?: "null"}"
+    }
+    val snapshots = accessibilitySnapshots.joinToString(
+        separator = ",",
+        prefix = "[",
+        postfix = "]"
+    ) { snapshot ->
+        buildString {
+            append("{")
+            append(jsonString("capturedAt")).append(":").append(snapshot.capturedAt).append(",")
+            append(jsonString("source")).append(":").append(jsonString(snapshot.source)).append(",")
+            append(jsonString("pageState")).append(":").append(jsonString(snapshot.pageState)).append(",")
+            append(jsonString("automationStage")).append(":").append(jsonString(snapshot.automationStage)).append(",")
+            append(jsonString("rootPackage")).append(":").append(jsonString(snapshot.rootPackage)).append(",")
+            append(jsonString("nodeCount")).append(":").append(snapshot.nodeCount).append(",")
+            append(jsonString("truncated")).append(":").append(snapshot.truncated).append(",")
+            append(jsonString("tree")).append(":").append(snapshot.treeJson)
+            append("}")
+        }
+    }
+    return buildString {
+        append("{\n").append(body)
+        if (accessibilitySnapshots.isNotEmpty()) {
+            append(",\n  \"accessibilitySnapshots\": ").append(snapshots)
+        }
+        append("\n}")
     }
 }
 
@@ -80,14 +109,19 @@ private fun jsonString(value: String): String = buildString {
 }
 
 object DiagnosticExporter {
-    fun export(context: Context, task: TicketTask, generatedAt: Instant = Instant.now()): File {
+    fun export(
+        context: Context,
+        task: TicketTask,
+        generatedAt: Instant = Instant.now(),
+        accessibilitySnapshots: List<SanitizedAccessibilitySnapshot> = emptyList()
+    ): File {
         val directory = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
             ?: error("无法访问应用专用诊断目录")
         if (!directory.exists() && !directory.mkdirs()) error("无法创建诊断目录")
         val stamp = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
             .withZone(ZoneId.systemDefault()).format(generatedAt)
         val file = File(directory, "ticket-assistant-diagnostic-$stamp.json")
-        file.writeText(buildDiagnosticReport(task, generatedAt), Charsets.UTF_8)
+        file.writeText(buildDiagnosticReport(task, generatedAt, accessibilitySnapshots), Charsets.UTF_8)
         return file
     }
 

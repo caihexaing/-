@@ -128,27 +128,49 @@ fun dateVariants(date: String): Set<String> {
     )
 }
 
-/** Matches a calendar month header without confusing adjacent months. */
-internal fun calendarMonthMatches(context: String, date: String): Boolean {
-    val expected = parseDate(date) ?: return false
-    val normalized = normalizeDateText(context)
-    val year = expected.year
-    val month = expected.monthValue
-    val pattern = Regex("(^|[^0-9])${year}(?:年0?${month}月|[-/]0?${month}(?:月)?)(?:$|[^0-9])")
-    return pattern.containsMatchIn(normalized)
+internal data class CalendarMonthContext(val year: Int?, val month: Int)
+
+/** Parses the month labels exposed by different 12306 calendar builds. */
+internal fun parseCalendarMonthContext(value: String): CalendarMonthContext? {
+    val normalized = normalizeDateText(value)
+    val fullYearMonth = Regex("^(\\d{4})年0?(\\d{1,2})月(?:出行日历|日历)?$")
+        .matchEntire(normalized)
+        ?: Regex("^(\\d{4})[-/]0?(\\d{1,2})月?$").matchEntire(normalized)
+    if (fullYearMonth != null) {
+        val year = fullYearMonth.groupValues[1].toIntOrNull() ?: return null
+        val month = fullYearMonth.groupValues[2].toIntOrNull() ?: return null
+        return month.takeIf { it in 1..12 }?.let { CalendarMonthContext(year, it) }
+    }
+    val monthOnly = Regex("^0?(\\d{1,2})月(?:出行日历|日历)?$").matchEntire(normalized)
+        ?: return null
+    val month = monthOnly.groupValues[1].toIntOrNull() ?: return null
+    return month.takeIf { it in 1..12 }?.let { CalendarMonthContext(null, it) }
 }
 
-/** Matches a day-cell label such as "19", "19日" or "19初九". */
+/** Matches a calendar month header without confusing adjacent months. */
+internal fun calendarMonthMatches(context: String, date: String, fallbackYear: Int? = null): Boolean {
+    val expected = parseDate(date) ?: return false
+    val parsed = parseCalendarMonthContext(context) ?: return false
+    val yearMatches = parsed.year?.let { it == expected.year } ?: (fallbackYear == expected.year)
+    return yearMatches && parsed.month == expected.monthValue
+}
+
+/** Matches a day-cell label such as "19", "19日", "19初九" or "今天19". */
 internal fun calendarDayMatches(cellText: String, date: String): Boolean {
     val expected = parseDate(date) ?: return false
     val day = expected.dayOfMonth
-    val suffix = "(?:日|号|今天|明天|后天|(?:周|星期)[一二三四五六日天]|初[一二三四五六七八九十]|十[一二三四五六七八九十]|廿[一二三四五六七八九十]|卅[一二三四五六七八九十])?"
-    return Regex("^0?$day$suffix$").matches(normalizeDateText(cellText))
+    val marker = "(?:日|号|今天|明天|后天|(?:周|星期)[一二三四五六日天]|初[一二三四五六七八九十]|十[一二三四五六七八九十]|廿[一二三四五六七八九十]|卅[一二三四五六七八九十])"
+    return Regex("^(?:$marker)*0?$day(?:$marker)*$").matches(normalizeDateText(cellText))
 }
 
 /** Numeric day labels are safe only when the surrounding month is known. */
-internal fun calendarDateCellMatches(cellText: String, monthContext: String, date: String): Boolean =
-    calendarMonthMatches(monthContext, date) &&
+internal fun calendarDateCellMatches(
+    cellText: String,
+    monthContext: String,
+    date: String,
+    fallbackYear: Int? = null
+): Boolean =
+    calendarMonthMatches(monthContext, date, fallbackYear) &&
         (matchesTravelDate(cellText, date) || calendarDayMatches(cellText, date))
 
 fun exactStationCandidate(text: String, stationName: String): Boolean =
@@ -204,8 +226,17 @@ internal fun dateSelectionConfirmed(
 ): Boolean = phase == DateSelectionPhase.WAITING_CONFIRMATION &&
     snapshotChanged &&
     !pickerVisible &&
-    (matchesTravelDate(fieldValue, date) ||
+        (matchesTravelDate(fieldValue, date) ||
         (fieldContextMatches(fieldContextText, SearchField.DATE) && matchesTravelDate(fieldContextText, date)))
+
+/** Fallback for form layouts where the date label is a sibling, not an ancestor. */
+internal fun dateDisplayFallbackConfirmed(
+    formEvidence: Boolean,
+    pickerVisible: Boolean,
+    displayControlCount: Int,
+    displayLeafCount: Int
+): Boolean = !pickerVisible && formEvidence &&
+    (displayControlCount == 1 || (displayControlCount == 0 && displayLeafCount == 1))
 
 fun matchesTravelDate(text: String, date: String): Boolean {
     val expected = parseDate(date) ?: return false
@@ -245,7 +276,10 @@ fun fieldLabelMatches(text: String, field: SearchField): Boolean {
     return when (field) {
         SearchField.DEPARTURE -> listOf("出发地", "出发站", "出发城市", "出发").any(normalized::contains)
         SearchField.ARRIVAL -> listOf("到达地", "到达站", "到达城市", "到达").any(normalized::contains)
-        SearchField.DATE -> listOf("出发日期", "乘车日期", "出发日", "日期").any(normalized::contains)
+        // A bare "日期" label also appears in calendar cells and page copy;
+        // require a travel-date label so the picker itself is not treated as
+        // the form field.
+        SearchField.DATE -> listOf("出发日期", "乘车日期", "出发日").any(normalized::contains)
     }
 }
 

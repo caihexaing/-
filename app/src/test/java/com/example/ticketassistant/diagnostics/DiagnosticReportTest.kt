@@ -5,7 +5,6 @@ import com.example.ticketassistant.data.Station
 import com.example.ticketassistant.data.TaskStatus
 import com.example.ticketassistant.data.TicketTask
 import com.example.ticketassistant.data.Train
-import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -35,7 +34,7 @@ class DiagnosticReportTest {
         )
 
         val report = buildDiagnosticReport(task, Instant.parse("2026-09-11T06:00:00Z"))
-        assertTrue(report.contains("\"formatVersion\": \"6\""))
+        assertTrue(report.contains("\"formatVersion\": \"7\""))
         assertTrue(report.contains("\"status\": \"FILLING_DEPARTURE\""))
         assertTrue(report.contains("\"automationMode\": \"任务信息自动查询（诊断）\""))
         assertTrue(report.contains("\"lastPageState\": \"HOME_PAGE\""))
@@ -50,5 +49,35 @@ class DiagnosticReportTest {
         assertTrue(report.contains("\"lastEvidenceSource\": \"NONE\""))
         assertTrue(report.contains("\"containsCredentials\": \"false\""))
         assertTrue(report.contains("\"containsPaymentData\": \"false\""))
+    }
+
+    @Test fun `report includes sanitized accessibility snapshots`() {
+        val task = TicketTask(
+            date = "2026-09-19",
+            from = Station("汉口", "HKN"),
+            to = Station("潜江", "QJN"),
+            train = Train("D353", "汉口", "潜江", "07:25", "08:16", "00:51", emptyMap()),
+            seat = "二等座",
+            passengerName = "蔡贺翔",
+            saleDateTime = null
+        )
+        val snapshot = SanitizedAccessibilitySnapshot(
+            capturedAt = 123L,
+            source = "ACCESSIBILITY_EVENT",
+            pageState = "DATE_PICKER",
+            automationStage = "DATE",
+            rootPackage = "com.MobileTicket",
+            nodeCount = 3,
+            truncated = false,
+            treeJson = "{\"text\":\"选择乘车日期\",\"children\":[]}"
+        )
+
+        val report = buildDiagnosticReport(task, Instant.EPOCH, listOf(snapshot))
+        assertTrue(report.contains("\"formatVersion\": \"7\""))
+        assertTrue(report.contains("\"accessibilitySnapshots\": [{\"capturedAt\":123"))
+        assertTrue(report.contains("\"pageState\":\"DATE_PICKER\""))
+        assertTrue(report.contains("\"nodeCount\":3"))
+        assertTrue(report.contains("\"tree\":{\"text\":\"选择乘车日期\",\"children\":[]}"))
+        assertFalse(report.contains("蔡贺翔"))
     }
 }
