@@ -29,8 +29,8 @@ android {
         applicationId = "com.example.ticketassistant"
         minSdk = 26
         targetSdk = 36
-        versionCode = 38
-        versionName = "0.4.16-seat-card-scope"
+        versionCode = 39
+        versionName = "0.4.17-seat-booking-flow"
     }
 
     signingConfigs {

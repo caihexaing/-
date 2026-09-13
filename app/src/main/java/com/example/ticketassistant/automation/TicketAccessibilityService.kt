@@ -54,6 +54,7 @@ class TicketAccessibilityService : AccessibilityService() {
     private var lastObservedRootPackage: String? = null
     private var seatSelected = false
     private var seatBeforeClickFingerprint: String? = null
+    private var seatBookingActionSent = false
     private var passengerSelected = false
     private var passengerBeforeClickFingerprint: String? = null
     private var actionWaitEvents = 0
@@ -125,6 +126,7 @@ class TicketAccessibilityService : AccessibilityService() {
             lastObservedRootPackage = null
             seatSelected = false
             seatBeforeClickFingerprint = null
+            seatBookingActionSent = false
             passengerSelected = false
             passengerBeforeClickFingerprint = null
             actionWaitEvents = 0
@@ -891,6 +893,20 @@ class TicketAccessibilityService : AccessibilityService() {
 
     private fun selectSeatStep(root: AccessibilityNodeInfo, task: TicketTask): InteractionResult {
         val seat = task.seat
+        if (seatBookingActionSent) {
+            val snapshotChanged = seatBeforeClickFingerprint?.let {
+                it != accessibilitySnapshotFingerprint(root)
+            } == true
+            if (!snapshotChanged) {
+                recordDiagnostic(pageState, "等待席别对应预订动作后的页面刷新（快照未变化）", evidenceSource = "SEAT_ACTION_WAIT")
+                return InteractionResult.WAITING
+            }
+            seatBookingActionSent = false
+            seatBeforeClickFingerprint = null
+            lastActionAt = System.currentTimeMillis()
+            recordDiagnostic(pageState, "席别对应预订动作已刷新页面")
+            return InteractionResult.DONE
+        }
         if (seatSelected) {
             val snapshotChanged = seatBeforeClickFingerprint?.let {
                 it != accessibilitySnapshotFingerprint(root)
@@ -899,7 +915,26 @@ class TicketAccessibilityService : AccessibilityService() {
                 recordDiagnostic(pageState, "等待席别点击后的页面刷新（快照未变化）", evidenceSource = "SEAT_ACTION_WAIT")
                 return InteractionResult.WAITING
             }
-            val next = findActionNode(root, listOf("预订", "下一步", "确认")) ?: return InteractionResult.WAITING
+
+            // The train card may expose the reservation button only after it
+            // has been expanded. Re-read the target card and keep this lookup
+            // local; a page-wide "预订" search can select another train.
+            val targetCard = findTrainActions(root, task).singleOrNull() ?: return InteractionResult.WAITING
+            val refreshedSeatNode = findTextNodes(targetCard) { value ->
+                isTargetSeatCandidateText(value, task.train.trainNo, seat)
+            }.filter { it.childCount == 0 }.singleOrNull() ?: return InteractionResult.WAITING
+            val refreshedBooking = findSeatBookingAction(refreshedSeatNode)
+            if (refreshedBooking != null) {
+                val beforeBooking = accessibilitySnapshotFingerprint(root)
+                if (!clickNodeOrParent(refreshedBooking)) return InteractionResult.FAILED
+                seatSelected = false
+                seatBookingActionSent = true
+                seatBeforeClickFingerprint = beforeBooking
+                lastActionAt = System.currentTimeMillis()
+                recordDiagnostic(pageState, "已点击目标席别对应预订")
+                return InteractionResult.WAITING
+            }
+            val next = findActionNode(targetCard, listOf("下一步", "确认")) ?: return InteractionResult.WAITING
             if (!clickNodeOrParent(next)) return InteractionResult.FAILED
             seatSelected = false
             seatBeforeClickFingerprint = null
@@ -938,7 +973,16 @@ class TicketAccessibilityService : AccessibilityService() {
         // and a clickable card container.
         val rowActions = matches.mapNotNull { findSeatBookingAction(it) }
             .distinctBy(::trainNodeSemanticKey)
-        val seatControls = if (rowActions.isNotEmpty()) rowActions else matches.mapNotNull { node ->
+        if (rowActions.size == 1) {
+            val beforeBooking = accessibilitySnapshotFingerprint(root)
+            if (!clickNodeOrParent(rowActions.single())) return InteractionResult.FAILED
+            seatBookingActionSent = true
+            seatBeforeClickFingerprint = beforeBooking
+            lastActionAt = System.currentTimeMillis()
+            recordDiagnostic(pageState, "已点击目标席别对应预订")
+            return InteractionResult.WAITING
+        }
+        val seatControls = matches.mapNotNull { node ->
             if (node.isClickable) node else clickableParent(node)
         }.distinctBy(::trainNodeSemanticKey)
         val target = when {
@@ -949,6 +993,7 @@ class TicketAccessibilityService : AccessibilityService() {
         val beforeClickFingerprint = accessibilitySnapshotFingerprint(root)
         if (!clickNodeOrParent(target)) return InteractionResult.FAILED
         seatSelected = true
+        seatBookingActionSent = false
         seatBeforeClickFingerprint = beforeClickFingerprint
         lastActionAt = System.currentTimeMillis()
         recordDiagnostic(pageState, "已点击席别：$seat")
@@ -1176,7 +1221,9 @@ class TicketAccessibilityService : AccessibilityService() {
                 OfficialPageState.UNKNOWN,
                 OfficialPageState.SEARCH_RESULT_LOADING,
                 OfficialPageState.SEARCH_RESULT_PARTIAL,
-                OfficialPageState.SEARCH_RESULT
+                OfficialPageState.SEARCH_RESULT,
+                OfficialPageState.SEAT_SELECTION,
+                OfficialPageState.PASSENGER_SELECTION
             ) && stage !in setOf(Stage.VALIDATING_SEARCH, Stage.TRAIN)) return
         val fingerprint = accessibilitySnapshotFingerprint(root)
         val key = "${stage.name}|${pageState.name}|$fingerprint"
