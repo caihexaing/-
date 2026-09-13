@@ -29,8 +29,8 @@ android {
         applicationId = "com.example.ticketassistant"
         minSdk = 26
         targetSdk = 36
-        versionCode = 41
-        versionName = "0.4.19-seat-gesture-fix"
+        versionCode = 42
+        versionName = "0.4.20-seat-panel-fix"
     }
 
     signingConfigs {

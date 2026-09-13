@@ -10,6 +10,12 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import com.example.ticketassistant.automation.isBookingActionDispatched
+import com.example.ticketassistant.automation.isPassengerActionDispatched
+import com.example.ticketassistant.automation.isSeatActionDispatched
+import com.example.ticketassistant.automation.isSubmitActionDispatched
+import com.example.ticketassistant.automation.isTargetControlDispatched
+import com.example.ticketassistant.automation.isTrainActionDispatched
 
 class TaskStore(context: Context) {
     private val prefs = context.getSharedPreferences("task_store", Context.MODE_PRIVATE)
@@ -199,14 +205,12 @@ class TaskStore(context: Context) {
             lastActionAt = actionAt ?: if (action != null) now else task.lastActionAt,
             lastActionOutcome = actionOutcome ?: task.lastActionOutcome,
             lastResultPageAt = if (resultPageObserved) now else task.lastResultPageAt,
-            lastTargetControlAt = if (actionText.contains("目标车次") || actionText.contains("目标席别")) now else task.lastTargetControlAt,
-            lastTrainActionAt = if (actionText.contains("目标车次卡片点击已派发")) now else task.lastTrainActionAt,
-            lastSeatActionAt = if (actionText.contains("目标席别") && actionText.contains("点击已派发")) now else task.lastSeatActionAt,
-            lastBookingActionAt = if (
-                actionText.contains("席别") && actionText.contains("预订") && actionText.contains("点击已派发")
-            ) now else task.lastBookingActionAt,
-            lastPassengerActionAt = if (actionText.contains("乘车人")) now else task.lastPassengerActionAt,
-            lastSubmitAt = if (actionText.contains("提交订单点击已派发")) now else task.lastSubmitAt,
+            lastTargetControlAt = if (isTargetControlDispatched(actionText)) now else task.lastTargetControlAt,
+            lastTrainActionAt = if (isTrainActionDispatched(actionText)) now else task.lastTrainActionAt,
+            lastSeatActionAt = if (isSeatActionDispatched(actionText)) now else task.lastSeatActionAt,
+            lastBookingActionAt = if (isBookingActionDispatched(actionText)) now else task.lastBookingActionAt,
+            lastPassengerActionAt = if (isPassengerActionDispatched(actionText)) now else task.lastPassengerActionAt,
+            lastSubmitAt = if (isSubmitActionDispatched(actionText)) now else task.lastSubmitAt,
             lastOrderEvidenceAt = if (orderEvidenceObserved) now else task.lastOrderEvidenceAt
         ))
     }
@@ -288,15 +292,40 @@ class TaskStore(context: Context) {
     fun prepareManualRetry(): TicketTask? {
         val task = load() ?: return null
         if (task.status != TaskStatus.TAKEOVER || task.saleState != SaleState.ALREADY_ON_SALE) return task
+        val now = System.currentTimeMillis()
         save(task.copy(
             enabled = true,
             status = TaskStatus.PREPARING,
             automationRunId = java.util.UUID.randomUUID().toString(),
-            stageEnteredAt = System.currentTimeMillis(),
+            stageEnteredAt = now,
             lastEvent = "用户请求重新尝试官方 App 冷启动",
-            lastEventAt = System.currentTimeMillis(),
+            lastEventAt = now,
             lastError = null,
-            coldStartLastFailure = null
+            coldStartLastFailure = null,
+            lastAction = null,
+            lastPageState = null,
+            lastAutomationStage = null,
+            lastRootPackage = null,
+            lastEvidenceSource = null,
+            lastSearchContextStatus = null,
+            lastMissingEvidence = null,
+            lastSearchContextAt = null,
+            lastSearchSnapshotFingerprint = null,
+            lastSaleT0At = null,
+            coldStartAt = null,
+            lastWindowChangedAt = null,
+            lastAccessibilityEventAt = null,
+            accessibilityEventCount = 0,
+            lastActionAt = null,
+            lastActionOutcome = null,
+            lastResultPageAt = null,
+            lastTargetControlAt = null,
+            lastTrainActionAt = null,
+            lastSeatActionAt = null,
+            lastBookingActionAt = null,
+            lastPassengerActionAt = null,
+            lastSubmitAt = null,
+            lastOrderEvidenceAt = null
         ))
         return load()
     }

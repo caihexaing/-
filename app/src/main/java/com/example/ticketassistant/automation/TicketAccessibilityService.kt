@@ -58,8 +58,14 @@ class TicketAccessibilityService : AccessibilityService() {
     private var lastObservedRootPackage: String? = null
     private var seatActionSent = false
     private var seatActionBeforeClickFingerprint: String? = null
+    private var seatPanelActionSent = false
+    private var seatPanelBeforeClickFingerprint: String? = null
+    private var seatStageWaitStartedAt = 0L
+    private var seatActionWaitStartedAt = 0L
+    private var automationInputLocked = false
     private var passengerSelected = false
     private var passengerBeforeClickFingerprint: String? = null
+    private var passengerWaitStartedAt = 0L
     private var actionWaitEvents = 0
     private var targetTrainWaitEvents = 0
     private var targetTrainScrollAttempts = 0
@@ -70,7 +76,10 @@ class TicketAccessibilityService : AccessibilityService() {
     private var lastProgressRecordAt = 0L
     private var lastSnapshotKey: String? = null
     private val searchInteractor by lazy {
-        OfficialSearchInteractor { action -> recordDiagnostic(pageState, action) }
+        OfficialSearchInteractor(
+            record = { action -> recordDiagnostic(pageState, action) },
+            allowInput = { !automationInputLocked && stage != Stage.DONE }
+        )
     }
 
     override fun onServiceConnected() {
@@ -109,7 +118,10 @@ class TicketAccessibilityService : AccessibilityService() {
         if (activeTaskKey != key || runChanged) {
             activeTaskKey = key
             activeAutomationRunId = task.automationRunId
-            stage = stageFor(task.status)
+            val persistedSeatAction = task.status == TaskStatus.SELECTING_TRAIN_SEAT &&
+                task.lastTrainActionAt != null && task.lastSeatActionAt != null &&
+                task.lastSeatActionAt >= task.lastTrainActionAt
+            stage = if (persistedSeatAction) Stage.SEAT else stageFor(task.status)
             pageState = OfficialPageState.LAUNCHING
             lastActionAt = 0L
             emptyTreeEvents = 0
@@ -127,10 +139,20 @@ class TicketAccessibilityService : AccessibilityService() {
             expectedPageWaitEvents = 0
             coldStartWaitEvents = 0
             lastObservedRootPackage = null
-            seatActionSent = false
+            seatActionSent = persistedSeatAction
             seatActionBeforeClickFingerprint = null
+            seatPanelActionSent = false
+            seatPanelBeforeClickFingerprint = null
+            seatStageWaitStartedAt = if (persistedSeatAction) {
+                task.lastSeatActionAt ?: System.currentTimeMillis()
+            } else 0L
+            seatActionWaitStartedAt = if (persistedSeatAction) task.lastSeatActionAt ?: 0L else 0L
+            automationInputLocked = false
             passengerSelected = false
             passengerBeforeClickFingerprint = null
+            passengerWaitStartedAt = if (task.status == TaskStatus.SELECTING_PASSENGER) {
+                task.lastPassengerActionAt ?: System.currentTimeMillis()
+            } else 0L
             actionWaitEvents = 0
             targetTrainWaitEvents = 0
             targetTrainScrollAttempts = 0
@@ -142,6 +164,12 @@ class TicketAccessibilityService : AccessibilityService() {
             lastSnapshotKey = null
             AccessibilitySnapshotBuffer.clear()
             searchInteractor.reset()
+        }
+        if (stage == Stage.SEAT && seatStageWaitStartedAt == 0L) {
+            seatStageWaitStartedAt = System.currentTimeMillis()
+        }
+        if (stage == Stage.PASSENGER && passengerWaitStartedAt == 0L) {
+            passengerWaitStartedAt = System.currentTimeMillis()
         }
         if (task.status in COLD_START_STATUSES && stage in setOf(Stage.WAITING_PAGE, Stage.PREWARM, Stage.SALE_T0)) {
             stage = stageFor(task.status)
@@ -199,9 +227,23 @@ class TicketAccessibilityService : AccessibilityService() {
         }
 
         val popupMatch = PopupMatcher.find(root)
-        pageState = when (popupMatch) {
-            is PopupMatcher.Result.Unique, is PopupMatcher.Result.Ambiguous -> OfficialPageState.POPUP
-            PopupMatcher.Result.None -> detectOfficialPageState(text)
+        val seatPanelPending = shouldIgnorePopupDuringSeatAction(
+            stageName = stage.name,
+            seatActionSent = seatActionSent,
+            seatPanelActionSent = seatPanelActionSent
+        )
+        pageState = when {
+            seatPanelPending && popupMatch !is PopupMatcher.Result.None -> {
+                // A bottom seat sheet can expose generic "提示/关闭" semantics.
+                // Never dismiss it while a seat action is waiting; retain the
+                // underlying page state and let the seat stage inspect it.
+                detectOfficialPageState(text).let { detected ->
+                    if (detected == OfficialPageState.POPUP) OfficialPageState.SEARCH_RESULT else detected
+                }
+            }
+            popupMatch is PopupMatcher.Result.Unique || popupMatch is PopupMatcher.Result.Ambiguous ->
+                OfficialPageState.POPUP
+            else -> detectOfficialPageState(text)
         }
         val pendingCandidate = hasPendingPaymentCandidate(text)
         val contextCheck = if (pageState == OfficialPageState.SEARCH_RESULT || pageState == OfficialPageState.SEARCH_RESULT_PARTIAL) {
@@ -211,6 +253,7 @@ class TicketAccessibilityService : AccessibilityService() {
             pageState,
             rootPackage = rootPackage,
             evidenceSource = when {
+                seatPanelPending && popupMatch !is PopupMatcher.Result.None -> "SEAT_PANEL_POPUP_IGNORED"
                 stage == Stage.WAITING_RESULT && isPendingPaymentPage(text) -> "PENDING_PAYMENT_STRONG_CANDIDATE"
                 pendingCandidate -> "PENDING_PAYMENT_KEYWORD_ONLY"
                 else -> "NONE"
@@ -220,7 +263,7 @@ class TicketAccessibilityService : AccessibilityService() {
             snapshotFingerprint = contextCheck?.let { searchSnapshotFingerprint(text) }
         )
         maybeCaptureAccessibilitySnapshot(root, source, task)
-        if (pageState == OfficialPageState.POPUP) {
+        if (pageState == OfficialPageState.POPUP && !seatPanelPending) {
             when (popupMatch) {
                 is PopupMatcher.Result.Unique -> {
                     if (popupDismissSent) {
@@ -404,13 +447,25 @@ class TicketAccessibilityService : AccessibilityService() {
                 when (selectSeatStep(root, task)) {
                     InteractionResult.DONE -> {
                         actionWaitEvents = 0
+                        passengerWaitStartedAt = System.currentTimeMillis()
                         stage = Stage.PASSENGER
                         TaskStore(this).updateStatus(TaskStatus.SELECTING_PASSENGER, "已刷新页面并进入乘车人选择")
                     }
                     InteractionResult.WAITING -> {
                         actionWaitEvents++
-                        recordDiagnostic(pageState, "等待席别页面刷新或继续控件（第 ${actionWaitEvents} 次）", evidenceSource = "SEAT_PAGE_REFRESH")
-                        if (actionWaitEvents >= MAX_ACTION_WAIT_EVENTS) takeover("未找到目标席别或席别页面继续控件")
+                        val startedAt = seatActionWaitStartedAt.takeIf { it > 0L }
+                            ?: seatStageWaitStartedAt.takeIf { it > 0L }
+                            ?: System.currentTimeMillis().also { seatStageWaitStartedAt = it }
+                        val now = System.currentTimeMillis()
+                        val elapsed = now - startedAt
+                        recordDiagnostic(
+                            pageState,
+                            "等待席别面板或下一页面（第 ${actionWaitEvents} 次，已等待 ${elapsed.coerceAtLeast(0L)}ms）",
+                            evidenceSource = "SEAT_PAGE_REFRESH"
+                        )
+                        if (waitBudgetExpired(startedAt, now, MAX_SEAT_ACTION_WAIT_MS)) {
+                            takeover("席别动作后 ${MAX_SEAT_ACTION_WAIT_MS / 1000} 秒内未出现可确认的席别面板或下一页面")
+                        }
                     }
                     InteractionResult.FAILED -> takeover("目标席别控件动作未派发，未继续操作")
                 }
@@ -418,17 +473,28 @@ class TicketAccessibilityService : AccessibilityService() {
             Stage.PASSENGER -> when (selectPassengerAndContinue(root, task.passengerName)) {
                 PassengerResult.SELECTED -> {
                     actionWaitEvents = 0
+                    passengerWaitStartedAt = System.currentTimeMillis()
                     TaskStore(this).recordEvent("已选择唯一同名乘车人，等待刷新后点击继续")
                 }
                 PassengerResult.CONTINUED -> {
                     actionWaitEvents = 0
+                    passengerWaitStartedAt = 0L
                     stage = Stage.ORDER
                     TaskStore(this).updateStatus(TaskStatus.VALIDATING_ORDER, "已刷新页面并进入订单确认页")
                 }
                 PassengerResult.WAITING -> {
                     actionWaitEvents++
-                    recordDiagnostic(pageState, "等待乘车人列表或继续控件（第 ${actionWaitEvents} 次）", evidenceSource = "PASSENGER_PAGE_REFRESH")
-                    if (actionWaitEvents >= MAX_ACTION_WAIT_EVENTS) takeover("未找到唯一乘车人或乘车人页面继续控件")
+                    val startedAt = passengerWaitStartedAt.takeIf { it > 0L } ?: System.currentTimeMillis().also {
+                        passengerWaitStartedAt = it
+                    }
+                    val now = System.currentTimeMillis()
+                    val elapsed = now - startedAt
+                    recordDiagnostic(
+                        pageState,
+                        "等待乘车人列表或继续控件（第 ${actionWaitEvents} 次，已等待 ${elapsed.coerceAtLeast(0L)}ms）",
+                        evidenceSource = "PASSENGER_PAGE_REFRESH"
+                    )
+                    if (waitBudgetExpired(startedAt, now, MAX_PASSENGER_ACTION_WAIT_MS)) takeover("乘车人动作后 ${MAX_PASSENGER_ACTION_WAIT_MS / 1000} 秒内未出现可确认的乘车人页面")
                 }
                 PassengerResult.AMBIGUOUS -> takeover("官方 12306 中存在多个同名乘车人，请手动选择")
                 PassengerResult.NOT_FOUND -> takeover("官方 12306 中找不到指定乘车人，请手动确认")
@@ -857,6 +923,7 @@ class TicketAccessibilityService : AccessibilityService() {
             return
         }
         val scrolled = decision == TargetTrainWaitAction.SCROLL &&
+            !automationInputLocked &&
             scrollable?.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD) == true
         if (scrolled) {
             targetTrainScrollAttempts++
@@ -895,7 +962,46 @@ class TicketAccessibilityService : AccessibilityService() {
 
     private fun selectSeatStep(root: AccessibilityNodeInfo, task: TicketTask): InteractionResult {
         val seat = task.seat
+        if (seatStageWaitStartedAt == 0L) seatStageWaitStartedAt = System.currentTimeMillis()
+        if (seatPanelActionSent) {
+            if (seatPanelBeforeClickFingerprint == null) {
+                seatPanelBeforeClickFingerprint = accessibilitySnapshotFingerprint(root)
+                if (seatActionWaitStartedAt == 0L) seatActionWaitStartedAt = System.currentTimeMillis()
+            }
+            val snapshotChanged = seatPanelBeforeClickFingerprint?.let {
+                it != accessibilitySnapshotFingerprint(root)
+            } == true
+            if (!snapshotChanged) {
+                recordDiagnostic(pageState, "等待席别面板继续动作后的页面刷新（快照未变化）", evidenceSource = "SEAT_PANEL_ACTION_WAIT")
+                return InteractionResult.WAITING
+            }
+            if (pageState in setOf(
+                    OfficialPageState.PASSENGER_SELECTION,
+                    OfficialPageState.ORDER_CONFIRM
+                )
+            ) {
+                seatPanelActionSent = false
+                seatPanelBeforeClickFingerprint = null
+                seatActionSent = false
+                seatActionBeforeClickFingerprint = null
+                seatActionWaitStartedAt = 0L
+                lastActionAt = System.currentTimeMillis()
+                recordDiagnostic(pageState, "席别面板继续动作后已进入下一页面")
+                return InteractionResult.DONE
+            }
+            seatPanelBeforeClickFingerprint = accessibilitySnapshotFingerprint(root)
+            recordDiagnostic(
+                pageState,
+                "席别面板继续动作后仍未进入乘车人页面",
+                evidenceSource = "SEAT_PANEL_ACTION_NO_NEXT"
+            )
+            return InteractionResult.WAITING
+        }
         if (seatActionSent) {
+            if (seatActionWaitStartedAt == 0L) seatActionWaitStartedAt = System.currentTimeMillis()
+            if (seatActionBeforeClickFingerprint == null) {
+                seatActionBeforeClickFingerprint = accessibilitySnapshotFingerprint(root)
+            }
             val snapshotChanged = seatActionBeforeClickFingerprint?.let {
                 it != accessibilitySnapshotFingerprint(root)
             } == true
@@ -914,6 +1020,19 @@ class TicketAccessibilityService : AccessibilityService() {
                 lastActionAt = System.currentTimeMillis()
                 recordDiagnostic(pageState, "席别动作后已进入下一页面")
                 return InteractionResult.DONE
+            }
+
+            val panelActions = findSeatPanelContinueActions(root, task, findTrainActions(root, task).singleOrNull())
+            if (panelActions.size > 1) {
+                recordDiagnostic(
+                    pageState,
+                    "席别选择面板继续控件不唯一，未自动点击",
+                    evidenceSource = "SEAT_PANEL_ACTION_AMBIGUOUS"
+                )
+                return InteractionResult.FAILED
+            }
+            if (panelActions.size == 1) {
+                return dispatchSeatPanelAction(root, panelActions.single())
             }
 
             // Some builds first update the selected seat in-place. Re-read
@@ -948,7 +1067,7 @@ class TicketAccessibilityService : AccessibilityService() {
             seatActionBeforeClickFingerprint = accessibilitySnapshotFingerprint(root)
             recordDiagnostic(
                 pageState,
-                "席别动作后仍未进入乘车人页面，未找到同一席别行的继续控件",
+                "席别动作后仍未进入乘车人页面，未找到席别面板或继续控件",
                 evidenceSource = "SEAT_ACTION_NO_NEXT"
             )
             return InteractionResult.WAITING
@@ -1094,7 +1213,9 @@ class TicketAccessibilityService : AccessibilityService() {
         }
         seatActionSent = true
         seatActionBeforeClickFingerprint = before
-        lastActionAt = System.currentTimeMillis()
+        val now = System.currentTimeMillis()
+        seatActionWaitStartedAt = now
+        lastActionAt = now
         recordDiagnostic(
             pageState,
             if (gestureClicked) "$action（触控回退）" else action,
@@ -1103,9 +1224,92 @@ class TicketAccessibilityService : AccessibilityService() {
         return InteractionResult.WAITING
     }
 
+    /**
+     * Finds a unique continue/confirm action belonging to a seat-selection
+     * sheet. The action must be outside the train card and its visible
+     * ancestor must contain the configured seat label plus either a price or
+     * explicit seat-selection semantics. Generic page buttons are rejected.
+     */
+    private fun findSeatPanelContinueActions(
+        root: AccessibilityNodeInfo,
+        task: TicketTask,
+        targetCard: AccessibilityNodeInfo?
+    ): List<AccessibilityNodeInfo> {
+        // A generic confirm/next button is unsafe without a live target-card
+        // anchor. The seat sheet may be visually correct while its source
+        // train context is absent from the current accessibility tree; defer
+        // to the bounded wait/manual takeover instead of clicking blindly.
+        if (targetCard == null) return emptyList()
+        val candidates = findTextNodes(root) { value ->
+            val normalized = normalizeText(value)
+            listOf("下一步", "确认", "确定").any { normalized == it || normalized.endsWith(it) }
+        }.mapNotNull { node ->
+            val action = if (node.isClickable) node else clickableParent(node)
+            if (action == null || !action.isVisibleToUser || !action.isEnabled) return@mapNotNull null
+            if (isDescendantOf(action, targetCard) || isDescendantOf(node, targetCard)) return@mapNotNull null
+            val panel = findSeatPanelContainer(node, task) ?: return@mapNotNull null
+            if (isDescendantOf(panel, targetCard)) return@mapNotNull null
+            action
+        }.distinctBy(::trainNodeSemanticKey)
+        return candidates
+    }
+
+    private fun findSeatPanelContainer(
+        node: AccessibilityNodeInfo,
+        task: TicketTask
+    ): AccessibilityNodeInfo? {
+        var current: AccessibilityNodeInfo? = node
+        var depth = 0
+        while (current != null && depth++ < 8) {
+            if (!current.isVisibleToUser) {
+                current = current.parent
+                continue
+            }
+            val text = current.textContent()
+            val normalized = normalizeText(text)
+            val hasSeat = seatLabelMatches(text, task.seat)
+            val hasChoiceSemantics = listOf("选择席别", "席别选择", "选择座席", "席位选择", "确认", "确定", "下一步")
+                .any(normalized::contains)
+            val hasPrice = Regex("(?:¥|￥)?\\s*\\d+(?:\\.\\d{1,2})?元?").containsMatchIn(text)
+            val className = current.className?.toString()?.lowercase().orEmpty()
+            val resourceId = current.viewIdResourceName?.lowercase().orEmpty()
+            val structuralSheet = listOf("dialog", "popup", "bottom", "sheet", "modal")
+                .any { className.contains(it) || resourceId.contains(it) }
+            val scopedPricePanel = current.parent != null && hasPrice
+            if (hasSeat && hasChoiceSemantics && (structuralSheet || scopedPricePanel)) return current
+            current = current.parent
+        }
+        return null
+    }
+
+    private fun dispatchSeatPanelAction(
+        root: AccessibilityNodeInfo,
+        target: AccessibilityNodeInfo
+    ): InteractionResult {
+        val before = accessibilitySnapshotFingerprint(root)
+        if (!clickNodeOrParent(target)) {
+            recordDiagnostic(
+                pageState,
+                "席别选择面板继续动作未派发",
+                evidenceSource = "SEAT_PANEL_ACTION_REJECTED"
+            )
+            return InteractionResult.FAILED
+        }
+        seatPanelActionSent = true
+        seatPanelBeforeClickFingerprint = before
+        seatActionWaitStartedAt = System.currentTimeMillis()
+        lastActionAt = seatActionWaitStartedAt
+        recordDiagnostic(
+            pageState,
+            "席别选择面板继续动作已派发",
+            evidenceSource = "SEAT_PANEL_ACTION"
+        )
+        return InteractionResult.WAITING
+    }
+
     /** Sends only the action exposed by the resolved seat node/control. */
     private fun clickSeatControl(node: AccessibilityNodeInfo): Boolean {
-        if (!node.isVisibleToUser || !node.isEnabled) return false
+        if (automationInputLocked || stage == Stage.DONE || !node.isVisibleToUser || !node.isEnabled) return false
         return runCatching {
             // WebView virtual nodes sometimes omit isClickable while still
             // accepting ACTION_CLICK. This is the semantic seat action; it
@@ -1123,6 +1327,7 @@ class TicketAccessibilityService : AccessibilityService() {
         seatNode: AccessibilityNodeInfo,
         targetCard: AccessibilityNodeInfo
     ): Boolean {
+        if (automationInputLocked || stage == Stage.DONE) return false
         val nodeBounds = android.graphics.Rect()
         val cardBounds = android.graphics.Rect()
         seatNode.getBoundsInScreen(nodeBounds)
@@ -1160,11 +1365,15 @@ class TicketAccessibilityService : AccessibilityService() {
         val accepted = runCatching {
             dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
                 override fun onCompleted(gestureDescription: GestureDescription?) {
-                    recordDiagnostic(pageState, "目标席别触控回退已完成", evidenceSource = "SEAT_GESTURE_COMPLETED")
+                    if (!automationInputLocked) {
+                        recordDiagnostic(pageState, "目标席别触控回退已完成", evidenceSource = "SEAT_GESTURE_COMPLETED")
+                    }
                 }
 
                 override fun onCancelled(gestureDescription: GestureDescription?) {
-                    recordDiagnostic(pageState, "目标席别触控回退被系统取消", evidenceSource = "SEAT_GESTURE_CANCELLED")
+                    if (!automationInputLocked) {
+                        recordDiagnostic(pageState, "目标席别触控回退被系统取消", evidenceSource = "SEAT_GESTURE_CANCELLED")
+                    }
                 }
             }, null)
         }.getOrDefault(false)
@@ -1266,7 +1475,7 @@ class TicketAccessibilityService : AccessibilityService() {
             passengerSelected = false
             passengerBeforeClickFingerprint = null
             lastActionAt = System.currentTimeMillis()
-            recordDiagnostic(pageState, "已刷新乘车人页面并点击继续")
+            recordDiagnostic(pageState, "乘车人页面继续控件点击已派发")
             return PassengerResult.CONTINUED
         }
         val matches = findTextNodes(root) { value -> normalizeText(value) == normalizeText(passenger) }
@@ -1277,8 +1486,9 @@ class TicketAccessibilityService : AccessibilityService() {
         if (!clickNodeOrParent(matches.first())) return PassengerResult.NOT_FOUND
         passengerSelected = true
         passengerBeforeClickFingerprint = beforeClickFingerprint
-        lastActionAt = System.currentTimeMillis()
-        recordDiagnostic(pageState, "已选择目标乘车人（姓名已脱敏）")
+        passengerWaitStartedAt = System.currentTimeMillis()
+        lastActionAt = passengerWaitStartedAt
+        recordDiagnostic(pageState, "目标乘车人点击已派发（姓名已脱敏）")
         return PassengerResult.SELECTED
     }
 
@@ -1374,6 +1584,7 @@ class TicketAccessibilityService : AccessibilityService() {
     }
 
     private fun clickNodeOrParent(node: AccessibilityNodeInfo): Boolean {
+        if (automationInputLocked || stage == Stage.DONE) return false
         if (node.isClickable && node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
         var parent = node.parent
         repeat(5) {
@@ -1507,6 +1718,7 @@ class TicketAccessibilityService : AccessibilityService() {
     }
 
     private fun takeover(reason: String) {
+        automationInputLocked = true
         if (stage == Stage.DONE) return
         stage = Stage.DONE
         TaskStore(this).updateStatus(TaskStatus.TAKEOVER, "需要人工接管：$reason")
@@ -1515,6 +1727,7 @@ class TicketAccessibilityService : AccessibilityService() {
     }
 
     private fun submitRejected(reason: String) {
+        automationInputLocked = true
         if (stage == Stage.DONE) return
         stage = Stage.DONE
         TaskStore(this).updateStatus(TaskStatus.SUBMIT_REJECTED, reason)
@@ -1523,6 +1736,7 @@ class TicketAccessibilityService : AccessibilityService() {
     }
 
     private fun resultUnknown(reason: String) {
+        automationInputLocked = true
         if (stage == Stage.DONE) return
         stage = Stage.DONE
         TaskStore(this).updateStatus(TaskStatus.RESULT_UNKNOWN, reason)
@@ -1624,7 +1838,8 @@ class TicketAccessibilityService : AccessibilityService() {
         private const val COLD_START_TIMEOUT_MS = 90_000L
         private const val MAX_RESULT_CONTEXT_WAIT_EVENTS = 12
         private const val MAX_PAGE_REFRESH_WAIT_EVENTS = 12
-        private const val MAX_ACTION_WAIT_EVENTS = 12
+        private const val MAX_SEAT_ACTION_WAIT_MS = 10_000L
+        private const val MAX_PASSENGER_ACTION_WAIT_MS = 10_000L
         private const val MAX_TARGET_TRAIN_WAIT_EVENTS = 30
         private const val MAX_TARGET_TRAIN_SCROLL_ATTEMPTS = 6
         private const val TARGET_TRAIN_WAIT_TIMEOUT_MS = 15_000L

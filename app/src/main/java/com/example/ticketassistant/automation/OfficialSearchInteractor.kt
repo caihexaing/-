@@ -5,7 +5,8 @@ import android.view.accessibility.AccessibilityNodeInfo
 
 /** Performs only uniquely identifiable actions on the official ticket-search UI. */
 class OfficialSearchInteractor(
-    private val record: (String) -> Unit = {}
+    private val record: (String) -> Unit = {},
+    private val allowInput: () -> Boolean = { true }
 ) {
     private var stationField: SearchField? = null
     private var stationTarget: String? = null
@@ -136,6 +137,10 @@ class OfficialSearchInteractor(
         }
 
         if (input != null) {
+            if (!allowInput()) {
+                record("${field.actionName()}输入动作已被接管闩锁阻止")
+                return InteractionResult.FAILED
+            }
             val arguments = Bundle().apply {
                 putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, stationName)
             }
@@ -391,6 +396,10 @@ class OfficialSearchInteractor(
             }
             val arguments = Bundle().apply {
                 putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, date)
+            }
+            if (!allowInput()) {
+                record("日期输入动作已被接管闩锁阻止")
+                return InteractionResult.FAILED
             }
             if (!input.performAction(AccessibilityNodeInfo.ACTION_FOCUS)) {
                 record("日期输入框无法聚焦")
@@ -938,6 +947,7 @@ class OfficialSearchInteractor(
     }
 
     private fun clickNodeOrParent(node: AccessibilityNodeInfo): Boolean {
+        if (!allowInput()) return false
         if (node.isClickable && node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
         var parent = node.parent
         repeat(MAX_PARENT_DEPTH) {

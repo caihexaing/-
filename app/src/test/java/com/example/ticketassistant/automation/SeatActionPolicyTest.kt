@@ -97,22 +97,21 @@ class SeatActionPolicyTest {
     }
 
     @Test
-    fun `gesture fallback rejects offscreen or disjoint bounds`() {
-        assertEquals(
-            null,
-            seatTapPoint(
-                nodeLeft = -10,
-                nodeTop = 100,
-                nodeRight = 100,
-                nodeBottom = 200,
-                cardLeft = 0,
-                cardTop = 0,
-                cardRight = 500,
-                cardBottom = 500,
-                screenWidth = 1260,
-                screenHeight = 2800
-            )
+    fun `gesture fallback rejects disjoint bounds and clips a partially visible card`() {
+        val partiallyVisible = seatTapPoint(
+            nodeLeft = -10,
+            nodeTop = 100,
+            nodeRight = 100,
+            nodeBottom = 200,
+            cardLeft = 0,
+            cardTop = 0,
+            cardRight = 500,
+            cardBottom = 500,
+            screenWidth = 1260,
+            screenHeight = 2800
         )
+        assertEquals(50f, partiallyVisible?.x ?: -1f, 0f)
+        assertEquals(150f, partiallyVisible?.y ?: -1f, 0f)
         assertEquals(
             null,
             seatTapPoint(
@@ -128,20 +127,35 @@ class SeatActionPolicyTest {
                 screenHeight = 2800
             )
         )
-        assertEquals(
-            null,
-            seatTapPoint(
-                nodeLeft = 100,
-                nodeTop = 100,
-                nodeRight = 200,
-                nodeBottom = 200,
-                cardLeft = 0,
-                cardTop = 0,
-                cardRight = 1300,
-                cardBottom = 500,
-                screenWidth = 1260,
-                screenHeight = 2800
-            )
+        val clipped = seatTapPoint(
+            nodeLeft = 100,
+            nodeTop = 100,
+            nodeRight = 200,
+            nodeBottom = 200,
+            cardLeft = 0,
+            cardTop = 0,
+            cardRight = 1300,
+            cardBottom = 500,
+            screenWidth = 1260,
+            screenHeight = 2800
         )
+        assertEquals(150f, clipped?.x ?: -1f, 0f)
+        assertEquals(150f, clipped?.y ?: -1f, 0f)
+    }
+
+    @Test
+    fun `seat and passenger waits use a monotonic time budget`() {
+        assertEquals(false, waitBudgetExpired(1_000L, 9_999L, 9_000L))
+        assertEquals(true, waitBudgetExpired(1_000L, 10_000L, 9_000L))
+        assertEquals(false, waitBudgetExpired(0L, 20_000L, 10_000L))
+        assertEquals(false, waitBudgetExpired(10_000L, 9_000L, 1_000L))
+    }
+
+    @Test
+    fun `seat panel never goes through ordinary popup dismissal`() {
+        assertEquals(true, shouldIgnorePopupDuringSeatAction("SEAT", true, false))
+        assertEquals(true, shouldIgnorePopupDuringSeatAction("SEAT", false, true))
+        assertEquals(false, shouldIgnorePopupDuringSeatAction("PASSENGER", true, false))
+        assertEquals(false, shouldIgnorePopupDuringSeatAction("SEAT", false, false))
     }
 }
