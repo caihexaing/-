@@ -80,6 +80,7 @@ import com.example.ticketassistant.data.SaleStateRules
 import com.example.ticketassistant.notifications.TaskScheduler
 import com.example.ticketassistant.update.AppUpdate
 import com.example.ticketassistant.update.UpdateChecker
+import com.example.ticketassistant.update.UpdateDownloadStage
 import com.example.ticketassistant.update.UpdateProgress
 import com.example.ticketassistant.diagnostics.DiagnosticExporter
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -351,15 +352,34 @@ private fun TicketApp(vm: TicketViewModel) {
                     if (updateBusy) {
                         Spacer(Modifier.height(16.dp))
                         val progress = updateProgress
-                        if (progress != null && progress.totalBytes > 0L) {
-                            val fraction = (progress.downloadedBytes.toFloat() / progress.totalBytes).coerceIn(0f, 1f)
-                            LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
-                            Spacer(Modifier.height(6.dp))
-                            Text("正在下载 ${"%.0f".format(fraction * 100)}% · 第 ${progress.attempt} 次尝试")
-                        } else {
-                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                            Spacer(Modifier.height(6.dp))
-                            Text("正在连接下载服务…")
+                        when (progress?.stage) {
+                            UpdateDownloadStage.CONNECTING -> {
+                                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                                Spacer(Modifier.height(6.dp))
+                                Text("正在连接下载服务… 第 ${progress.attempt} 次尝试")
+                            }
+                            UpdateDownloadStage.DOWNLOADING -> {
+                                if (progress.totalBytes > 0L) {
+                                    val fraction = (progress.downloadedBytes.toFloat() / progress.totalBytes).coerceIn(0f, 1f)
+                                    LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
+                                    Spacer(Modifier.height(6.dp))
+                                    Text("正在下载 ${"%.0f".format(fraction * 100)}% · 第 ${progress.attempt} 次尝试")
+                                } else {
+                                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                                    Spacer(Modifier.height(6.dp))
+                                    Text("正在下载，已完成 ${progress.downloadedBytes} 字节 · 第 ${progress.attempt} 次尝试")
+                                }
+                            }
+                            UpdateDownloadStage.VERIFYING -> {
+                                LinearProgressIndicator(progress = { 1f }, modifier = Modifier.fillMaxWidth())
+                                Spacer(Modifier.height(6.dp))
+                                Text("下载完成，正在校验更新文件…")
+                            }
+                            null -> {
+                                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                                Spacer(Modifier.height(6.dp))
+                                Text("正在连接下载服务…")
+                            }
                         }
                     }
                 }
