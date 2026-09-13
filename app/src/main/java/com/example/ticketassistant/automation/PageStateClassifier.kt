@@ -9,7 +9,13 @@ enum class OfficialPageState {
 
 internal fun detectOfficialPageState(text: String): OfficialPageState {
     val normalized = text.replace(Regex("\\s+"), "").lowercase()
-    val hasTrainLikeToken = Regex("(?<![A-Za-z0-9])[gcdztksylpn]\\d{1,4}(?![A-Za-z0-9])", RegexOption.IGNORE_CASE)
+    // WebView accessibility text may insert spaces between every train-number
+    // character (for example, "D 6 3 1次列车"). Keep the token boundary
+    // strict while accepting that presentation form.
+    val hasTrainLikeToken = Regex(
+        "(?<![A-Za-z0-9])(?:[gcdztksylpn](?:\\s*\\d){1,4})(?![A-Za-z0-9])",
+        RegexOption.IGNORE_CASE
+    )
         .containsMatchIn(text.lowercase())
     val explicitSubmitFailure = listOf("提交失败", "订单失败", "无法提交", "重复订单", "已有未完成订单")
         .any(normalized::contains)
@@ -58,12 +64,14 @@ internal fun detectOfficialPageState(text: String): OfficialPageState {
     if (listOf("选择出发站", "选择到达站", "站点列表", "热门站点", "车站选择").any(normalized::contains)) {
         return OfficialPageState.STATION_PICKER
     }
-    if (listOf("日期选择", "选择日期", "选择乘车日期", "日历", "上一月", "下一月")
-            .any(normalized::contains)
-    ) return OfficialPageState.DATE_PICKER
     if (listOf("查询中", "正在查询", "加载车次", "正在加载车次").any(normalized::contains)) {
         return OfficialPageState.SEARCH_RESULT_LOADING
     }
+    val hasDatePickerEvidence = listOf("日期选择", "选择日期", "选择乘车日期", "日历", "上一月", "下一月")
+        .any(normalized::contains)
+    // The result page always exposes a calendar entry in its date bar. Only
+    // classify it as a picker when no actual result evidence is present.
+    if (hasDatePickerEvidence && !hasResultEvidence) return OfficialPageState.DATE_PICKER
     if (hasSeatPickerEvidence && !hasResultListEvidence) return OfficialPageState.SEAT_SELECTION
     // Home/form evidence must win over a stray train token from a hidden or
     // cached node; it is unsafe to treat the home screen as a result list.

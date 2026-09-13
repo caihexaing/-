@@ -280,6 +280,15 @@ class SearchFormMatcherTest {
         assertTrue(seatUnavailableEvidence("二等座 -- 一等座 有票", "二等座"))
         assertTrue(seatUnavailableEvidence("二等座 * 一等座 有票", "二等座"))
         assertFalse(seatUnavailableEvidence("二等座 有票 无座 5张", "二等座"))
+        assertFalse(seatUnavailableEvidence("D631次列车二等席位有票", "二等座"))
+        assertTrue(seatUnavailableEvidence("D631次列车二等席位售罄", "二等座"))
+    }
+
+    @Test
+    fun `seat labels accept official seat availability wording`() {
+        assertTrue(seatLabelMatches("D631次列车二等席位有票", "二等座"))
+        assertTrue(seatLabelMatches("D631次列车二等席有票", "二等座"))
+        assertFalse(seatLabelMatches("D631次列车一等席位有票", "二等座"))
     }
 
     @Test

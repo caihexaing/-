@@ -824,7 +824,7 @@ class TicketAccessibilityService : AccessibilityService() {
             takeover("官方 12306 中所选席别当前无票，请手动选择")
             return InteractionResult.FAILED
         }
-        val matches = findTextNodes(root) { value -> normalizeText(value) == normalizeText(seat) }
+        val matches = findTextNodes(root) { value -> seatLabelMatches(value, seat) }
             .filter { it.childCount == 0 }
         if (matches.size != 1) return InteractionResult.WAITING
         val beforeClickFingerprint = accessibilitySnapshotFingerprint(root)
@@ -892,9 +892,20 @@ class TicketAccessibilityService : AccessibilityService() {
                 val containerText = parent.textContent()
                 if (normalizeText(containerText).contains(normalizeText(task.from.name)) &&
                     normalizeText(containerText).contains(normalizeText(task.to.name)) &&
-                    normalizeText(containerText).contains(normalizeText(task.seat))
+                    seatLabelMatches(containerText, task.seat) &&
+                    !seatUnavailableEvidence(containerText, task.seat)
                 ) {
-                    return@mapNotNull findActionNode(parent, listOf("预订"))
+                    val booking = findActionNode(parent, listOf("预订"))
+                    if (booking != null) return@mapNotNull booking
+
+                    // Some current WebView builds expose each train card as a
+                    // single clickable container and expose seat availability
+                    // as non-clickable text, with no "预订" label at all.
+                    // Bind the fallback to the requested seat text inside the
+                    // same card so another train cannot be selected.
+                    val seatNodes = findTextNodes(parent) { value -> seatLabelMatches(value, task.seat) }
+                        .filter { it.childCount == 0 }
+                    if (seatNodes.size == 1) return@mapNotNull clickableParent(seatNodes.single())
                 }
                 parent = parent.parent
             }
@@ -1224,7 +1235,13 @@ class TicketAccessibilityService : AccessibilityService() {
 }
 
 internal fun matchesToken(text: String, token: String): Boolean =
-    Regex("(^|[^A-Za-z0-9])${Regex.escape(token)}([^A-Za-z0-9]|$)", RegexOption.IGNORE_CASE).containsMatchIn(text)
+    Regex(
+        "(^|[^A-Za-z0-9])${token.mapIndexed { index, char ->
+            val escaped = Regex.escape(char.toString())
+            if (index == 0) escaped else "\\s*$escaped"
+        }.joinToString("")}([^A-Za-z0-9]|$)",
+        RegexOption.IGNORE_CASE
+    ).containsMatchIn(text)
 
 internal fun isOfficialRootPackage(packageName: CharSequence?): Boolean =
     packageName?.toString() == TicketAccessibilityService.OFFICIAL_PACKAGE

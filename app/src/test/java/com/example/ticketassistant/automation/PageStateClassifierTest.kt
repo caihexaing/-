@@ -56,6 +56,19 @@ class PageStateClassifierTest {
         )
     }
 
+    @Test fun `result page calendar entry does not become date picker`() {
+        assertEquals(
+            OfficialPageState.SEARCH_RESULT,
+            detectOfficialPageState("汉口 <> 潜江 09月19日 日历 D 6 3 1次列车二等席位有票")
+        )
+    }
+
+    @Test fun `spaced train number is matched as the configured train`() {
+        assertTrue(matchesToken("D 6 3 1次列车从汉口出发", "D631"))
+        assertTrue(matchesToken("D631次列车从汉口出发", "D631"))
+        assertFalse(matchesToken("D632次列车从汉口出发", "D631"))
+    }
+
     @Test fun `legacy seat page without a seat header is classified as seat selection`() {
         assertEquals(
             OfficialPageState.SEAT_SELECTION,

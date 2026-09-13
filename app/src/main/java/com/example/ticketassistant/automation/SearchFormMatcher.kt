@@ -72,9 +72,9 @@ fun classifySearchContext(text: String, task: com.example.ticketassistant.data.T
             .containsMatchIn(normalized)
         if (trainLike) conflicts += "车次不一致:${task.train.trainNo}" else missing += "车次:${task.train.trainNo}"
     }
-    if (!normalized.contains(normalizeText(task.seat))) {
+    if (!seatLabelMatches(normalized, task.seat)) {
         val otherSeat = listOf("商务座", "一等座", "二等座", "高级软卧", "软卧", "硬卧", "硬座", "无座")
-            .firstOrNull { normalized.contains(normalizeText(it)) }
+            .firstOrNull { seatLabelMatches(normalized, it) }
         if (otherSeat == null) missing += "席别:${task.seat}" else conflicts += "席别不一致"
     }
     return when {
@@ -262,12 +262,30 @@ internal fun hasAdultTicketSelection(text: String): Boolean {
     return Regex("(?<!非)成人(?=$|[^\\p{IsHan}])").containsMatchIn(text)
 }
 
+/** Matches seat labels exposed by different 12306 WebView builds. */
+internal fun seatLabelVariants(seat: String): Set<String> = when (normalizeText(seat)) {
+    "商务座" -> setOf("商务座", "商务席位", "商务席")
+    "一等座" -> setOf("一等座", "一等席位", "一等席", "一等")
+    "二等座" -> setOf("二等座", "二等席位", "二等席", "二等")
+    "高级软卧" -> setOf("高级软卧", "高级软卧席位")
+    "软卧" -> setOf("软卧", "软卧席位")
+    "硬卧" -> setOf("硬卧", "硬卧席位")
+    "硬座" -> setOf("硬座", "硬座席位")
+    "无座" -> setOf("无座", "无座席位")
+    else -> setOf(normalizeText(seat))
+}
+
+internal fun seatLabelMatches(text: String, seat: String): Boolean {
+    val normalized = normalizeText(text)
+    return seatLabelVariants(seat).any { it.isNotBlank() && normalized.contains(it) }
+}
+
 /** Returns true only for an unavailable marker belonging to the requested seat. */
 internal fun seatUnavailableEvidence(pageText: String, seat: String): Boolean {
-    val target = normalizeText(seat)
-    if (target.isBlank()) return false
     val normalized = normalizeText(pageText)
-    return Regex("${Regex.escape(target)}.{0,12}(?:无票|--|\\*)").containsMatchIn(normalized)
+    return seatLabelVariants(seat).filter { it.isNotBlank() }.any { target ->
+        Regex("${Regex.escape(target)}.{0,12}(?:无票|售罄|--|\\*)").containsMatchIn(normalized)
+    }
 }
 
 fun fieldLabelMatches(text: String, field: SearchField): Boolean {

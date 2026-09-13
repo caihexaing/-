@@ -29,8 +29,8 @@ android {
         applicationId = "com.example.ticketassistant"
         minSdk = 26
         targetSdk = 36
-        versionCode = 33
-        versionName = "0.4.11-query-button-fix"
+        versionCode = 34
+        versionName = "0.4.12-train-seat-fix"
     }
 
     signingConfigs {
