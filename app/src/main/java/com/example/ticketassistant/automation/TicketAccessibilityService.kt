@@ -981,7 +981,23 @@ class TicketAccessibilityService : AccessibilityService() {
 
     private fun findTrainActions(root: AccessibilityNodeInfo, task: TicketTask): List<AccessibilityNodeInfo> {
         val trainNodes = findTextNodes(root) { value -> matchesToken(value, task.train.trainNo) }
-        return trainNodes.mapNotNull { node ->
+        val summaryNodes = trainNodes.filter { node ->
+            isTrainSummaryCandidateText(
+                trainNodeText(node),
+                task.train.trainNo,
+                task.from.name,
+                task.to.name
+            )
+        }
+        // Prefer the single overview row. Detail buttons and seat labels may
+        // repeat the same train number but are not booking targets.
+        val candidateNodes = if (summaryNodes.isNotEmpty()) summaryNodes else trainNodes.filter { node ->
+            val label = trainNodeText(node)
+            matchesToken(label, task.train.trainNo) &&
+                !listOf("经停详情", "停站详情", "车站详情", "席位", "席别", "余票")
+                    .any(normalizeText(label)::contains)
+        }
+        return candidateNodes.mapNotNull { node ->
             var parent = node.parent
             repeat(8) {
                 if (parent == null) return@repeat
@@ -1003,7 +1019,26 @@ class TicketAccessibilityService : AccessibilityService() {
                 parent = parent.parent
             }
             null
-        }.distinctBy { System.identityHashCode(it) }
+        }.distinctBy(::trainNodeSemanticKey)
+    }
+
+    private fun trainNodeText(node: AccessibilityNodeInfo): String = listOfNotNull(
+        node.text?.toString(),
+        node.contentDescription?.toString()
+    ).joinToString(" ")
+
+    private fun trainNodeSemanticKey(node: AccessibilityNodeInfo): String {
+        val bounds = android.graphics.Rect()
+        node.getBoundsInScreen(bounds)
+        return listOf(
+            node.viewIdResourceName.orEmpty(),
+            node.className?.toString().orEmpty(),
+            bounds.left,
+            bounds.top,
+            bounds.right,
+            bounds.bottom,
+            normalizeText(trainNodeText(node))
+        ).joinToString("|")
     }
 
     private fun findActionNode(root: AccessibilityNodeInfo, labels: List<String>): AccessibilityNodeInfo? {
