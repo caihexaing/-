@@ -20,6 +20,18 @@ class SearchFormMatcherTest {
     }
 
     @Test
+    fun `calendar date matcher scopes numeric day to the target month`() {
+        assertTrue(calendarMonthMatches("2026年9月", "2026-09-19"))
+        assertTrue(calendarMonthMatches("2026-09", "2026-09-19"))
+        assertFalse(calendarMonthMatches("2026年10月", "2026-09-19"))
+        assertTrue(calendarDayMatches("19", "2026-09-19"))
+        assertTrue(calendarDayMatches("19初九", "2026-09-19"))
+        assertFalse(calendarDayMatches("190", "2026-09-19"))
+        assertTrue(calendarDateCellMatches("19初九", "2026年9月", "2026-09-19"))
+        assertFalse(calendarDateCellMatches("19", "2026年10月", "2026-09-19"))
+    }
+
+    @Test
     fun `order confirmation requires an adult ticket selection`() {
         assertTrue(hasAdultTicketSelection("确认订单 蔡某 成人票 二等座 提交订单"))
         assertTrue(hasAdultTicketSelection("确认订单 蔡某 成人（默认） 二等座 提交订单"))
@@ -201,6 +213,20 @@ class SearchFormMatcherTest {
                 fieldContextText = "出发日期 2026-09-19",
                 date = "2026-09-19",
                 pickerVisible = false,
+                snapshotChanged = true
+            )
+        )
+    }
+
+    @Test
+    fun `opening a date picker is a separate phase from date confirmation`() {
+        assertFalse(
+            dateSelectionConfirmed(
+                phase = DateSelectionPhase.WAITING_PICKER,
+                fieldValue = "",
+                fieldContextText = "",
+                date = "2026-09-19",
+                pickerVisible = true,
                 snapshotChanged = true
             )
         )

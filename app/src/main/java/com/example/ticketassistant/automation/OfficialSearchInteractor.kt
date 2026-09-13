@@ -303,27 +303,50 @@ class OfficialSearchInteractor(
         val currentFingerprint = stationSnapshotFingerprint(root)
         val input = findEditableField(root, SearchField.DATE)
         val pickerVisible = isDatePickerVisible(root)
-        if (input != null) {
-            val currentValue = input.text?.toString().orEmpty()
-            if (datePhase == DateSelectionPhase.WAITING_CONFIRMATION) {
-                val snapshotChanged = dateBeforeClickFingerprint?.let { it != currentFingerprint } == true
-                if (dateSelectionConfirmed(
-                        datePhase,
-                        currentValue,
-                        dateFieldContextText(root, input),
-                        date,
-                        pickerVisible,
-                        snapshotChanged
-                    )
-                ) {
-                    completeDateFlow()
-                    record("乘车日期候选已确认")
-                    return InteractionResult.DONE
-                }
-                record("等待乘车日期动作后的页面刷新（快照变化=$snapshotChanged）")
-                return InteractionResult.WAITING
+        if (datePhase == DateSelectionPhase.WAITING_CONFIRMATION) {
+            val currentValue = input?.text?.toString().orEmpty()
+            val snapshotChanged = dateBeforeClickFingerprint?.let { it != currentFingerprint } == true
+            val fieldConfirmed = !pickerVisible &&
+                (matchesTravelDate(currentValue, date) || hasConfirmedDateDisplay(root, date))
+            if (dateSelectionConfirmed(
+                    datePhase,
+                    currentValue,
+                    dateFieldContextText(root, input),
+                    date,
+                    pickerVisible,
+                    snapshotChanged
+                ) || fieldConfirmed
+            ) {
+                completeDateFlow()
+                record("乘车日期候选已确认")
+                return InteractionResult.DONE
             }
-            if (!pickerVisible && matchesTravelDate(currentValue, date)) {
+            record(
+                if (pickerVisible) {
+                    "等待乘车日期选择器关闭（快照变化=$snapshotChanged）"
+                } else {
+                    "等待乘车日期字段刷新（快照变化=$snapshotChanged）"
+                }
+            )
+            return InteractionResult.WAITING
+        }
+
+        if (datePhase == DateSelectionPhase.WAITING_PICKER && !pickerVisible) {
+            val currentValue = input?.text?.toString().orEmpty()
+            if (matchesTravelDate(currentValue, date) || hasConfirmedDateDisplay(root, date)) {
+                completeDateFlow()
+                record("乘车日期已在官方表单显示")
+                return InteractionResult.DONE
+            }
+            record("等待日期选择器打开")
+            return InteractionResult.WAITING
+        }
+
+        // Only edit the form field when the picker is not covering it. When a
+        // picker is visible, continue below and locate the target day cell.
+        if (!pickerVisible && input != null) {
+            val currentValue = input.text?.toString().orEmpty()
+            if (matchesTravelDate(currentValue, date)) {
                 record("乘车日期已是目标日期")
                 return InteractionResult.DONE
             }
@@ -349,28 +372,36 @@ class OfficialSearchInteractor(
             record("乘车日期已在官方表单显示")
             return InteractionResult.DONE
         }
-        if (datePhase == DateSelectionPhase.WAITING_CONFIRMATION) {
-            val snapshotChanged = dateBeforeClickFingerprint?.let { it != currentFingerprint } == true
-            if (dateSelectionConfirmed(
-                    datePhase,
-                    "",
-                    dateFieldContextText(root, input = null),
-                    date,
-                    pickerVisible,
-                    snapshotChanged
-                )
-            ) {
-                completeDateFlow()
-                record("乘车日期候选已确认")
-                return InteractionResult.DONE
+
+        val calendarDateNodes = findTargetCalendarDateNodes(root, date)
+        if (calendarDateNodes.size == 1) {
+            val target = calendarDateNodes.single()
+            if (!clickNodeOrParent(target.control)) {
+                record("目标日期点击未派发")
+                return InteractionResult.FAILED
             }
-            record("等待乘车日期选择器关闭（快照变化=$snapshotChanged）")
+            datePhase = DateSelectionPhase.WAITING_CONFIRMATION
+            dateBeforeClickFingerprint = currentFingerprint
+            record(
+                if (target.selected) {
+                    "目标日期已处于选中状态，已重新点击以关闭日期选择器"
+                } else {
+                    "已选择目标日期，等待页面更新"
+                }
+            )
             return InteractionResult.WAITING
         }
+        if (calendarDateNodes.size > 1) {
+            record("目标日期控件不唯一（当前月份候选数=${calendarDateNodes.size}）")
+            return InteractionResult.FAILED
+        }
 
+        // Some builds expose the complete date as the cell content instead of
+        // a numeric day. Keep this fallback, but never use an arbitrary day
+        // number without the month context collected above.
         val exactDateNodes = findNodes(root) { node ->
             val value = listOfNotNull(node.text?.toString(), node.contentDescription?.toString())
-            value.any { text -> dateVariants(date).any { normalizeDateText(it) == normalizeDateText(text) } }
+                value.any { text -> dateVariants(date).any { normalizeDateText(it) == normalizeDateText(text) } }
         }.mapNotNull(::clickableNode).distinctBy(::nodeIdentity)
         if (exactDateNodes.size == 1) {
             if (!clickNodeOrParent(exactDateNodes.single())) return InteractionResult.FAILED
@@ -384,15 +415,20 @@ class OfficialSearchInteractor(
             return InteractionResult.FAILED
         }
 
+        if (pickerVisible) {
+            record("日期选择器已打开，但未找到带月份上下文的目标日期")
+            return InteractionResult.WAITING
+        }
+
         val controls = findNodes(root) { node ->
             listOfNotNull(node.text?.toString(), node.contentDescription?.toString(), node.hintText?.toString())
                 .any { fieldLabelMatches(it, SearchField.DATE) }
         }.mapNotNull(::clickableNode).distinctBy(::nodeIdentity)
         if (controls.size == 1) {
             if (!clickNodeOrParent(controls.single())) return InteractionResult.FAILED
-            datePhase = DateSelectionPhase.WAITING_CONFIRMATION
+            datePhase = DateSelectionPhase.WAITING_PICKER
             dateBeforeClickFingerprint = currentFingerprint
-            record("已打开日期选择器，等待页面更新")
+            record("已打开日期选择器，等待日历日期")
             return InteractionResult.WAITING
         }
         if (controls.size > 1) {
@@ -400,6 +436,87 @@ class OfficialSearchInteractor(
             return InteractionResult.FAILED
         }
         return InteractionResult.WAITING
+    }
+
+    private data class CalendarDateNode(
+        val control: AccessibilityNodeInfo,
+        val selected: Boolean
+    )
+
+    /**
+     * Current 12306 builds may expose calendar cells as only "19" plus a
+     * lunar label. Track month headers in sibling order so September 19 is
+     * not confused with the October 19 cell shown in the same tree.
+     */
+    private fun findTargetCalendarDateNodes(
+        root: AccessibilityNodeInfo,
+        date: String
+    ): List<CalendarDateNode> {
+        val byControl = linkedMapOf<Int, CalendarDateNode>()
+        val numericDayCandidates = linkedMapOf<Int, CalendarDateNode>()
+
+        fun walkChildren(parent: AccessibilityNodeInfo?, inheritedMonth: String?) {
+            if (parent == null) return
+            var activeMonth = inheritedMonth
+            for (index in 0 until parent.childCount) {
+                val child = parent.getChild(index) ?: continue
+                val header = nodeValues(child).firstOrNull(::isCalendarMonthHeader)
+                if (header != null) activeMonth = header
+                val values = nodeValues(child)
+                val clickable = clickableNode(child)
+                val visibleOrInteractive = child.isVisibleToUser || child.isClickable ||
+                    clickable?.isVisibleToUser == true
+                if (visibleOrInteractive && clickable != null &&
+                    values.any { calendarDayMatches(it, date) }
+                ) {
+                    val key = nodeIdentity(clickable)
+                    val candidate = CalendarDateNode(clickable, isSelectedDateNode(child))
+                    val previousNumeric = numericDayCandidates[key]
+                    if (previousNumeric == null || (!previousNumeric.selected && candidate.selected)) {
+                        numericDayCandidates[key] = candidate
+                    }
+                }
+                if (visibleOrInteractive && activeMonth != null && clickable != null &&
+                    values.any { calendarDateCellMatches(it, activeMonth, date) }
+                ) {
+                    val key = nodeIdentity(clickable)
+                    val candidate = CalendarDateNode(clickable, isSelectedDateNode(child))
+                    val previous = byControl[key]
+                    if (previous == null || (!previous.selected && candidate.selected)) {
+                        byControl[key] = candidate
+                    }
+                }
+                walkChildren(child, activeMonth)
+            }
+        }
+
+        walkChildren(root, null)
+        if (byControl.isNotEmpty()) return byControl.values.toList()
+        // If a build omits month headers from the accessibility tree, a
+        // single selected target day is still safe evidence; an unselected
+        // numeric day remains ambiguous across adjacent months.
+        val selectedFallback = numericDayCandidates.values.filter { it.selected }
+        return if (selectedFallback.size == 1) selectedFallback else emptyList()
+    }
+
+    private fun isCalendarMonthHeader(value: String): Boolean {
+        val normalized = normalizeDateText(value)
+        return Regex("^\\d{4}(?:年\\d{1,2}月|[-/]\\d{1,2}(?:月)?)$").matches(normalized)
+    }
+
+    private fun isSelectedDateNode(node: AccessibilityNodeInfo): Boolean {
+        var current: AccessibilityNodeInfo? = node
+        repeat(MAX_PARENT_DEPTH + 1) {
+            if (current == null) return@repeat
+            if (current?.isSelected == true || current?.isChecked == true) return true
+            if (nodeValues(current!!).any { value ->
+                    val normalized = normalizeText(value)
+                    normalized.contains("已选") || normalized.contains("选中")
+                }
+            ) return true
+            current = current?.parent
+        }
+        return false
     }
 
     private fun hasConfirmedDateDisplay(root: AccessibilityNodeInfo, date: String): Boolean {

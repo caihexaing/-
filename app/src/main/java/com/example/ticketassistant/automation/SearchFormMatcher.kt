@@ -128,6 +128,29 @@ fun dateVariants(date: String): Set<String> {
     )
 }
 
+/** Matches a calendar month header without confusing adjacent months. */
+internal fun calendarMonthMatches(context: String, date: String): Boolean {
+    val expected = parseDate(date) ?: return false
+    val normalized = normalizeDateText(context)
+    val year = expected.year
+    val month = expected.monthValue
+    val pattern = Regex("(^|[^0-9])${year}(?:年0?${month}月|[-/]0?${month}(?:月)?)(?:$|[^0-9])")
+    return pattern.containsMatchIn(normalized)
+}
+
+/** Matches a day-cell label such as "19", "19日" or "19初九". */
+internal fun calendarDayMatches(cellText: String, date: String): Boolean {
+    val expected = parseDate(date) ?: return false
+    val day = expected.dayOfMonth
+    val suffix = "(?:日|号|今天|明天|后天|(?:周|星期)[一二三四五六日天]|初[一二三四五六七八九十]|十[一二三四五六七八九十]|廿[一二三四五六七八九十]|卅[一二三四五六七八九十])?"
+    return Regex("^0?$day$suffix$").matches(normalizeDateText(cellText))
+}
+
+/** Numeric day labels are safe only when the surrounding month is known. */
+internal fun calendarDateCellMatches(cellText: String, monthContext: String, date: String): Boolean =
+    calendarMonthMatches(monthContext, date) &&
+        (matchesTravelDate(cellText, date) || calendarDayMatches(cellText, date))
+
 fun exactStationCandidate(text: String, stationName: String): Boolean =
     normalizeStation(text) == normalizeStation(stationName)
 
@@ -150,6 +173,7 @@ internal enum class StationSelectionPhase {
 
 internal enum class DateSelectionPhase {
     IDLE,
+    WAITING_PICKER,
     WAITING_CONFIRMATION
 }
 
