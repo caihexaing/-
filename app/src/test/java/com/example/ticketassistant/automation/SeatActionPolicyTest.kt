@@ -77,4 +77,71 @@ class SeatActionPolicyTest {
             )
         )
     }
+
+    @Test
+    fun `gesture fallback is constrained to the seat node and train card`() {
+        val point = seatTapPoint(
+            nodeLeft = 59,
+            nodeTop = 1897,
+            nodeRight = 346,
+            nodeBottom = 1981,
+            cardLeft = 38,
+            cardTop = 1645,
+            cardRight = 1221,
+            cardBottom = 2002,
+            screenWidth = 1260,
+            screenHeight = 2800
+        )
+        assertEquals(202.5f, point?.x ?: -1f, 0f)
+        assertEquals(1939f, point?.y ?: -1f, 0f)
+    }
+
+    @Test
+    fun `gesture fallback rejects offscreen or disjoint bounds`() {
+        assertEquals(
+            null,
+            seatTapPoint(
+                nodeLeft = -10,
+                nodeTop = 100,
+                nodeRight = 100,
+                nodeBottom = 200,
+                cardLeft = 0,
+                cardTop = 0,
+                cardRight = 500,
+                cardBottom = 500,
+                screenWidth = 1260,
+                screenHeight = 2800
+            )
+        )
+        assertEquals(
+            null,
+            seatTapPoint(
+                nodeLeft = 700,
+                nodeTop = 100,
+                nodeRight = 800,
+                nodeBottom = 200,
+                cardLeft = 0,
+                cardTop = 0,
+                cardRight = 500,
+                cardBottom = 500,
+                screenWidth = 1260,
+                screenHeight = 2800
+            )
+        )
+        assertEquals(
+            null,
+            seatTapPoint(
+                nodeLeft = 100,
+                nodeTop = 100,
+                nodeRight = 200,
+                nodeBottom = 200,
+                cardLeft = 0,
+                cardTop = 0,
+                cardRight = 1300,
+                cardBottom = 500,
+                screenWidth = 1260,
+                screenHeight = 2800
+            )
+        )
+    }
 }

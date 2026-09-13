@@ -1,11 +1,15 @@
 package com.example.ticketassistant.automation
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.GestureDescription
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
+import android.graphics.Path
 import android.os.Handler
 import android.os.Looper
+import android.util.DisplayMetrics
+import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import androidx.core.app.NotificationCompat
@@ -998,7 +1002,8 @@ class TicketAccessibilityService : AccessibilityService() {
                     target = seatNode!!,
                     task = task,
                     action = "目标席别节点点击已派发：$seat",
-                    evidenceSource = "SEAT_NODE_ACTION"
+                    evidenceSource = "SEAT_NODE_ACTION",
+                    gestureCard = targetCard
                 )
                 if (result == InteractionResult.WAITING) return result
 
@@ -1076,18 +1081,25 @@ class TicketAccessibilityService : AccessibilityService() {
         target: AccessibilityNodeInfo,
         task: TicketTask,
         action: String,
-        evidenceSource: String
+        evidenceSource: String,
+        gestureCard: AccessibilityNodeInfo? = null
     ): InteractionResult {
         val before = accessibilitySnapshotFingerprint(root)
         val clicked = clickSeatControl(target)
-        if (!clicked) {
+        val gestureClicked = !clicked && gestureCard != null &&
+            isDescendantOf(target, gestureCard) && dispatchSeatGesture(target, gestureCard)
+        if (!clicked && !gestureClicked) {
             recordDiagnostic(pageState, action.replace("已派发", "未派发"), evidenceSource = "${evidenceSource}_REJECTED")
             return InteractionResult.FAILED
         }
         seatActionSent = true
         seatActionBeforeClickFingerprint = before
         lastActionAt = System.currentTimeMillis()
-        recordDiagnostic(pageState, action, evidenceSource = evidenceSource)
+        recordDiagnostic(
+            pageState,
+            if (gestureClicked) "$action（触控回退）" else action,
+            evidenceSource = if (gestureClicked) "SEAT_GESTURE_ACTION" else evidenceSource
+        )
         return InteractionResult.WAITING
     }
 
@@ -1100,6 +1112,66 @@ class TicketAccessibilityService : AccessibilityService() {
             // is intentionally attempted before any parent lookup.
             node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
         }.getOrDefault(false)
+    }
+
+    /**
+     * Some 12306 WebView builds expose a visible seat label as a non-clickable
+     * virtual TextView. In that case send one bounded tap at the label center,
+     * but only after the node was proven to belong to the unique target card.
+     */
+    private fun dispatchSeatGesture(
+        seatNode: AccessibilityNodeInfo,
+        targetCard: AccessibilityNodeInfo
+    ): Boolean {
+        val nodeBounds = android.graphics.Rect()
+        val cardBounds = android.graphics.Rect()
+        seatNode.getBoundsInScreen(nodeBounds)
+        targetCard.getBoundsInScreen(cardBounds)
+        val metrics = DisplayMetrics()
+        @Suppress("DEPRECATION")
+        (getSystemService(Context.WINDOW_SERVICE) as? WindowManager)
+            ?.defaultDisplay
+            ?.getRealMetrics(metrics)
+        val screenWidth = if (metrics.widthPixels > 0) metrics.widthPixels else resources.displayMetrics.widthPixels
+        val screenHeight = if (metrics.heightPixels > 0) metrics.heightPixels else resources.displayMetrics.heightPixels
+        val point = seatTapPoint(
+            nodeLeft = nodeBounds.left,
+            nodeTop = nodeBounds.top,
+            nodeRight = nodeBounds.right,
+            nodeBottom = nodeBounds.bottom,
+            cardLeft = cardBounds.left,
+            cardTop = cardBounds.top,
+            cardRight = cardBounds.right,
+            cardBottom = cardBounds.bottom,
+            screenWidth = screenWidth,
+            screenHeight = screenHeight
+        ) ?: run {
+            recordDiagnostic(
+                pageState,
+                "目标席别节点触控回退坐标不安全，未派发",
+                evidenceSource = "SEAT_GESTURE_BOUNDS_REJECTED"
+            )
+            return false
+        }
+        val path = Path().apply { moveTo(point.x, point.y) }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0L, SEAT_GESTURE_DURATION_MS))
+            .build()
+        val accepted = runCatching {
+            dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription?) {
+                    recordDiagnostic(pageState, "目标席别触控回退已完成", evidenceSource = "SEAT_GESTURE_COMPLETED")
+                }
+
+                override fun onCancelled(gestureDescription: GestureDescription?) {
+                    recordDiagnostic(pageState, "目标席别触控回退被系统取消", evidenceSource = "SEAT_GESTURE_CANCELLED")
+                }
+            }, null)
+        }.getOrDefault(false)
+        if (!accepted) {
+            recordDiagnostic(pageState, "目标席别触控回退未被系统接受", evidenceSource = "SEAT_GESTURE_REJECTED")
+        }
+        return accepted
     }
 
     private fun findSeatBookingAction(
@@ -1556,6 +1628,7 @@ class TicketAccessibilityService : AccessibilityService() {
         private const val MAX_TARGET_TRAIN_WAIT_EVENTS = 30
         private const val MAX_TARGET_TRAIN_SCROLL_ATTEMPTS = 6
         private const val TARGET_TRAIN_WAIT_TIMEOUT_MS = 15_000L
+        private const val SEAT_GESTURE_DURATION_MS = 80L
         private const val STATIC_REFRESH_INTERVAL_MS = 300L
         private const val PROGRESS_RECORD_INTERVAL_MS = 750L
         private const val DIAGNOSTIC_REPEAT_INTERVAL_MS = 300L
