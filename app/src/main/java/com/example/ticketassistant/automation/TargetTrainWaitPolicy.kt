@@ -49,3 +49,6 @@ internal fun isTrainSummaryCandidateText(
     return (routeTiming || routeLabels) &&
         (normalized.contains("次列车") || normalized.contains("列车"))
 }
+
+internal fun isTargetSeatCandidateText(text: String, trainNo: String, seat: String): Boolean =
+    matchesToken(text, trainNo) && seatLabelMatches(text, seat)

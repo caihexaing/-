@@ -26,6 +26,18 @@ class TargetTrainWaitPolicyTest {
     }
 
     @Test
+    fun `seat matching is scoped by the selected train text`() {
+        assertEquals(
+            true,
+            isTargetSeatCandidateText("D 2 2 7 7次列车二等席位有票", "D2277", "二等座")
+        )
+        assertEquals(
+            false,
+            isTargetSeatCandidateText("D 5 9 7 5次列车二等席位有票", "D2277", "二等座")
+        )
+    }
+
+    @Test
     fun `missing row waits instead of taking over immediately`() {
         assertEquals(
             TargetTrainWaitAction.WAIT,

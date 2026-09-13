@@ -397,7 +397,7 @@ class TicketAccessibilityService : AccessibilityService() {
                 }
             }
             Stage.SEAT -> {
-                when (selectSeatStep(root, task.seat)) {
+                when (selectSeatStep(root, task)) {
                     InteractionResult.DONE -> {
                         actionWaitEvents = 0
                         stage = Stage.PASSENGER
@@ -889,7 +889,8 @@ class TicketAccessibilityService : AccessibilityService() {
         ).firstOrNull()
     }
 
-    private fun selectSeatStep(root: AccessibilityNodeInfo, seat: String): InteractionResult {
+    private fun selectSeatStep(root: AccessibilityNodeInfo, task: TicketTask): InteractionResult {
+        val seat = task.seat
         if (seatSelected) {
             val snapshotChanged = seatBeforeClickFingerprint?.let {
                 it != accessibilitySnapshotFingerprint(root)
@@ -906,18 +907,40 @@ class TicketAccessibilityService : AccessibilityService() {
             recordDiagnostic(pageState, "已刷新席别页面并点击继续")
             return InteractionResult.DONE
         }
-        val pageText = root.textContent()
+        // Seat labels for every train are present in the result tree. Resolve
+        // the target train card first so another train's availability cannot
+        // make this task appear unavailable or become a click target.
+        val targetCards = findTrainActions(root, task)
+        if (targetCards.isEmpty()) return InteractionResult.WAITING
+        if (targetCards.size > 1) {
+            recordDiagnostic(
+                pageState,
+                "目标车次 ${task.train.trainNo} 的席别卡片不唯一，停止自动选择",
+                evidenceSource = "TARGET_SEAT_CARD_AMBIGUOUS"
+            )
+            return InteractionResult.FAILED
+        }
+        val targetCard = targetCards.single()
+        val pageText = targetCard.textContent()
         val unavailable = seatUnavailableEvidence(pageText, seat)
         if (unavailable) {
             takeover("官方 12306 中所选席别当前无票，请手动选择")
             return InteractionResult.FAILED
         }
-        val matches = findTextNodes(root) { value -> seatLabelMatches(value, seat) }
+        val matches = findTextNodes(targetCard) { value ->
+            isTargetSeatCandidateText(value, task.train.trainNo, seat)
+        }
             .filter { it.childCount == 0 }
         if (matches.isEmpty()) return InteractionResult.WAITING
-        val seatControls = matches.mapNotNull { node ->
+
+        // Prefer a booking control inside the same seat row. Some WebView
+        // builds expose the visible button; others expose only the seat label
+        // and a clickable card container.
+        val rowActions = matches.mapNotNull { findSeatBookingAction(it) }
+            .distinctBy(::trainNodeSemanticKey)
+        val seatControls = if (rowActions.isNotEmpty()) rowActions else matches.mapNotNull { node ->
             if (node.isClickable) node else clickableParent(node)
-        }.distinctBy { System.identityHashCode(it) }
+        }.distinctBy(::trainNodeSemanticKey)
         val target = when {
             seatControls.size == 1 -> seatControls.single()
             matches.size == 1 -> matches.single()
@@ -930,6 +953,36 @@ class TicketAccessibilityService : AccessibilityService() {
         lastActionAt = System.currentTimeMillis()
         recordDiagnostic(pageState, "已点击席别：$seat")
         return InteractionResult.WAITING
+    }
+
+    private fun findSeatBookingAction(seatNode: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val seatBounds = android.graphics.Rect()
+        seatNode.getBoundsInScreen(seatBounds)
+        var parent = seatNode.parent
+        repeat(4) {
+            if (parent == null) return@repeat
+            // Keep only controls that expose the booking label themselves;
+            // mapping arbitrary text to a clickable ancestor would collapse
+            // every seat row into the same train-card action.
+            val actions = findTextNodes(parent) { value ->
+                normalizeText(value).contains(normalizeText("预订"))
+            }.filter { it.isClickable }
+            val rowActions = actions.filter { nodesShareRow(it, seatBounds) }
+            if (rowActions.size == 1) return rowActions.single()
+            if (rowActions.size > 1) return null
+            parent = parent.parent
+        }
+        return null
+    }
+
+    private fun nodesShareRow(node: AccessibilityNodeInfo, rowBounds: android.graphics.Rect): Boolean {
+        val bounds = android.graphics.Rect()
+        node.getBoundsInScreen(bounds)
+        val verticalOverlap = minOf(bounds.bottom, rowBounds.bottom) - maxOf(bounds.top, rowBounds.top)
+        if (verticalOverlap > 0) return true
+        val nodeCenter = (bounds.top + bounds.bottom) / 2
+        val rowCenter = (rowBounds.top + rowBounds.bottom) / 2
+        return kotlin.math.abs(nodeCenter - rowCenter) <= maxOf(12, rowBounds.height() / 2)
     }
 
     private fun selectPassengerAndContinue(root: AccessibilityNodeInfo, passenger: String): PassengerResult {
@@ -1042,12 +1095,15 @@ class TicketAccessibilityService : AccessibilityService() {
     }
 
     private fun findActionNode(root: AccessibilityNodeInfo, labels: List<String>): AccessibilityNodeInfo? {
-        val targets = findTextNodes(root) { value ->
+        return findActionNodes(root, labels).singleOrNull()
+    }
+
+    private fun findActionNodes(root: AccessibilityNodeInfo, labels: List<String>): List<AccessibilityNodeInfo> {
+        return findTextNodes(root) { value ->
             labels.any { label -> normalizeText(value).contains(normalizeText(label)) }
         }.mapNotNull { node ->
             if (node.isClickable) node else clickableParent(node)
-        }.distinctBy { System.identityHashCode(it) }
-        return targets.singleOrNull()
+        }.distinctBy(::trainNodeSemanticKey)
     }
 
     private fun clickNodeOrParent(node: AccessibilityNodeInfo): Boolean {
