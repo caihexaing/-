@@ -328,7 +328,11 @@ class TicketAccessibilityService : AccessibilityService() {
             Stage.FILLING_SEARCH_FORM, Stage.WAITING_SEARCH_RESULT,
             Stage.WAITING_RESULT, Stage.DONE -> null
             Stage.VALIDATING_SEARCH, Stage.TRAIN -> OfficialPageState.SEARCH_RESULT
-            Stage.SEAT -> OfficialPageState.SEAT_SELECTION
+            // Some official builds expand the selected train in-place and
+            // keep the page classified as SEARCH_RESULT while exposing the
+            // seat controls. Let selectSeatStep validate the actual seat
+            // evidence instead of rejecting that legitimate layout first.
+            Stage.SEAT -> null
             Stage.PASSENGER -> OfficialPageState.PASSENGER_SELECTION
             Stage.ORDER -> OfficialPageState.ORDER_CONFIRM
         }
@@ -826,9 +830,17 @@ class TicketAccessibilityService : AccessibilityService() {
         }
         val matches = findTextNodes(root) { value -> seatLabelMatches(value, seat) }
             .filter { it.childCount == 0 }
-        if (matches.size != 1) return InteractionResult.WAITING
+        if (matches.isEmpty()) return InteractionResult.WAITING
+        val seatControls = matches.mapNotNull { node ->
+            if (node.isClickable) node else clickableParent(node)
+        }.distinctBy { System.identityHashCode(it) }
+        val target = when {
+            seatControls.size == 1 -> seatControls.single()
+            matches.size == 1 -> matches.single()
+            else -> return InteractionResult.WAITING
+        }
         val beforeClickFingerprint = accessibilitySnapshotFingerprint(root)
-        if (!clickNodeOrParent(matches.first())) return InteractionResult.FAILED
+        if (!clickNodeOrParent(target)) return InteractionResult.FAILED
         seatSelected = true
         seatBeforeClickFingerprint = beforeClickFingerprint
         lastActionAt = System.currentTimeMillis()
@@ -891,21 +903,18 @@ class TicketAccessibilityService : AccessibilityService() {
                 if (parent == null) return@repeat
                 val containerText = parent.textContent()
                 if (normalizeText(containerText).contains(normalizeText(task.from.name)) &&
-                    normalizeText(containerText).contains(normalizeText(task.to.name)) &&
-                    seatLabelMatches(containerText, task.seat) &&
-                    !seatUnavailableEvidence(containerText, task.seat)
+                    normalizeText(containerText).contains(normalizeText(task.to.name))
                 ) {
                     val booking = findActionNode(parent, listOf("预订"))
                     if (booking != null) return@mapNotNull booking
 
-                    // Some current WebView builds expose each train card as a
-                    // single clickable container and expose seat availability
-                    // as non-clickable text, with no "预订" label at all.
-                    // Bind the fallback to the requested seat text inside the
-                    // same card so another train cannot be selected.
-                    val seatNodes = findTextNodes(parent) { value -> seatLabelMatches(value, task.seat) }
-                        .filter { it.childCount == 0 }
-                    if (seatNodes.size == 1) return@mapNotNull clickableParent(seatNodes.single())
+                    // The normal flow selects a train first and exposes seat
+                    // choices only after that action. When the WebView has no
+                    // "预订" label, use the clickable card containing the
+                    // matched train and route; seat availability is validated
+                    // by the following seat-selection stage.
+                    val card = if (parent.isClickable) parent else clickableParent(node)
+                    if (card != null) return@mapNotNull card
                 }
                 parent = parent.parent
             }
