@@ -308,8 +308,19 @@ fun actionLabelMatches(text: String, action: SearchAction): Boolean {
         SearchAction.SELECT_DEPARTURE -> fieldLabelMatches(normalized, SearchField.DEPARTURE)
         SearchAction.SELECT_ARRIVAL -> fieldLabelMatches(normalized, SearchField.ARRIVAL)
         SearchAction.OPEN_DATE -> fieldLabelMatches(normalized, SearchField.DATE)
-        SearchAction.SUBMIT_SEARCH -> listOf("查询", "搜索车票", "查询车票", "余票查询").any(normalized::contains)
+        SearchAction.SUBMIT_SEARCH -> searchSubmitLabelPriority(normalized) > 0
     }
+}
+
+/**
+ * Gives dedicated ticket-search labels precedence over generic navigation
+ * labels. A positive value means the label is a safe query-action candidate.
+ */
+internal fun searchSubmitLabelPriority(text: String): Int = when (normalizeLabel(text)) {
+    "查询车票" -> 4
+    "搜索车票", "余票查询" -> 3
+    "查询", "搜索" -> 2
+    else -> 0
 }
 
 fun findUniqueField(nodes: List<NodeDescriptor>, field: SearchField): NodeDescriptor? {

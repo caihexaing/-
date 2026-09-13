@@ -834,6 +834,18 @@ class OfficialSearchInteractor(
 
         // Prefer the dedicated ticket-search control over a bottom navigation
         // item whose label is only "车票". The action still must be unique.
+        if (action == SearchAction.SUBMIT_SEARCH) {
+            val ranked = candidates.mapNotNull { candidate ->
+                val priority = candidate.labels.maxOfOrNull(::searchSubmitLabelPriority) ?: 0
+                candidate.takeIf { priority > 0 }?.let { priority to it }
+            }
+            val highest = ranked.maxOfOrNull { it.first }
+            if (highest != null) {
+                return ranked.filter { it.first == highest }
+                    .map { it.second.control }
+                    .singleOrNull()
+            }
+        }
         val preferred = when (action) {
             SearchAction.OPEN_TICKETS -> candidates.filter { candidate ->
                 candidate.labels.any { value ->
@@ -841,9 +853,7 @@ class OfficialSearchInteractor(
                     normalized.contains("查询车票") || normalized.contains("余票查询") || normalized == "火车票"
                 }
             }
-            SearchAction.SUBMIT_SEARCH -> candidates.filter { candidate ->
-                candidate.labels.any { value -> normalizeText(value) == "查询" || normalizeText(value) == "搜索" }
-            }
+            SearchAction.SUBMIT_SEARCH -> emptyList()
             else -> emptyList()
         }
         return when {

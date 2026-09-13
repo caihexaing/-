@@ -94,6 +94,17 @@ class SearchFormMatcherTest {
     }
 
     @Test
+    fun `ticket search labels are ranked above generic search labels`() {
+        assertEquals(4, searchSubmitLabelPriority("查询车票"))
+        assertEquals(3, searchSubmitLabelPriority("搜索车票"))
+        assertEquals(3, searchSubmitLabelPriority("余票查询"))
+        assertEquals(2, searchSubmitLabelPriority("查询"))
+        assertEquals(0, searchSubmitLabelPriority("车票"))
+        assertTrue(actionLabelMatches("查询车票", SearchAction.SUBMIT_SEARCH))
+        assertFalse(actionLabelMatches("车票", SearchAction.SUBMIT_SEARCH))
+    }
+
+    @Test
     fun `station candidates stay bound to their field context`() {
         assertNull(findExactCandidate(
             listOf(NodeDescriptor(text = "汉口", clickable = true, contextText = "到达地")),

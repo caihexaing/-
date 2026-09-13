@@ -53,6 +53,8 @@ internal fun detectOfficialPageState(text: String): OfficialPageState {
     val formFields = listOf("出发地", "出发站", "到达地", "到达站", "乘车日期", "出发日期")
         .count(normalized::contains)
     val hasSearchForm = formFields >= 2 && listOf("查询", "搜索车票", "查询车票").any(normalized::contains)
+    val hasCompleteSearchForm = hasSearchForm && hasRouteEvidence &&
+        listOf("乘车日期", "出发日期").any(normalized::contains)
     if (listOf("选择出发站", "选择到达站", "站点列表", "热门站点", "车站选择").any(normalized::contains)) {
         return OfficialPageState.STATION_PICKER
     }
@@ -65,6 +67,7 @@ internal fun detectOfficialPageState(text: String): OfficialPageState {
     if (hasSeatPickerEvidence && !hasResultListEvidence) return OfficialPageState.SEAT_SELECTION
     // Home/form evidence must win over a stray train token from a hidden or
     // cached node; it is unsafe to treat the home screen as a result list.
+    if (hasCompleteSearchForm && !hasResultEvidence) return OfficialPageState.SEARCH_FORM
     if (hasHomeNavigation && !hasResultEvidence) return OfficialPageState.HOME_PAGE
     if (hasSearchForm && !hasResultEvidence) return OfficialPageState.SEARCH_FORM
     if ((hasTrainLikeToken || normalized.contains("车次")) && !hasResultEvidence) {

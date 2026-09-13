@@ -74,6 +74,10 @@ class PageStateClassifierTest {
         assertEquals(OfficialPageState.HOME_PAGE, detectOfficialPageState("首页 我的 订单 车票 查询车票 出发地 到达地"))
         assertEquals(OfficialPageState.HOME_PAGE, detectOfficialPageState("首页 我的 订单 车票 查询车票 2026-09-19 出发地 到达地"))
         assertEquals(OfficialPageState.SEARCH_FORM, detectOfficialPageState("出发地 到达地 乘车日期 查询"))
+        assertEquals(
+            OfficialPageState.SEARCH_FORM,
+            detectOfficialPageState("首页 我的 订单 车票 查询车票 出发地 汉口 到达地 潜江 乘车日期 9月19日")
+        )
     }
 
     @Test fun `home evidence wins over stray cached train text`() {
