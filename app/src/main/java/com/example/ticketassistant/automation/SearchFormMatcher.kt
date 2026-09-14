@@ -233,11 +233,33 @@ internal fun stationCandidateMatches(text: String, stationName: String): Boolean
     return !target.endsWith("站") && candidate == target + "站"
 }
 
+/** The query must be written before a default picker candidate can be used. */
+internal fun stationQueryNeedsWrite(
+    inputValue: String,
+    stationName: String,
+    queryWriteSent: Boolean,
+    queryConfirmed: Boolean
+): Boolean = !queryConfirmed && !queryWriteSent &&
+    !stationCandidateMatches(inputValue, stationName)
+
 internal enum class StationSelectionPhase {
     IDLE,
+    WAITING_QUERY_WRITE,
+    WAITING_QUERY_READBACK,
+    WAITING_FILTERED_CANDIDATE,
+    /** Kept for compatibility with older pure-function tests. */
     WAITING_CANDIDATE,
     WAITING_CONFIRMATION
 }
+
+internal data class StationFlowDiagnostics(
+    val phase: StationSelectionPhase,
+    val inputKey: String?,
+    val queryWriteSent: Boolean,
+    val queryConfirmed: Boolean,
+    val candidateScope: String,
+    val candidateCount: Int
+)
 
 internal enum class DateSelectionPhase {
     IDLE,

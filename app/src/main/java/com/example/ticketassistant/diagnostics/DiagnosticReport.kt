@@ -17,7 +17,7 @@ fun buildDiagnosticReport(
     accessibilitySnapshots: List<SanitizedAccessibilitySnapshot> = emptyList()
 ): String {
     val fields = linkedMapOf<String, String?>()
-    fields["formatVersion"] = "8"
+    fields["formatVersion"] = "9"
     fields["generatedAt"] = generatedAt.toString()
     fields["automationMode"] = "任务信息自动查询（诊断）"
     fields["taskId"] = task.taskId
@@ -53,6 +53,17 @@ fun buildDiagnosticReport(
     fields["stageEnteredAt"] = task.stageEnteredAt?.toString()
     fields["lastActionAt"] = task.lastActionAt?.toString()
     fields["lastActionOutcome"] = task.lastActionOutcome
+    fields["lastStablePageState"] = task.lastStablePageState
+    fields["lastUnknownReason"] = task.lastUnknownReason?.let { "已记录（内容已脱敏）" }
+    fields["stationPhase"] = task.stationPhase
+    fields["stationQueryInputKey"] = task.stationQueryInputKey
+    fields["stationQueryWriteSent"] = task.stationQueryWriteSent.toString()
+    fields["stationQueryConfirmed"] = task.stationQueryConfirmed.toString()
+    fields["stationCandidateScope"] = task.stationCandidateScope
+    fields["stationCandidateCount"] = task.stationCandidateCount?.toString()
+    fields["stationQueryWriteAt"] = task.stationQueryWriteAt?.toString()
+    fields["stationQueryConfirmedAt"] = task.stationQueryConfirmedAt?.toString()
+    fields["stationCandidateObservedAt"] = task.stationCandidateObservedAt?.toString()
     fields["lastResultPageAt"] = task.lastResultPageAt?.toString()
     fields["lastTargetControlAt"] = task.lastTargetControlAt?.toString()
     fields["lastTrainActionAt"] = task.lastTrainActionAt?.toString()

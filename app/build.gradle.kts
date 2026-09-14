@@ -29,8 +29,8 @@ android {
         applicationId = "com.example.ticketassistant"
         minSdk = 26
         targetSdk = 36
-        versionCode = 49
-        versionName = "0.4.27-station-picker-fallback"
+        versionCode = 50
+        versionName = "0.4.28-station-query-order-fix"
     }
 
     signingConfigs {

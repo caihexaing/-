@@ -20,6 +20,9 @@ class OfficialSearchInteractor(
     private var stationQueryConfirmed = false
     private var stationQueryInputKey: String? = null
     private var stationQueryWriteInputKey: String? = null
+    private var stationQueryBeforeWriteFingerprint: String? = null
+    private var stationCandidateScope = "NONE"
+    private var stationCandidateCount = 0
     private var dateTarget: String? = null
     private var datePhase = DateSelectionPhase.IDLE
     private var dateBeforeClickFingerprint: String? = null
@@ -39,8 +42,20 @@ class OfficialSearchInteractor(
         stationQueryConfirmed = false
         stationQueryInputKey = null
         stationQueryWriteInputKey = null
+        stationQueryBeforeWriteFingerprint = null
+        stationCandidateScope = "NONE"
+        stationCandidateCount = 0
         completeDateFlow()
     }
+
+    internal fun stationDiagnostics(): StationFlowDiagnostics = StationFlowDiagnostics(
+        phase = stationPhase,
+        inputKey = stationQueryInputKey,
+        queryWriteSent = stationQueryWriteSent,
+        queryConfirmed = stationQueryConfirmed,
+        candidateScope = stationCandidateScope,
+        candidateCount = stationCandidateCount
+    )
 
     fun openTickets(root: AccessibilityNodeInfo): InteractionResult {
         val action = findActionNode(root, SearchAction.OPEN_TICKETS) ?: return InteractionResult.WAITING
@@ -74,34 +89,83 @@ class OfficialSearchInteractor(
             return InteractionResult.WAITING
         }
         val inputKey = input?.let(::stationPickerInputKey)
-        if (stationQueryWriteInputKey != null && stationQueryWriteInputKey != inputKey) {
-            // The home form and the picker commonly expose different node
-            // instances. A write sent to the old node cannot confirm the new
-            // picker query; require a fresh write and fresh readback.
-            stationQueryWriteSent = false
-            stationQueryConfirmed = false
-            stationQueryWriteInputKey = null
-        }
-        var currentValue = input?.text?.toString().orEmpty()
-        val visibleCandidates = findFieldScopedCandidates(root, input, field, stationName, pickerVisible)
+        val currentValue = input?.text?.toString().orEmpty()
         val currentFingerprint = stationSnapshotFingerprint(root)
-        val displayedStation = hasConfirmedStationDisplay(root, input, field, stationName)
         if (pickerVisible) stationPickerSeen = true
-        if (visibleCandidates.isNotEmpty()) stationCandidateSeen = true
-        val candidates = visibleCandidates
 
-        // ACTION_SET_TEXT is only a request. The same accessibility field must
-        // echo the requested station before any suggestion can be clicked.
+        // The default picker list can already contain the requested station.
+        // Always complete query write/readback before scanning or clicking it.
         if (input != null && !stationQueryConfirmed &&
             stationCandidateMatches(currentValue, stationName)
         ) {
             stationQueryConfirmed = true
+            stationPhase = StationSelectionPhase.WAITING_FILTERED_CANDIDATE
             record("${field.actionName()}顶部搜索框已回读确认")
         }
         if (stationQueryWriteSent && !stationQueryConfirmed) {
+            stationPhase = StationSelectionPhase.WAITING_QUERY_READBACK
             record("等待${field.actionName()}输入框回读目标站名")
             return InteractionResult.WAITING
         }
+
+        if (input != null && stationQueryNeedsWrite(
+                currentValue,
+                stationName,
+                stationQueryWriteSent,
+                stationQueryConfirmed
+            )
+        ) {
+            if (!allowInput()) {
+                record("${field.actionName()}输入动作已被接管闩锁阻止")
+                return InteractionResult.FAILED
+            }
+            val arguments = Bundle().apply {
+                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, stationName)
+            }
+            if (!input.performAction(AccessibilityNodeInfo.ACTION_FOCUS)) {
+                record("${field.actionName()}输入框无法聚焦")
+                return InteractionResult.FAILED
+            }
+            stationQueryBeforeWriteFingerprint = currentFingerprint
+            if (!input.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)) {
+                record("${field.actionName()}输入动作未派发")
+                return InteractionResult.FAILED
+            }
+            stationPhase = StationSelectionPhase.WAITING_QUERY_READBACK
+            stationActionSent = true
+            stationQueryWriteSent = true
+            stationQueryConfirmed = false
+            stationQueryWriteInputKey = inputKey
+            stationCandidateScope = if (pickerVisible) "PICKER_QUERY_SENT" else "FORM_QUERY_SENT"
+            stationCandidateCount = 0
+            record("已填写${field.actionName()}，等待输入框回读")
+            return InteractionResult.WAITING
+        }
+
+        if (pickerVisible && !stationQueryConfirmed) {
+            stationPhase = StationSelectionPhase.WAITING_QUERY_WRITE
+            stationCandidateScope = "DEFAULT_PICKER_IGNORED"
+            stationCandidateCount = 0
+            record("等待${field.actionName()}搜索框写入目标站名，忽略默认常用车站")
+            return InteractionResult.WAITING
+        }
+
+        val queryRefreshConfirmed = !pickerVisible ||
+            stationQueryBeforeWriteFingerprint == null ||
+            stationQueryBeforeWriteFingerprint != currentFingerprint
+        if (pickerVisible && !queryRefreshConfirmed) {
+            stationPhase = StationSelectionPhase.WAITING_FILTERED_CANDIDATE
+            stationCandidateScope = "PICKER_WAITING_REFRESH"
+            stationCandidateCount = 0
+            record("等待${field.actionName()}查询后的候选列表刷新")
+            return InteractionResult.WAITING
+        }
+
+        val candidates = findFieldScopedCandidates(root, input, field, stationName, pickerVisible)
+        stationCandidateScope = if (pickerVisible) "FILTERED_PICKER" else "FORM_FIELD"
+        stationCandidateCount = candidates.size
+        if (candidates.isNotEmpty()) stationCandidateSeen = true
+        val displayedStation = hasConfirmedStationDisplay(root, input, field, stationName)
 
         // ACTION_SET_TEXT only changes the query. It is not proof that the
         // picker row was selected, so wait for a post-click page refresh.
@@ -132,18 +196,17 @@ class OfficialSearchInteractor(
             return InteractionResult.WAITING
         }
 
-        if (stationPhase == StationSelectionPhase.WAITING_CANDIDATE) {
-            val snapshotChanged = stationBeforeClickFingerprint?.let { it != currentFingerprint } == true
-            if (!pickerVisible && snapshotChanged && stationActionSent && stationQueryConfirmed && displayedStation) {
-                completeStationFlow()
-                record("${field.actionName()}已在官方表单显示并确认")
-                return InteractionResult.DONE
-            }
+        if (stationQueryWriteSent && stationQueryConfirmed && !pickerVisible &&
+            queryRefreshConfirmed && displayedStation
+        ) {
+            completeStationFlow()
+            record("${field.actionName()}已在官方表单显示并确认")
+            return InteractionResult.DONE
         }
 
         // A pre-filled value is acceptable only when there is no active
-        // picker. Values entered by the previous ACTION_SET_TEXT path are
-        // handled by WAITING_CANDIDATE and cannot arrive here prematurely.
+        // picker. Values entered by ACTION_SET_TEXT are handled by the
+        // explicit query readback path above.
         if (stationPhase == StationSelectionPhase.IDLE &&
             !pickerVisible &&
             candidates.isEmpty() &&
@@ -174,34 +237,23 @@ class OfficialSearchInteractor(
             return InteractionResult.WAITING
         }
 
-        if (stationPhase == StationSelectionPhase.WAITING_CANDIDATE) {
+        if (stationPhase == StationSelectionPhase.WAITING_FILTERED_CANDIDATE ||
+            stationPhase == StationSelectionPhase.WAITING_QUERY_READBACK ||
+            stationPhase == StationSelectionPhase.WAITING_CANDIDATE
+        ) {
             record("等待${field.actionName()}候选站（候选数=0）")
             return InteractionResult.WAITING
         }
 
+        if (pickerVisible && stationQueryConfirmed) {
+            stationPhase = StationSelectionPhase.WAITING_FILTERED_CANDIDATE
+            record("等待${field.actionName()}过滤后的唯一候选站")
+            return InteractionResult.WAITING
+        }
+
         if (input != null) {
-            if (!allowInput()) {
-                record("${field.actionName()}输入动作已被接管闩锁阻止")
-                return InteractionResult.FAILED
-            }
-            val arguments = Bundle().apply {
-                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, stationName)
-            }
-            if (!input.performAction(AccessibilityNodeInfo.ACTION_FOCUS)) {
-                record("${field.actionName()}输入框无法聚焦")
-                return InteractionResult.FAILED
-            }
-            if (!input.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)) {
-                record("${field.actionName()}输入动作未派发")
-                return InteractionResult.FAILED
-            }
-            stationPhase = StationSelectionPhase.WAITING_CANDIDATE
-            stationBeforeClickFingerprint = currentFingerprint
-            stationActionSent = true
-            stationQueryWriteSent = true
-            stationQueryConfirmed = false
-            stationQueryWriteInputKey = inputKey
-            record("已填写${field.actionName()}，等待候选站")
+            stationPhase = StationSelectionPhase.WAITING_QUERY_WRITE
+            record("等待${field.actionName()}输入框可用于查询")
             return InteractionResult.WAITING
         }
 
@@ -219,7 +271,7 @@ class OfficialSearchInteractor(
             record("${field.actionName()}选择控件点击未派发")
             return InteractionResult.FAILED
         }
-        stationPhase = StationSelectionPhase.WAITING_CANDIDATE
+        stationPhase = StationSelectionPhase.WAITING_QUERY_WRITE
         stationBeforeClickFingerprint = currentFingerprint
         stationActionSent = true
         record("已打开${field.actionName()}选择控件，等待站点列表")
@@ -239,6 +291,9 @@ class OfficialSearchInteractor(
         stationQueryConfirmed = false
         stationQueryInputKey = null
         stationQueryWriteInputKey = null
+        stationQueryBeforeWriteFingerprint = null
+        stationCandidateScope = "NONE"
+        stationCandidateCount = 0
     }
 
     private fun completeStationFlow() {
@@ -253,6 +308,9 @@ class OfficialSearchInteractor(
         stationQueryConfirmed = false
         stationQueryInputKey = null
         stationQueryWriteInputKey = null
+        stationQueryBeforeWriteFingerprint = null
+        stationCandidateScope = "NONE"
+        stationCandidateCount = 0
     }
 
     private fun isStationPickerVisible(
@@ -378,7 +436,25 @@ class OfficialSearchInteractor(
     private fun rememberStationPickerInput(input: AccessibilityNodeInfo): Boolean {
         val key = stationPickerInputKey(input)
         val previous = stationQueryInputKey
-        if (previous != null && previous != key) return false
+        if (previous != null && previous != key) {
+            // WebView rebuilds can replace the EditText or change its bounds
+            // after a query. Rebind safely, but never trust the old node's
+            // write/readback evidence on the new node.
+            stationQueryInputKey = key
+            stationQueryWriteInputKey = null
+            stationQueryBeforeWriteFingerprint = null
+            stationQueryWriteSent = false
+            stationQueryConfirmed = false
+            if (stationPhase != StationSelectionPhase.IDLE &&
+                stationPhase != StationSelectionPhase.WAITING_CONFIRMATION
+            ) {
+                stationPhase = StationSelectionPhase.WAITING_QUERY_WRITE
+            }
+            stationCandidateScope = "INPUT_REBOUND"
+            stationCandidateCount = 0
+            record("车站搜索框节点已重绑，要求重新写入并回读")
+            return true
+        }
         stationQueryInputKey = key
         return true
     }

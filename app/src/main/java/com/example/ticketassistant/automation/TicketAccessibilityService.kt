@@ -1631,6 +1631,8 @@ class TicketAccessibilityService : AccessibilityService() {
                 else -> "SENT_OR_OBSERVED"
             }
         }
+        val station = searchInteractor.stationDiagnostics()
+        val stationInputKey = station.inputKey?.let { Integer.toHexString(it.hashCode()) }
         TaskStore(this).recordAccessibilityEvent(
             pageState = page.name,
             action = action,
@@ -1642,7 +1644,14 @@ class TicketAccessibilityService : AccessibilityService() {
             contextAt = if (contextStatus != null) System.currentTimeMillis() else null,
             snapshotFingerprint = snapshotFingerprint,
             actionAt = if (action != null) System.currentTimeMillis() else null,
-            actionOutcome = actionOutcome
+            actionOutcome = actionOutcome,
+            unknownReason = if (page == OfficialPageState.UNKNOWN) action else null,
+            stationPhase = station.phase.name,
+            stationQueryInputKey = stationInputKey,
+            stationQueryWriteSent = station.queryWriteSent,
+            stationQueryConfirmed = station.queryConfirmed,
+            stationCandidateScope = station.candidateScope,
+            stationCandidateCount = station.candidateCount
         )
     }
 

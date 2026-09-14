@@ -134,6 +134,15 @@ class SearchFormMatcherTest {
     }
 
     @Test
+    fun `station query is written before a default picker candidate is considered`() {
+        assertTrue(stationQueryNeedsWrite("", "汉口", false, false))
+        assertTrue(stationQueryNeedsWrite("汉阳", "汉口", false, false))
+        assertFalse(stationQueryNeedsWrite("", "汉口", true, false))
+        assertFalse(stationQueryNeedsWrite("汉口", "汉口", false, false))
+        assertFalse(stationQueryNeedsWrite("", "汉口", false, true))
+    }
+
+    @Test
     fun `station picker input requires visible top wide searchable field`() {
         val valid = StationPickerInputDescriptor(
             editable = true,

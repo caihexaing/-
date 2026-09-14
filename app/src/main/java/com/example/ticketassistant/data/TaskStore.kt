@@ -59,6 +59,17 @@ class TaskStore(context: Context) {
             task.stageEnteredAt?.let { put("stageEnteredAt", it) }
             task.lastActionAt?.let { put("lastActionAt", it) }
             task.lastActionOutcome?.let { put("lastActionOutcome", it) }
+            task.lastStablePageState?.let { put("lastStablePageState", it) }
+            task.lastUnknownReason?.let { put("lastUnknownReason", it) }
+            task.stationPhase?.let { put("stationPhase", it) }
+            task.stationQueryInputKey?.let { put("stationQueryInputKey", it) }
+            put("stationQueryWriteSent", task.stationQueryWriteSent)
+            put("stationQueryConfirmed", task.stationQueryConfirmed)
+            task.stationCandidateScope?.let { put("stationCandidateScope", it) }
+            task.stationCandidateCount?.let { put("stationCandidateCount", it) }
+            task.stationQueryWriteAt?.let { put("stationQueryWriteAt", it) }
+            task.stationQueryConfirmedAt?.let { put("stationQueryConfirmedAt", it) }
+            task.stationCandidateObservedAt?.let { put("stationCandidateObservedAt", it) }
             task.lastResultPageAt?.let { put("lastResultPageAt", it) }
             task.lastTargetControlAt?.let { put("lastTargetControlAt", it) }
             task.lastTrainActionAt?.let { put("lastTrainActionAt", it) }
@@ -141,6 +152,17 @@ class TaskStore(context: Context) {
             stageEnteredAt = j.optLong("stageEnteredAt").takeIf { it > 0L },
             lastActionAt = j.optLong("lastActionAt").takeIf { it > 0L },
             lastActionOutcome = j.optString("lastActionOutcome").ifBlank { null },
+            lastStablePageState = j.optString("lastStablePageState").ifBlank { null },
+            lastUnknownReason = j.optString("lastUnknownReason").ifBlank { null },
+            stationPhase = j.optString("stationPhase").ifBlank { null },
+            stationQueryInputKey = j.optString("stationQueryInputKey").ifBlank { null },
+            stationQueryWriteSent = j.optBoolean("stationQueryWriteSent", false),
+            stationQueryConfirmed = j.optBoolean("stationQueryConfirmed", false),
+            stationCandidateScope = j.optString("stationCandidateScope").ifBlank { null },
+            stationCandidateCount = j.optInt("stationCandidateCount", -1).takeIf { it >= 0 },
+            stationQueryWriteAt = j.optLong("stationQueryWriteAt").takeIf { it > 0L },
+            stationQueryConfirmedAt = j.optLong("stationQueryConfirmedAt").takeIf { it > 0L },
+            stationCandidateObservedAt = j.optLong("stationCandidateObservedAt").takeIf { it > 0L },
             lastResultPageAt = j.optLong("lastResultPageAt").takeIf { it > 0L },
             lastTargetControlAt = j.optLong("lastTargetControlAt").takeIf { it > 0L },
             lastTrainActionAt = j.optLong("lastTrainActionAt").takeIf { it > 0L },
@@ -182,7 +204,14 @@ class TaskStore(context: Context) {
         snapshotFingerprint: String? = null,
         saleT0At: Long? = null,
         actionAt: Long? = null,
-        actionOutcome: String? = null
+        actionOutcome: String? = null,
+        unknownReason: String? = null,
+        stationPhase: String? = null,
+        stationQueryInputKey: String? = null,
+        stationQueryWriteSent: Boolean? = null,
+        stationQueryConfirmed: Boolean? = null,
+        stationCandidateScope: String? = null,
+        stationCandidateCount: Int? = null
     ) {
         val task = load() ?: return
         val now = System.currentTimeMillis()
@@ -190,8 +219,13 @@ class TaskStore(context: Context) {
         val actionText = action.orEmpty()
         val resultPageObserved = pageState == "SEARCH_RESULT" || pageState == "SEARCH_RESULT_PARTIAL"
         val orderEvidenceObserved = evidenceSource == "VERIFIED_ORDER_FIELDS"
+        val queryWriteTransition = stationQueryWriteSent == true && !task.stationQueryWriteSent
+        val queryConfirmTransition = stationQueryConfirmed == true && !task.stationQueryConfirmed
+        val candidateScopeChanged = stationCandidateScope != null && stationCandidateScope != task.stationCandidateScope
         save(task.copy(
             lastPageState = pageState ?: task.lastPageState,
+            lastStablePageState = if (pageState != null && pageState != "UNKNOWN") pageState else task.lastStablePageState,
+            lastUnknownReason = if (pageState == "UNKNOWN") unknownReason ?: action ?: task.lastUnknownReason else task.lastUnknownReason,
             lastAction = action ?: task.lastAction,
             lastAutomationStage = automationStage ?: task.lastAutomationStage,
             lastRootPackage = rootPackage ?: task.lastRootPackage,
@@ -206,6 +240,15 @@ class TaskStore(context: Context) {
             stageEnteredAt = if (stageChanged) now else task.stageEnteredAt,
             lastActionAt = actionAt ?: if (action != null) now else task.lastActionAt,
             lastActionOutcome = actionOutcome ?: task.lastActionOutcome,
+            stationPhase = stationPhase ?: task.stationPhase,
+            stationQueryInputKey = stationQueryInputKey ?: task.stationQueryInputKey,
+            stationQueryWriteSent = stationQueryWriteSent ?: task.stationQueryWriteSent,
+            stationQueryConfirmed = stationQueryConfirmed ?: task.stationQueryConfirmed,
+            stationCandidateScope = stationCandidateScope ?: task.stationCandidateScope,
+            stationCandidateCount = stationCandidateCount ?: task.stationCandidateCount,
+            stationQueryWriteAt = if (queryWriteTransition) now else task.stationQueryWriteAt,
+            stationQueryConfirmedAt = if (queryConfirmTransition) now else task.stationQueryConfirmedAt,
+            stationCandidateObservedAt = if (candidateScopeChanged) now else task.stationCandidateObservedAt,
             lastResultPageAt = if (resultPageObserved) now else task.lastResultPageAt,
             lastTargetControlAt = if (isTargetControlDispatched(actionText)) now else task.lastTargetControlAt,
             lastTrainActionAt = if (isTrainActionDispatched(actionText)) now else task.lastTrainActionAt,
@@ -233,6 +276,17 @@ class TaskStore(context: Context) {
             stageEnteredAt = now,
             lastActionAt = null,
             lastActionOutcome = null,
+            lastStablePageState = null,
+            lastUnknownReason = null,
+            stationPhase = null,
+            stationQueryInputKey = null,
+            stationQueryWriteSent = false,
+            stationQueryConfirmed = false,
+            stationCandidateScope = null,
+            stationCandidateCount = null,
+            stationQueryWriteAt = null,
+            stationQueryConfirmedAt = null,
+            stationCandidateObservedAt = null,
             lastResultPageAt = null,
             lastTargetControlAt = null,
             lastTrainActionAt = null,
@@ -310,6 +364,8 @@ class TaskStore(context: Context) {
             coldStartLastFailure = null,
             lastAction = null,
             lastPageState = null,
+            lastStablePageState = null,
+            lastUnknownReason = null,
             lastAutomationStage = null,
             lastRootPackage = null,
             lastEvidenceSource = null,
@@ -324,6 +380,15 @@ class TaskStore(context: Context) {
             accessibilityEventCount = 0,
             lastActionAt = null,
             lastActionOutcome = null,
+            stationPhase = null,
+            stationQueryInputKey = null,
+            stationQueryWriteSent = false,
+            stationQueryConfirmed = false,
+            stationCandidateScope = null,
+            stationCandidateCount = null,
+            stationQueryWriteAt = null,
+            stationQueryConfirmedAt = null,
+            stationCandidateObservedAt = null,
             lastResultPageAt = null,
             lastTargetControlAt = null,
             lastTrainActionAt = null,
