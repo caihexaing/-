@@ -1,11 +1,11 @@
 package com.example.ticketassistant.automation
 
 /**
- * Allows one bounded re-dispatch of the target train summary action when the
- * result tree has no usable seat booking control yet. It never treats a seat
- * label or a card container as a booking action.
+ * Allows one bounded re-dispatch of the target train expansion action when the
+ * result tree has no usable seat booking control yet. The action itself may be
+ * the outer card or the narrow summary fallback; neither is a seat booking.
  */
-internal fun shouldRetryTrainSummaryExpansion(
+internal fun shouldRetryTrainExpansion(
     summaryAttempts: Int,
     elapsedMs: Long,
     bookingActionCount: Int,

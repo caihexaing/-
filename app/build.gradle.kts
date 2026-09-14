@@ -29,8 +29,8 @@ android {
         applicationId = "com.example.ticketassistant"
         minSdk = 26
         targetSdk = 36
-        versionCode = 45
-        versionName = "0.4.23-train-expand-retry"
+        versionCode = 46
+        versionName = "0.4.24-train-card-expand"
     }
 
     signingConfigs {
