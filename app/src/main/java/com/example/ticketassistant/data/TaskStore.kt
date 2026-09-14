@@ -62,6 +62,7 @@ class TaskStore(context: Context) {
             task.lastResultPageAt?.let { put("lastResultPageAt", it) }
             task.lastTargetControlAt?.let { put("lastTargetControlAt", it) }
             task.lastTrainActionAt?.let { put("lastTrainActionAt", it) }
+            put("trainSummaryAttempts", task.trainSummaryAttempts)
             task.lastSeatActionAt?.let { put("lastSeatActionAt", it) }
             task.lastBookingActionAt?.let { put("lastBookingActionAt", it) }
             task.lastPassengerActionAt?.let { put("lastPassengerActionAt", it) }
@@ -143,6 +144,7 @@ class TaskStore(context: Context) {
             lastResultPageAt = j.optLong("lastResultPageAt").takeIf { it > 0L },
             lastTargetControlAt = j.optLong("lastTargetControlAt").takeIf { it > 0L },
             lastTrainActionAt = j.optLong("lastTrainActionAt").takeIf { it > 0L },
+            trainSummaryAttempts = j.optInt("trainSummaryAttempts", 0).coerceAtLeast(0),
             lastSeatActionAt = j.optLong("lastSeatActionAt").takeIf { it > 0L },
             lastBookingActionAt = j.optLong("lastBookingActionAt").takeIf { it > 0L },
             lastPassengerActionAt = j.optLong("lastPassengerActionAt").takeIf { it > 0L },
@@ -207,6 +209,9 @@ class TaskStore(context: Context) {
             lastResultPageAt = if (resultPageObserved) now else task.lastResultPageAt,
             lastTargetControlAt = if (isTargetControlDispatched(actionText)) now else task.lastTargetControlAt,
             lastTrainActionAt = if (isTrainActionDispatched(actionText)) now else task.lastTrainActionAt,
+            trainSummaryAttempts = if (isTrainActionDispatched(actionText)) {
+                task.trainSummaryAttempts + 1
+            } else task.trainSummaryAttempts,
             lastSeatActionAt = if (isSeatActionDispatched(actionText)) now else task.lastSeatActionAt,
             lastBookingActionAt = if (isBookingActionDispatched(actionText)) now else task.lastBookingActionAt,
             lastPassengerActionAt = if (isPassengerActionDispatched(actionText)) now else task.lastPassengerActionAt,
@@ -231,6 +236,7 @@ class TaskStore(context: Context) {
             lastResultPageAt = null,
             lastTargetControlAt = null,
             lastTrainActionAt = null,
+            trainSummaryAttempts = 0,
             lastSeatActionAt = null,
             lastBookingActionAt = null,
             lastPassengerActionAt = null,
@@ -321,6 +327,7 @@ class TaskStore(context: Context) {
             lastResultPageAt = null,
             lastTargetControlAt = null,
             lastTrainActionAt = null,
+            trainSummaryAttempts = 0,
             lastSeatActionAt = null,
             lastBookingActionAt = null,
             lastPassengerActionAt = null,

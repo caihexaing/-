@@ -993,6 +993,9 @@ class TicketAccessibilityService : AccessibilityService() {
         if (trainActionSent && trainActionWaitStartedAt > 0L && seatActionWaitStartedAt == 0L && trainActionBeforeClickFingerprint != null) {
             val currentFingerprint = accessibilitySnapshotFingerprint(root)
             if (currentFingerprint == trainActionBeforeClickFingerprint) {
+                if (retryTrainSummaryExpansionIfNeeded(root, task, bookingActionCount = 0)) {
+                    return InteractionResult.WAITING
+                }
                 recordDiagnostic(
                     pageState,
                     "等待目标车次摘要动作后的页面刷新（快照未变化）",
@@ -1049,7 +1052,12 @@ class TicketAccessibilityService : AccessibilityService() {
         // the target train card first so another train's availability cannot
         // make this task appear unavailable or become a click target.
         val targetCards = findTrainCards(root, task)
-        if (targetCards.isEmpty()) return InteractionResult.WAITING
+        if (targetCards.isEmpty()) {
+            if (retryTrainSummaryExpansionIfNeeded(root, task, bookingActionCount = 0)) {
+                return InteractionResult.WAITING
+            }
+            return InteractionResult.WAITING
+        }
         if (targetCards.size > 1) {
             recordDiagnostic(
                 pageState,
@@ -1090,6 +1098,14 @@ class TicketAccessibilityService : AccessibilityService() {
                 return InteractionResult.FAILED
             }
             SeatActionTarget.NONE -> {
+                if (retryTrainSummaryExpansionIfNeeded(
+                        root = root,
+                        task = task,
+                        bookingActionCount = rowBookings.size
+                    )
+                ) {
+                    return InteractionResult.WAITING
+                }
                 recordDiagnostic(
                     pageState,
                     if (matches.isEmpty()) {
@@ -1100,6 +1116,51 @@ class TicketAccessibilityService : AccessibilityService() {
                     evidenceSource = "SEAT_BOOKING_ACTION_MISSING"
                 )
                 return InteractionResult.WAITING
+            }
+        }
+    }
+
+    private fun retryTrainSummaryExpansionIfNeeded(
+        root: AccessibilityNodeInfo,
+        task: TicketTask,
+        bookingActionCount: Int
+    ): Boolean {
+        val startedAt = seatStageWaitStartedAt.takeIf { it > 0L } ?: return false
+        val elapsed = System.currentTimeMillis() - startedAt
+        if (!shouldRetryTrainSummaryExpansion(
+                summaryAttempts = task.trainSummaryAttempts,
+                elapsedMs = elapsed,
+                bookingActionCount = bookingActionCount,
+                maxAttempts = MAX_TRAIN_SUMMARY_ATTEMPTS
+            )
+        ) return false
+
+        return when (locateTrain(root, task)) {
+            TrainLocateResult.CLICKED -> {
+                val now = System.currentTimeMillis()
+                seatStageWaitStartedAt = now
+                recordDiagnostic(
+                    pageState,
+                    "目标车次摘要点击已重试一次，等待 ${task.train.trainNo} 席别预订控件刷新",
+                    evidenceSource = "TARGET_TRAIN_SUMMARY_RETRY"
+                )
+                true
+            }
+            TrainLocateResult.NOT_FOUND -> {
+                recordDiagnostic(
+                    pageState,
+                    "目标车次摘要重试未找到唯一控件，未执行第二次点击",
+                    evidenceSource = "TARGET_TRAIN_SUMMARY_RETRY_MISSING"
+                )
+                false
+            }
+            TrainLocateResult.AMBIGUOUS -> {
+                takeover("目标车次摘要重试时控件不唯一，未继续操作")
+                true
+            }
+            TrainLocateResult.CLICK_REJECTED -> {
+                takeover("目标车次摘要重试点击未派发，未继续选择席别")
+                true
             }
         }
     }
@@ -1608,6 +1669,7 @@ class TicketAccessibilityService : AccessibilityService() {
         private const val MAX_RESULT_CONTEXT_WAIT_EVENTS = 12
         private const val MAX_PAGE_REFRESH_WAIT_EVENTS = 12
         private const val MAX_SEAT_ACTION_WAIT_MS = 10_000L
+        private const val MAX_TRAIN_SUMMARY_ATTEMPTS = 2
         private const val MAX_PASSENGER_ACTION_WAIT_MS = 10_000L
         private const val MAX_TARGET_TRAIN_WAIT_EVENTS = 30
         private const val MAX_TARGET_TRAIN_SCROLL_ATTEMPTS = 6

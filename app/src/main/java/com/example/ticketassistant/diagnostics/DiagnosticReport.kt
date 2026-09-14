@@ -56,6 +56,7 @@ fun buildDiagnosticReport(
     fields["lastResultPageAt"] = task.lastResultPageAt?.toString()
     fields["lastTargetControlAt"] = task.lastTargetControlAt?.toString()
     fields["lastTrainActionAt"] = task.lastTrainActionAt?.toString()
+    fields["trainSummaryAttempts"] = task.trainSummaryAttempts.toString()
     fields["lastSeatActionAt"] = task.lastSeatActionAt?.toString()
     fields["lastBookingActionAt"] = task.lastBookingActionAt?.toString()
     fields["lastPassengerActionAt"] = task.lastPassengerActionAt?.toString()
