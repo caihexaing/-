@@ -897,7 +897,11 @@ class TicketAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun locateTrain(root: AccessibilityNodeInfo, task: TicketTask): TrainLocateResult {
+    private fun locateTrain(
+        root: AccessibilityNodeInfo,
+        task: TicketTask,
+        preferSummaryFallback: Boolean = false
+    ): TrainLocateResult {
         val cards = findTrainCards(root, task)
         if (cards.isEmpty()) return TrainLocateResult.NOT_FOUND
         if (cards.size > 1) {
@@ -935,17 +939,28 @@ class TicketAccessibilityService : AccessibilityService() {
 
         val before = accessibilitySnapshotFingerprint(root)
         val cardUsable = card.isVisibleToUser && card.isEnabled && card.isClickable
-        val clickTarget = if (cardUsable) {
+        val summaries = if (preferSummaryFallback || !cardUsable) {
+            findTrainSummaryActions(root, task)
+        } else {
+            emptyList()
+        }
+        val useSummary = preferSummaryFallback || !cardUsable
+        val clickTarget = if (!useSummary) {
             card
         } else {
-            // Older builds may expose only the inner summary button. Keep this
-            // as a narrow compatibility fallback after the exact card lookup.
-            val summaries = findTrainSummaryActions(root, task)
+            // If the card click did not change the WebView tree, switch to the
+            // inner summary button instead of dispatching the same card action
+            // a second time. This matches the control that expands rows on
+            // builds where the outer clickable View is only a container.
             if (summaries.size != 1) {
                 recordDiagnostic(
                     pageState,
-                    "目标车次外层卡片不可点击，且摘要回退控件不唯一",
-                    evidenceSource = "TARGET_TRAIN_CARD_EXPANSION_REJECTED"
+                    if (preferSummaryFallback) {
+                        "目标车次外层卡片展开无页面变化，摘要回退控件不唯一"
+                    } else {
+                        "目标车次外层卡片不可点击，且摘要回退控件不唯一"
+                    },
+                    evidenceSource = "TARGET_TRAIN_SUMMARY_FALLBACK_REJECTED"
                 )
                 return if (summaries.isEmpty()) TrainLocateResult.NOT_FOUND else TrainLocateResult.AMBIGUOUS
             }
@@ -954,8 +969,16 @@ class TicketAccessibilityService : AccessibilityService() {
         if (clickTarget == null || !performExactClick(clickTarget)) {
             recordDiagnostic(
                 pageState,
-                "目标车次外层卡片/摘要展开点击未派发",
-                evidenceSource = "TARGET_TRAIN_CARD_EXPANSION_REJECTED"
+                if (useSummary) {
+                    "目标车次摘要回退展开点击未派发"
+                } else {
+                    "目标车次外层卡片展开点击未派发"
+                },
+                evidenceSource = if (useSummary) {
+                    "TARGET_TRAIN_SUMMARY_FALLBACK_REJECTED"
+                } else {
+                    "TARGET_TRAIN_CARD_EXPANSION_REJECTED"
+                }
             )
             return TrainLocateResult.CLICK_REJECTED
         }
@@ -968,15 +991,15 @@ class TicketAccessibilityService : AccessibilityService() {
         lastActionAt = now
         recordDiagnostic(
             pageState,
-            if (cardUsable) {
+            if (useSummary) {
+                "目标车次摘要按钮点击已派发（展开回退）：${task.train.trainNo}"
+            } else {
                 "目标车次卡片点击已派发（外层展开）：${task.train.trainNo}"
-            } else {
-                "目标车次卡片点击已派发（摘要回退展开）：${task.train.trainNo}"
             },
-            evidenceSource = if (cardUsable) {
-                "TARGET_TRAIN_CARD_EXPANSION_ACTION"
-            } else {
+            evidenceSource = if (useSummary) {
                 "TARGET_TRAIN_SUMMARY_FALLBACK_ACTION"
+            } else {
+                "TARGET_TRAIN_CARD_EXPANSION_ACTION"
             }
         )
         return TrainLocateResult.CLICKED
@@ -1193,14 +1216,23 @@ class TicketAccessibilityService : AccessibilityService() {
             )
         ) return false
 
-        return when (locateTrain(root, task)) {
+        val preferSummaryFallback = task.trainSummaryAttempts >= 1
+        return when (locateTrain(root, task, preferSummaryFallback = preferSummaryFallback)) {
             TrainLocateResult.CLICKED -> {
                 val now = System.currentTimeMillis()
                 seatStageWaitStartedAt = now
                 recordDiagnostic(
                     pageState,
-                    "目标车次展开点击已重试一次，等待 ${task.train.trainNo} 席别预订控件刷新",
-                    evidenceSource = "TARGET_TRAIN_CARD_EXPANSION_RETRY"
+                    if (preferSummaryFallback) {
+                        "目标车次摘要按钮回退点击已重试一次，等待 ${task.train.trainNo} 席别预订控件刷新"
+                    } else {
+                        "目标车次外层卡片点击已重试一次，等待 ${task.train.trainNo} 席别预订控件刷新"
+                    },
+                    evidenceSource = if (preferSummaryFallback) {
+                        "TARGET_TRAIN_SUMMARY_FALLBACK_RETRY"
+                    } else {
+                        "TARGET_TRAIN_CARD_EXPANSION_RETRY"
+                    }
                 )
                 true
             }

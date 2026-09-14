@@ -24,6 +24,7 @@ class DiagnosticActionSemanticsTest {
     fun `train card expansion is tracked separately from seat booking`() {
         assertTrue(isTrainActionDispatched("目标车次卡片点击已派发（外层展开）：D631"))
         assertTrue(isTrainActionDispatched("目标车次卡片点击已派发（摘要回退展开）：D631"))
+        assertTrue(isTrainActionDispatched("目标车次摘要按钮点击已派发（展开回退）：D631"))
         assertTrue(isTargetControlDispatched("目标车次卡片点击已派发（外层展开）：D631"))
         assertFalse(isSeatActionDispatched("目标车次卡片点击已派发（外层展开）：D631"))
     }
