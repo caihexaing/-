@@ -5,9 +5,7 @@ internal fun isTrainActionDispatched(action: String): Boolean =
     action.contains("目标车次卡片点击已派发")
 
 internal fun isSeatActionDispatched(action: String): Boolean =
-    action.contains("目标席别节点点击已派发") ||
-        action.contains("目标席别行容器点击已派发") ||
-        action.contains("目标席别行“预订”控件点击已派发")
+    action.contains("目标席别行“预订”控件点击已派发")
 
 internal fun isTargetControlDispatched(action: String): Boolean =
     isTrainActionDispatched(action) || isSeatActionDispatched(action)

@@ -13,9 +13,9 @@ class DiagnosticActionSemanticsTest {
     }
 
     @Test
-    fun `target timestamps only advance on dispatched target controls`() {
+    fun `only booking action advances seat timestamps`() {
         assertFalse(isTargetControlDispatched("目标席别动作后仍未进入乘车人页面"))
-        assertTrue(isTargetControlDispatched("目标席别节点点击已派发：二等座（触控回退）"))
+        assertFalse(isSeatActionDispatched("目标席别节点点击已派发：二等座"))
         assertTrue(isSeatActionDispatched("目标席别行“预订”控件点击已派发"))
         assertFalse(isSeatActionDispatched("目标席别触控回退已完成"))
     }
