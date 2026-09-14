@@ -19,4 +19,11 @@ class DiagnosticActionSemanticsTest {
         assertTrue(isSeatActionDispatched("目标席别行“预订”控件点击已派发"))
         assertFalse(isSeatActionDispatched("目标席别触控回退已完成"))
     }
+
+    @Test
+    fun `train summary expansion is tracked separately from seat booking`() {
+        assertTrue(isTrainActionDispatched("目标车次卡片点击已派发（仅点击摘要按钮）：D631"))
+        assertTrue(isTargetControlDispatched("目标车次卡片点击已派发（仅点击摘要按钮）：D631"))
+        assertFalse(isSeatActionDispatched("目标车次卡片点击已派发（仅点击摘要按钮）：D631"))
+    }
 }

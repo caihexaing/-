@@ -52,6 +52,9 @@ class TicketAccessibilityService : AccessibilityService() {
     private var expectedPageWaitEvents = 0
     private var coldStartWaitEvents = 0
     private var lastObservedRootPackage: String? = null
+    private var trainActionSent = false
+    private var trainActionBeforeClickFingerprint: String? = null
+    private var trainActionWaitStartedAt = 0L
     private var seatActionSent = false
     private var seatActionBeforeClickFingerprint: String? = null
     private var seatStageWaitStartedAt = 0L
@@ -112,9 +115,11 @@ class TicketAccessibilityService : AccessibilityService() {
         if (activeTaskKey != key || runChanged) {
             activeTaskKey = key
             activeAutomationRunId = task.automationRunId
+            val persistedTrainAction = task.status == TaskStatus.SELECTING_TRAIN_SEAT &&
+                task.lastTrainActionAt != null
             val persistedSeatAction = task.status == TaskStatus.SELECTING_TRAIN_SEAT &&
                 task.lastSeatActionAt != null
-            stage = if (persistedSeatAction) Stage.SEAT else stageFor(task.status)
+            stage = if (persistedTrainAction) Stage.SEAT else stageFor(task.status)
             pageState = OfficialPageState.LAUNCHING
             lastActionAt = 0L
             emptyTreeEvents = 0
@@ -132,11 +137,18 @@ class TicketAccessibilityService : AccessibilityService() {
             expectedPageWaitEvents = 0
             coldStartWaitEvents = 0
             lastObservedRootPackage = null
+            trainActionSent = persistedTrainAction
+            trainActionBeforeClickFingerprint = null
+            trainActionWaitStartedAt = if (persistedTrainAction) {
+                task.lastTrainActionAt ?: System.currentTimeMillis()
+            } else 0L
             seatActionSent = persistedSeatAction
             seatActionBeforeClickFingerprint = null
-            seatStageWaitStartedAt = if (persistedSeatAction) {
-                task.lastSeatActionAt ?: System.currentTimeMillis()
-            } else 0L
+            seatStageWaitStartedAt = when {
+                persistedSeatAction -> task.lastSeatActionAt ?: System.currentTimeMillis()
+                persistedTrainAction -> task.lastTrainActionAt ?: System.currentTimeMillis()
+                else -> 0L
+            }
             seatActionWaitStartedAt = if (persistedSeatAction) task.lastSeatActionAt ?: 0L else 0L
             automationInputLocked = false
             passengerSelected = false
@@ -420,15 +432,16 @@ class TicketAccessibilityService : AccessibilityService() {
                 when (check.status) {
                     SearchContextStatus.MATCH -> {
                         when (locateTrain(root, task)) {
-                            TrainLocateResult.LOCATED -> {
+                            TrainLocateResult.CLICKED -> {
                                 stage = Stage.SEAT
                                 TaskStore(this).updateStatus(
                                     TaskStatus.SELECTING_TRAIN_SEAT,
-                                    "已定位目标车次，正在查找目标席别的“预订”按钮"
+                                    "已点击目标车次，等待席别控件刷新"
                                 )
                             }
                             TrainLocateResult.NOT_FOUND -> waitForTargetTrain(root, task)
                             TrainLocateResult.AMBIGUOUS -> takeover("目标车次卡片不唯一，未自动选择")
+                            TrainLocateResult.CLICK_REJECTED -> takeover("目标车次摘要按钮无法操作，未继续选择席别")
                         }
                     }
                     SearchContextStatus.MISSING -> waitForSearchContext(check.missing)
@@ -817,15 +830,16 @@ class TicketAccessibilityService : AccessibilityService() {
         stage = Stage.TRAIN
         TaskStore(this).updateStatus(TaskStatus.SELECTING_TRAIN_SEAT, "已核对查询结果页，正在定位目标车次")
         when (locateTrain(root, task)) {
-            TrainLocateResult.LOCATED -> {
+            TrainLocateResult.CLICKED -> {
                 stage = Stage.SEAT
                 TaskStore(this).updateStatus(
                     TaskStatus.SELECTING_TRAIN_SEAT,
-                    "已定位目标车次，正在查找目标席别的“预订”按钮"
+                    "已点击目标车次，等待席别控件刷新"
                 )
             }
             TrainLocateResult.NOT_FOUND -> waitForTargetTrain(root, task)
             TrainLocateResult.AMBIGUOUS -> takeover("目标车次卡片不唯一，未自动选择")
+            TrainLocateResult.CLICK_REJECTED -> takeover("目标车次摘要按钮无法操作，未继续选择席别")
         }
     }
 
@@ -876,7 +890,7 @@ class TicketAccessibilityService : AccessibilityService() {
     }
 
     private fun locateTrain(root: AccessibilityNodeInfo, task: TicketTask): TrainLocateResult {
-        val targets = findTrainCards(root, task)
+        val targets = findTrainSummaryActions(root, task)
         if (targets.isEmpty()) return TrainLocateResult.NOT_FOUND
         if (targets.size > 1) {
             recordDiagnostic(
@@ -886,12 +900,28 @@ class TicketAccessibilityService : AccessibilityService() {
             )
             return TrainLocateResult.AMBIGUOUS
         }
+        val target = targets.single()
+        val before = accessibilitySnapshotFingerprint(root)
+        if (!target.isVisibleToUser || !target.isEnabled || !target.isClickable || !performExactClick(target)) {
+            recordDiagnostic(
+                pageState,
+                "目标车次摘要按钮点击未派发",
+                evidenceSource = "TARGET_TRAIN_SUMMARY_ACTION_REJECTED"
+            )
+            return TrainLocateResult.CLICK_REJECTED
+        }
+        trainActionSent = true
+        trainActionBeforeClickFingerprint = before
+        val now = System.currentTimeMillis()
+        trainActionWaitStartedAt = now
+        seatStageWaitStartedAt = now
+        lastActionAt = now
         recordDiagnostic(
             pageState,
-            "已定位目标车次卡片，未点击车次卡片；等待目标席别“预订”按钮",
-            evidenceSource = "TARGET_TRAIN_LOCATED"
+            "目标车次卡片点击已派发（仅点击摘要按钮）：${task.train.trainNo}",
+            evidenceSource = "TARGET_TRAIN_SUMMARY_ACTION"
         )
-        return TrainLocateResult.LOCATED
+        return TrainLocateResult.CLICKED
     }
 
     /**
@@ -960,6 +990,25 @@ class TicketAccessibilityService : AccessibilityService() {
     private fun selectSeatStep(root: AccessibilityNodeInfo, task: TicketTask): InteractionResult {
         val seat = task.seat
         if (seatStageWaitStartedAt == 0L) seatStageWaitStartedAt = System.currentTimeMillis()
+        if (trainActionSent && trainActionWaitStartedAt > 0L && seatActionWaitStartedAt == 0L && trainActionBeforeClickFingerprint != null) {
+            val currentFingerprint = accessibilitySnapshotFingerprint(root)
+            if (currentFingerprint == trainActionBeforeClickFingerprint) {
+                recordDiagnostic(
+                    pageState,
+                    "等待目标车次摘要动作后的页面刷新（快照未变化）",
+                    evidenceSource = "TARGET_TRAIN_SUMMARY_ACTION_WAIT"
+                )
+                return InteractionResult.WAITING
+            }
+            trainActionSent = false
+            trainActionBeforeClickFingerprint = null
+            trainActionWaitStartedAt = 0L
+            recordDiagnostic(
+                pageState,
+                "目标车次摘要动作后的页面树已刷新，开始查找目标席别“预订”按钮",
+                evidenceSource = "TARGET_TRAIN_SUMMARY_REFRESHED"
+            )
+        }
         if (seatActionSent) {
             if (seatActionWaitStartedAt == 0L) seatActionWaitStartedAt = System.currentTimeMillis()
             if (seatActionBeforeClickFingerprint == null) {
@@ -1041,13 +1090,16 @@ class TicketAccessibilityService : AccessibilityService() {
                 return InteractionResult.FAILED
             }
             SeatActionTarget.NONE -> {
-                if (matches.isEmpty()) return InteractionResult.WAITING
                 recordDiagnostic(
                     pageState,
-                    "未找到目标席别对应的唯一“预订”按钮，未点击席别文字或其它控件",
+                    if (matches.isEmpty()) {
+                        "暂未读取到目标席别节点，等待官方页面刷新"
+                    } else {
+                        "暂未找到目标席别对应的唯一“预订”按钮，等待控件加载；不会点击席别文字或其它控件"
+                    },
                     evidenceSource = "SEAT_BOOKING_ACTION_MISSING"
                 )
-                return InteractionResult.FAILED
+                return InteractionResult.WAITING
             }
         }
     }
@@ -1073,7 +1125,7 @@ class TicketAccessibilityService : AccessibilityService() {
         task: TicketTask
     ): InteractionResult {
         val before = accessibilitySnapshotFingerprint(root)
-        if (!target.isVisibleToUser || !target.isEnabled || !clickNodeOrParent(target)) {
+        if (!target.isVisibleToUser || !target.isEnabled || !target.isClickable || !performExactClick(target)) {
             recordDiagnostic(
                 pageState,
                 "目标席别行“预订”控件点击未派发",
@@ -1201,7 +1253,7 @@ class TicketAccessibilityService : AccessibilityService() {
         return SubmitResult.CLICKED
     }
 
-    /** Resolves only the target train card; selecting the ticket happens later via its seat-row booking button. */
+    /** Resolves only the target train card; its summary action is clicked before seat booking. */
     private fun findTrainCards(root: AccessibilityNodeInfo, task: TicketTask): List<AccessibilityNodeInfo> {
         val trainNodes = findTextNodes(root) { value -> matchesToken(value, task.train.trainNo) }
         val summaryNodes = trainNodes.filter { node ->
@@ -1246,6 +1298,21 @@ class TicketAccessibilityService : AccessibilityService() {
         }.distinctBy(::trainNodeSemanticKey)
     }
 
+    /** Finds the exact clickable overview action for the configured train. */
+    private fun findTrainSummaryActions(
+        root: AccessibilityNodeInfo,
+        task: TicketTask
+    ): List<AccessibilityNodeInfo> = findTextNodes(root) { value ->
+        isTrainSummaryCandidateText(value, task.train.trainNo, task.from.name, task.to.name)
+    }.mapNotNull { node ->
+        val action = if (node.isClickable) node else clickableParent(node)
+        if (action == null || !action.isVisibleToUser || !action.isEnabled) return@mapNotNull null
+        if (!isTrainSummaryCandidateText(trainNodeText(action), task.train.trainNo, task.from.name, task.to.name)) {
+            return@mapNotNull null
+        }
+        action
+    }.distinctBy(::trainNodeSemanticKey)
+
     private fun trainNodeText(node: AccessibilityNodeInfo): String = listOfNotNull(
         node.text?.toString(),
         node.contentDescription?.toString()
@@ -1287,6 +1354,14 @@ class TicketAccessibilityService : AccessibilityService() {
             parent = parent.parent
         }
         return false
+    }
+
+    /** Performs one semantic click without climbing to a broader container. */
+    private fun performExactClick(node: AccessibilityNodeInfo): Boolean {
+        if (automationInputLocked || stage == Stage.DONE || !node.isVisibleToUser || !node.isEnabled || !node.isClickable) {
+            return false
+        }
+        return runCatching { node.performAction(AccessibilityNodeInfo.ACTION_CLICK) }.getOrDefault(false)
     }
 
     private fun clickableParent(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
@@ -1602,7 +1677,7 @@ class TicketAccessibilityService : AccessibilityService() {
     }
     private enum class PassengerResult { SELECTED, CONTINUED, WAITING, AMBIGUOUS, NOT_FOUND }
     private enum class SubmitResult { CLICKED, NO_BUTTON, ALREADY_LOCKED, CLICK_REJECTED }
-    private enum class TrainLocateResult { LOCATED, NOT_FOUND, AMBIGUOUS }
+    private enum class TrainLocateResult { CLICKED, NOT_FOUND, AMBIGUOUS, CLICK_REJECTED }
 }
 
 internal fun matchesToken(text: String, token: String): Boolean =
