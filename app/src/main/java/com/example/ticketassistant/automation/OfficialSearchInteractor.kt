@@ -300,14 +300,39 @@ class OfficialSearchInteractor(
     }
 
     private fun findStationPickerInput(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        val candidates = findNodes(root) { node ->
-            val descriptor = stationPickerInputDescriptor(root, node) ?: return@findNodes false
-            stationPickerInputConfirmed(descriptor) ||
-                (stationQueryInputKey != null &&
-                    stationPickerInputKey(node) == stationQueryInputKey &&
-                    stationPickerInputLayoutConfirmed(descriptor))
-        }.distinctBy(::nodeIdentity)
-        return candidates.singleOrNull()
+        val candidates = findNodes(root) { stationPickerInputDescriptor(root, it) != null }
+            .distinctBy(::nodeIdentity)
+        val marked = candidates.filter { node ->
+            stationPickerInputDescriptor(root, node)?.let { stationPickerInputConfirmed(it) } == true
+        }
+        if (marked.isNotEmpty()) return marked.singleOrNull()
+
+        // The 12306 picker sometimes exposes no hint, content description or
+        // resource label at all. Once the page itself is proven to be a
+        // station picker, a single top, wide, visible EditText is still a
+        // strong structural match; arbitrary editable nodes are not accepted.
+        val pageEvidence = hasStationPickerPageEvidence(root)
+        val structural = candidates.filter { node ->
+            stationPickerInputDescriptor(root, node)?.let { stationPickerInputLayoutConfirmed(it) } == true
+        }
+        if (pageEvidence && structural.size == 1) return structural.single()
+
+        // After ACTION_SET_TEXT the hint may disappear. The exact same
+        // previously confirmed node identity remains valid for readback.
+        val known = structural.filter { stationQueryInputKey != null && stationPickerInputKey(it) == stationQueryInputKey }
+        return known.singleOrNull()
+    }
+
+    private fun hasStationPickerPageEvidence(root: AccessibilityNodeInfo): Boolean {
+        val markers = listOf("选择出发站", "选择到达站", "站点列表", "热门站点", "车站选择", "常用站点")
+        val markerVisible = findNodes(root) { node ->
+            node.isVisibleToUser && nodeValues(node).any { value ->
+                val normalized = normalizeText(value)
+                markers.any { marker -> normalized.contains(marker) }
+            }
+        }.isNotEmpty()
+        if (markerVisible) return true
+        return findNodes(root) { node -> node.isVisibleToUser && hasPickerAncestor(node) }.isNotEmpty()
     }
 
     private fun stationPickerInputBelongsToPicker(

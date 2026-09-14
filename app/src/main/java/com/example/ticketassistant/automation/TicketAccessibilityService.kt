@@ -1579,6 +1579,7 @@ class TicketAccessibilityService : AccessibilityService() {
     ) {
         if (stage != Stage.DATE && pageState !in setOf(
                 OfficialPageState.DATE_PICKER,
+                OfficialPageState.STATION_PICKER,
                 OfficialPageState.UNKNOWN,
                 OfficialPageState.SEARCH_RESULT_LOADING,
                 OfficialPageState.SEARCH_RESULT_PARTIAL,
