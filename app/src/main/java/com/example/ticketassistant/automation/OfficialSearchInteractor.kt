@@ -1,6 +1,7 @@
 package com.example.ticketassistant.automation
 
 import android.graphics.Rect
+import android.os.Build
 import android.os.Bundle
 import android.view.accessibility.AccessibilityNodeInfo
 
@@ -20,6 +21,7 @@ class OfficialSearchInteractor(
     private var stationQueryConfirmed = false
     private var stationQueryInputKey: String? = null
     private var stationQueryWriteInputKey: String? = null
+    private var stationInputRequiresFreshWrite = false
     private var stationQueryBeforeWriteFingerprint: String? = null
     private var stationCandidateScope = "NONE"
     private var stationCandidateCount = 0
@@ -42,6 +44,7 @@ class OfficialSearchInteractor(
         stationQueryConfirmed = false
         stationQueryInputKey = null
         stationQueryWriteInputKey = null
+        stationInputRequiresFreshWrite = false
         stationQueryBeforeWriteFingerprint = null
         stationCandidateScope = "NONE"
         stationCandidateCount = 0
@@ -95,7 +98,7 @@ class OfficialSearchInteractor(
 
         // The default picker list can already contain the requested station.
         // Always complete query write/readback before scanning or clicking it.
-        if (input != null && !stationQueryConfirmed &&
+        if (input != null && !stationQueryConfirmed && !stationInputRequiresFreshWrite &&
             stationCandidateMatches(currentValue, stationName)
         ) {
             stationQueryConfirmed = true
@@ -108,11 +111,13 @@ class OfficialSearchInteractor(
             return InteractionResult.WAITING
         }
 
-        if (input != null && stationQueryNeedsWrite(
-                currentValue,
-                stationName,
-                stationQueryWriteSent,
-                stationQueryConfirmed
+        if (input != null && (
+                stationInputRequiresFreshWrite || stationQueryNeedsWrite(
+                    currentValue,
+                    stationName,
+                    stationQueryWriteSent,
+                    stationQueryConfirmed
+                )
             )
         ) {
             if (!allowInput()) {
@@ -135,6 +140,7 @@ class OfficialSearchInteractor(
             stationActionSent = true
             stationQueryWriteSent = true
             stationQueryConfirmed = false
+            stationInputRequiresFreshWrite = false
             stationQueryWriteInputKey = inputKey
             stationCandidateScope = if (pickerVisible) "PICKER_QUERY_SENT" else "FORM_QUERY_SENT"
             stationCandidateCount = 0
@@ -291,6 +297,7 @@ class OfficialSearchInteractor(
         stationQueryConfirmed = false
         stationQueryInputKey = null
         stationQueryWriteInputKey = null
+        stationInputRequiresFreshWrite = false
         stationQueryBeforeWriteFingerprint = null
         stationCandidateScope = "NONE"
         stationCandidateCount = 0
@@ -308,6 +315,7 @@ class OfficialSearchInteractor(
         stationQueryConfirmed = false
         stationQueryInputKey = null
         stationQueryWriteInputKey = null
+        stationInputRequiresFreshWrite = false
         stationQueryBeforeWriteFingerprint = null
         stationCandidateScope = "NONE"
         stationCandidateCount = 0
@@ -445,6 +453,7 @@ class OfficialSearchInteractor(
             stationQueryBeforeWriteFingerprint = null
             stationQueryWriteSent = false
             stationQueryConfirmed = false
+            stationInputRequiresFreshWrite = true
             if (stationPhase != StationSelectionPhase.IDLE &&
                 stationPhase != StationSelectionPhase.WAITING_CONFIRMATION
             ) {
@@ -462,13 +471,27 @@ class OfficialSearchInteractor(
     private fun stationPickerInputKey(node: AccessibilityNodeInfo): String {
         val bounds = Rect()
         node.getBoundsInScreen(bounds)
+        val uniqueId = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            node.uniqueId.orEmpty()
+        } else {
+            ""
+        }
+        val parent = node.parent
+        val parentBounds = Rect()
+        parent?.getBoundsInScreen(parentBounds)
+        val parentKey = listOf(
+            parent?.viewIdResourceName.orEmpty(),
+            parent?.className?.toString().orEmpty(),
+            parentBounds.left,
+            parentBounds.top
+        ).joinToString("|")
         return listOf(
+            uniqueId,
             node.viewIdResourceName.orEmpty(),
             node.className?.toString().orEmpty(),
             bounds.left,
             bounds.top,
-            bounds.right,
-            bounds.bottom
+            parentKey
         ).joinToString("|")
     }
 

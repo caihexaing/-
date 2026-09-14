@@ -134,6 +134,15 @@ class SearchFormMatcherTest {
     }
 
     @Test
+    fun `station picker role prefixes are accepted without substring matching`() {
+        assertTrue(stationCandidateMatches("火车站 汉口站", "汉口"))
+        assertTrue(stationCandidateMatches("车站 汉口", "汉口"))
+        assertTrue(stationCandidateMatches("高铁站 汉口站", "汉口"))
+        assertFalse(stationCandidateMatches("火车站 汉口南", "汉口"))
+        assertFalse(stationCandidateMatches("汉口站广场", "汉口"))
+    }
+
+    @Test
     fun `station query is written before a default picker candidate is considered`() {
         assertTrue(stationQueryNeedsWrite("", "汉口", false, false))
         assertTrue(stationQueryNeedsWrite("汉阳", "汉口", false, false))

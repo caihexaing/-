@@ -229,8 +229,17 @@ fun exactStationCandidate(text: String, stationName: String): Boolean =
 internal fun stationCandidateMatches(text: String, stationName: String): Boolean {
     val candidate = normalizeStation(text)
     val target = normalizeStation(stationName)
-    if (candidate == target) return true
-    return !target.endsWith("站") && candidate == target + "站"
+    if (candidate.isBlank() || target.isBlank()) return false
+    val labels = linkedSetOf(candidate)
+    // 12306 may expose a row as "火车站 汉口站" instead of the bare station
+    // name. Strip only known role prefixes; arbitrary substring matching
+    // would make nearby stations such as "汉口南" unsafe.
+    listOf("火车站", "车站", "高铁站", "动车站", "站点")
+        .firstOrNull { candidate.startsWith(it) && candidate.length > it.length }
+        ?.let { prefix -> labels += candidate.removePrefix(prefix) }
+    return labels.any { label ->
+        label == target || (!target.endsWith("站") && label == target + "站")
+    }
 }
 
 /** The query must be written before a default picker candidate can be used. */
