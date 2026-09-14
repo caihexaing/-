@@ -1,5 +1,6 @@
 package com.example.ticketassistant.automation
 
+import android.graphics.Rect
 import android.os.Bundle
 import android.view.accessibility.AccessibilityNodeInfo
 
@@ -15,6 +16,10 @@ class OfficialSearchInteractor(
     private var stationCandidateSeen = false
     private var stationBeforeClickFingerprint: String? = null
     private var stationActionSent = false
+    private var stationQueryWriteSent = false
+    private var stationQueryConfirmed = false
+    private var stationQueryInputKey: String? = null
+    private var stationQueryWriteInputKey: String? = null
     private var dateTarget: String? = null
     private var datePhase = DateSelectionPhase.IDLE
     private var dateBeforeClickFingerprint: String? = null
@@ -30,6 +35,10 @@ class OfficialSearchInteractor(
         stationCandidateSeen = false
         stationBeforeClickFingerprint = null
         stationActionSent = false
+        stationQueryWriteSent = false
+        stationQueryConfirmed = false
+        stationQueryInputKey = null
+        stationQueryWriteInputKey = null
         completeDateFlow()
     }
 
@@ -44,25 +53,55 @@ class OfficialSearchInteractor(
         stationName: String
     ): InteractionResult {
         prepareStationFlow(field, stationName)
-        var input = findEditableField(root, field)
-        var currentValue = input?.text?.toString().orEmpty()
-        var pickerVisible = isStationPickerVisible(root, field, stationName, input)
-        // The station picker in current 12306 builds often exposes one
-        // unlabelled search EditText. Only use it after this station flow has
-        // already been opened; never guess an input on the normal home page.
-        if (input == null && stationPhase != StationSelectionPhase.IDLE) {
-            input = findStationPickerInput(root)
-            if (input != null) {
-                currentValue = input.text?.toString().orEmpty()
-                pickerVisible = true
-            }
+        val formInput = findEditableField(root, field)
+        val pickerInput = findStationPickerInput(root)
+        val pickerVisible = isStationPickerVisible(root, field, stationName, formInput) ||
+            pickerInput?.let { stationPickerInputBelongsToPicker(root, it, formInput) } == true
+        // Once the station picker is visible, the normal form EditText is no
+        // longer an eligible target. A picker without a strictly identified
+        // top search field is evidence-incomplete and must not be clicked.
+        var input = if (pickerVisible) pickerInput else formInput
+        if (pickerVisible && input == null) {
+            record("已检测到车站选择页，但未确认顶部搜索框")
+            return InteractionResult.WAITING
         }
+        if (!pickerVisible && stationPhase != StationSelectionPhase.IDLE && input == null) {
+            record("车站选择流程已开始，但当前页面没有可确认的输入框")
+            return InteractionResult.WAITING
+        }
+        if (pickerVisible && input != null && !rememberStationPickerInput(input)) {
+            record("车站选择页顶部搜索框已变化，等待重新确认")
+            return InteractionResult.WAITING
+        }
+        val inputKey = input?.let(::stationPickerInputKey)
+        if (stationQueryWriteInputKey != null && stationQueryWriteInputKey != inputKey) {
+            // The home form and the picker commonly expose different node
+            // instances. A write sent to the old node cannot confirm the new
+            // picker query; require a fresh write and fresh readback.
+            stationQueryWriteSent = false
+            stationQueryConfirmed = false
+            stationQueryWriteInputKey = null
+        }
+        var currentValue = input?.text?.toString().orEmpty()
         val visibleCandidates = findFieldScopedCandidates(root, input, field, stationName, pickerVisible)
         val currentFingerprint = stationSnapshotFingerprint(root)
         val displayedStation = hasConfirmedStationDisplay(root, input, field, stationName)
         if (pickerVisible) stationPickerSeen = true
         if (visibleCandidates.isNotEmpty()) stationCandidateSeen = true
         val candidates = visibleCandidates
+
+        // ACTION_SET_TEXT is only a request. The same accessibility field must
+        // echo the requested station before any suggestion can be clicked.
+        if (input != null && !stationQueryConfirmed &&
+            stationCandidateMatches(currentValue, stationName)
+        ) {
+            stationQueryConfirmed = true
+            record("${field.actionName()}顶部搜索框已回读确认")
+        }
+        if (stationQueryWriteSent && !stationQueryConfirmed) {
+            record("等待${field.actionName()}输入框回读目标站名")
+            return InteractionResult.WAITING
+        }
 
         // ACTION_SET_TEXT only changes the query. It is not proof that the
         // picker row was selected, so wait for a post-click page refresh.
@@ -95,7 +134,7 @@ class OfficialSearchInteractor(
 
         if (stationPhase == StationSelectionPhase.WAITING_CANDIDATE) {
             val snapshotChanged = stationBeforeClickFingerprint?.let { it != currentFingerprint } == true
-            if (!pickerVisible && snapshotChanged && stationActionSent && displayedStation) {
+            if (!pickerVisible && snapshotChanged && stationActionSent && stationQueryConfirmed && displayedStation) {
                 completeStationFlow()
                 record("${field.actionName()}已在官方表单显示并确认")
                 return InteractionResult.DONE
@@ -120,6 +159,10 @@ class OfficialSearchInteractor(
             return InteractionResult.FAILED
         }
         if (candidates.size == 1) {
+            if (pickerVisible && !stationQueryConfirmed) {
+                record("候选站已出现，但顶部搜索框尚未回读确认")
+                return InteractionResult.WAITING
+            }
             if (!clickNodeOrParent(candidates.single())) {
                 record("${field.actionName()}候选站点击未派发")
                 return InteractionResult.FAILED
@@ -155,7 +198,15 @@ class OfficialSearchInteractor(
             stationPhase = StationSelectionPhase.WAITING_CANDIDATE
             stationBeforeClickFingerprint = currentFingerprint
             stationActionSent = true
+            stationQueryWriteSent = true
+            stationQueryConfirmed = false
+            stationQueryWriteInputKey = inputKey
             record("已填写${field.actionName()}，等待候选站")
+            return InteractionResult.WAITING
+        }
+
+        if (stationPhase != StationSelectionPhase.IDLE) {
+            record("等待${field.actionName()}车站选择页的严格输入证据")
             return InteractionResult.WAITING
         }
 
@@ -184,6 +235,10 @@ class OfficialSearchInteractor(
         stationCandidateSeen = false
         stationBeforeClickFingerprint = null
         stationActionSent = false
+        stationQueryWriteSent = false
+        stationQueryConfirmed = false
+        stationQueryInputKey = null
+        stationQueryWriteInputKey = null
     }
 
     private fun completeStationFlow() {
@@ -194,6 +249,10 @@ class OfficialSearchInteractor(
         stationCandidateSeen = false
         stationBeforeClickFingerprint = null
         stationActionSent = false
+        stationQueryWriteSent = false
+        stationQueryConfirmed = false
+        stationQueryInputKey = null
+        stationQueryWriteInputKey = null
     }
 
     private fun isStationPickerVisible(
@@ -242,21 +301,74 @@ class OfficialSearchInteractor(
 
     private fun findStationPickerInput(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         val candidates = findNodes(root) { node ->
-            if (!node.isEditable) return@findNodes false
-            val values = nodeValues(node).joinToString(" ").lowercase()
-            val context = fieldContextKind(values, SearchField.DEPARTURE)
-            val arrivalContext = fieldContextKind(values, SearchField.ARRIVAL)
-            val looksLikeSearch = listOf("搜索", "输入", "城市", "车站", "站点", "拼音")
-                .any(values::contains)
-            context == FieldContext.NONE && arrivalContext == FieldContext.NONE && looksLikeSearch
-        }
-        if (candidates.size == 1) return candidates.single()
-        if (candidates.isNotEmpty()) return null
-        val unlabelled = findNodes(root) { node ->
-            node.isEditable && fieldContextKind(nodeValues(node).joinToString(" "), SearchField.DEPARTURE) == FieldContext.NONE &&
-                fieldContextKind(nodeValues(node).joinToString(" "), SearchField.ARRIVAL) == FieldContext.NONE
-        }
-        return unlabelled.singleOrNull()
+            val descriptor = stationPickerInputDescriptor(root, node) ?: return@findNodes false
+            stationPickerInputConfirmed(descriptor) ||
+                (stationQueryInputKey != null &&
+                    stationPickerInputKey(node) == stationQueryInputKey &&
+                    stationPickerInputLayoutConfirmed(descriptor))
+        }.distinctBy(::nodeIdentity)
+        return candidates.singleOrNull()
+    }
+
+    private fun stationPickerInputBelongsToPicker(
+        root: AccessibilityNodeInfo,
+        input: AccessibilityNodeInfo,
+        formInput: AccessibilityNodeInfo?
+    ): Boolean {
+        if (hasPickerAncestor(input)) return true
+        val pickerMarkers = listOf("选择出发站", "选择到达站", "站点列表", "热门站点", "车站选择")
+        if (findNodes(root) { node ->
+                node.isVisibleToUser && nodeValues(node).any { value ->
+                    val normalized = normalizeText(value)
+                    pickerMarkers.any { marker -> normalized.contains(marker) }
+                }
+            }.isNotEmpty()
+        ) return true
+        // When the picker omits all labels, the strict top input is accepted
+        // only after the normal form control has disappeared.
+        return formInput == null && stationPhase != StationSelectionPhase.IDLE
+    }
+
+    private fun stationPickerInputDescriptor(
+        root: AccessibilityNodeInfo,
+        node: AccessibilityNodeInfo
+    ): StationPickerInputDescriptor? {
+        val rootBounds = Rect()
+        val nodeBounds = Rect()
+        root.getBoundsInScreen(rootBounds)
+        node.getBoundsInScreen(nodeBounds)
+        if (rootBounds.width() <= 0 || rootBounds.height() <= 0 ||
+            nodeBounds.width() <= 0 || nodeBounds.height() <= 0
+        ) return null
+        return StationPickerInputDescriptor(
+            editable = node.isEditable,
+            visible = node.isVisibleToUser,
+            topFraction = (nodeBounds.top - rootBounds.top).toFloat() / rootBounds.height(),
+            widthFraction = nodeBounds.width().toFloat() / rootBounds.width(),
+            semanticText = nodeValues(node).joinToString(" "),
+            value = node.text?.toString().orEmpty()
+        )
+    }
+
+    private fun rememberStationPickerInput(input: AccessibilityNodeInfo): Boolean {
+        val key = stationPickerInputKey(input)
+        val previous = stationQueryInputKey
+        if (previous != null && previous != key) return false
+        stationQueryInputKey = key
+        return true
+    }
+
+    private fun stationPickerInputKey(node: AccessibilityNodeInfo): String {
+        val bounds = Rect()
+        node.getBoundsInScreen(bounds)
+        return listOf(
+            node.viewIdResourceName.orEmpty(),
+            node.className?.toString().orEmpty(),
+            bounds.left,
+            bounds.top,
+            bounds.right,
+            bounds.bottom
+        ).joinToString("|")
     }
 
     private fun hasConfirmedStationDisplay(

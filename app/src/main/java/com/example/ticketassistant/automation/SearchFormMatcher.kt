@@ -108,6 +108,52 @@ data class NodeDescriptor(
     val contextText: String? = null
 )
 
+/**
+ * A structural projection of the station-picker search field. The Android
+ * accessibility node itself is deliberately not part of this contract so the
+ * strict confirmation rules remain unit-testable without a device tree.
+ */
+internal data class StationPickerInputDescriptor(
+    val editable: Boolean,
+    val visible: Boolean,
+    val topFraction: Float,
+    val widthFraction: Float,
+    val semanticText: String,
+    val value: String = ""
+)
+
+/**
+ * Returns true only for a visible, editable, wide input in the top portion of
+ * the picker whose accessibility metadata identifies it as a search field.
+ * When a target is supplied, the same field must also echo that target.
+ */
+internal fun stationPickerInputConfirmed(
+    descriptor: StationPickerInputDescriptor,
+    target: String? = null
+): Boolean {
+    val semantic = descriptor.semanticText.trim().replace(Regex("\\s+"), "").lowercase()
+    val hasSearchMarker = listOf(
+        "请输入",
+        "输入",
+        "搜索",
+        "search",
+        "拼音",
+        "pinyin",
+        "beijing",
+        "城市",
+        "车站",
+        "站点"
+    ).any(semantic::contains)
+    if (!stationPickerInputLayoutConfirmed(descriptor) || !hasSearchMarker) return false
+    return target == null || stationCandidateMatches(descriptor.value, target)
+}
+
+/** Layout evidence remains valid after a search field hides its hint text. */
+internal fun stationPickerInputLayoutConfirmed(
+    descriptor: StationPickerInputDescriptor
+): Boolean = descriptor.editable && descriptor.visible &&
+    descriptor.topFraction in -0.05f..0.35f && descriptor.widthFraction >= 0.40f
+
 fun dateVariants(date: String): Set<String> {
     val parsed = runCatching { LocalDate.parse(date, DateTimeFormatter.ISO_LOCAL_DATE) }.getOrNull()
         ?: return setOf(date)

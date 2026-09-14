@@ -134,6 +134,38 @@ class SearchFormMatcherTest {
     }
 
     @Test
+    fun `station picker input requires visible top wide searchable field`() {
+        val valid = StationPickerInputDescriptor(
+            editable = true,
+            visible = true,
+            topFraction = 0.12f,
+            widthFraction = 0.76f,
+            semanticText = "请输入中文/拼音搜索车站"
+        )
+        assertTrue(stationPickerInputConfirmed(valid))
+        assertFalse(stationPickerInputConfirmed(valid.copy(visible = false)))
+        assertFalse(stationPickerInputConfirmed(valid.copy(topFraction = 0.55f)))
+        assertFalse(stationPickerInputConfirmed(valid.copy(widthFraction = 0.30f)))
+        assertFalse(stationPickerInputConfirmed(valid.copy(semanticText = "姓名")))
+        assertTrue(stationPickerInputLayoutConfirmed(valid.copy(semanticText = "")))
+    }
+
+    @Test
+    fun `station picker query must echo the requested station`() {
+        val input = StationPickerInputDescriptor(
+            editable = true,
+            visible = true,
+            topFraction = 0.10f,
+            widthFraction = 0.80f,
+            semanticText = "搜索车站",
+            value = "汉阳"
+        )
+        assertFalse(stationPickerInputConfirmed(input, "汉口"))
+        assertTrue(stationPickerInputConfirmed(input.copy(value = "汉口"), "汉口"))
+        assertTrue(stationPickerInputConfirmed(input.copy(value = "汉口站"), "汉口"))
+    }
+
+    @Test
     fun `typed station text cannot confirm before candidate click`() {
         assertFalse(
             stationSelectionConfirmed(
