@@ -51,6 +51,7 @@ class TicketAccessibilityService : AccessibilityService() {
     private var fastPathWaitEvents = 0
     private var expectedPageWaitEvents = 0
     private var coldStartWaitEvents = 0
+    private var routeRepairAttempts = 0
     private var lastObservedRootPackage: String? = null
     private var trainActionSent = false
     private var trainActionBeforeClickFingerprint: String? = null
@@ -136,6 +137,7 @@ class TicketAccessibilityService : AccessibilityService() {
             fastPathWaitEvents = 0
             expectedPageWaitEvents = 0
             coldStartWaitEvents = 0
+            routeRepairAttempts = 0
             lastObservedRootPackage = null
             trainActionSent = persistedTrainAction
             trainActionBeforeClickFingerprint = null
@@ -697,6 +699,7 @@ class TicketAccessibilityService : AccessibilityService() {
     }
 
     private fun handleDateField(root: AccessibilityNodeInfo, task: TicketTask) {
+        if (!ensureSearchFormRoute(root, task)) return
         when (searchInteractor.fillDate(root, task.date)) {
             InteractionResult.DONE -> {
                 formEvidence += SearchField.DATE
@@ -723,6 +726,7 @@ class TicketAccessibilityService : AccessibilityService() {
             waitForFormProgress("查询已发送，等待官方结果页")
             return
         }
+        if (!ensureSearchFormRoute(root, task)) return
         if (searchActionSent) {
             waitForFormProgress("查询已发送，等待官方结果页")
             return
@@ -738,6 +742,43 @@ class TicketAccessibilityService : AccessibilityService() {
             InteractionResult.WAITING -> waitForFormProgress("正在定位查询按钮")
             InteractionResult.FAILED -> takeover("官方 12306 查询按钮动作未派发")
         }
+    }
+
+    /**
+     * A query is allowed only after both labelled station controls have been
+     * proven to contain the task route. If the official form has a stale or
+     * reversed route, restart the shared station flow once; never click the
+     * query button with an unverified direction.
+     */
+    private fun ensureSearchFormRoute(root: AccessibilityNodeInfo, task: TicketTask): Boolean {
+        val check = searchInteractor.checkSearchFormRoute(root, task.from.name, task.to.name)
+        if (check.status == SearchContextStatus.MATCH) return true
+
+        val detail = buildList {
+            addAll(check.conflicts)
+            addAll(check.missing)
+            if (isEmpty()) add("对应站点控件未确认")
+        }.joinToString("、")
+        recordDiagnostic(
+            pageState,
+            "查询前路线校验未通过：$detail",
+            evidenceSource = "SEARCH_FORM_ROUTE_CONFLICT",
+            contextStatus = check.status.name,
+            missingEvidence = detail
+        )
+        if (routeRepairAttempts >= MAX_ROUTE_REPAIR_ATTEMPTS) {
+            takeover("官方查询表单路线无法确认（$detail），未点击查询车票")
+            return false
+        }
+        routeRepairAttempts++
+        searchActionSent = false
+        formEvidence.clear()
+        formWaitEvents = 0
+        searchInteractor.reset()
+        stage = Stage.DEPARTURE
+        TaskStore(this).updateStatus(TaskStatus.FILLING_DEPARTURE, "查询前发现路线不一致，正在重新确认出发站和到达站")
+        TaskStore(this).recordEvent("查询前路线未确认，已重新开始出发站/到达站流程：$detail")
+        return false
     }
 
     private fun hasSearchForm(text: String): Boolean {
@@ -1770,6 +1811,7 @@ class TicketAccessibilityService : AccessibilityService() {
         private const val MAX_EMPTY_TREE_EVENTS = 3
         private const val MAX_FORM_WAIT_EVENTS = 120
         private const val FORM_TIMEOUT_MS = 60_000L
+        private const val MAX_ROUTE_REPAIR_ATTEMPTS = 1
         private const val MAX_UNKNOWN_RESULT_EVENTS = 3
         private const val MAX_FAST_PATH_WAIT_EVENTS = 3
         private const val MAX_COLD_START_WAIT_EVENTS = 120

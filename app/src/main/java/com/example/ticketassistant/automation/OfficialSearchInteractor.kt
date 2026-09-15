@@ -65,6 +65,35 @@ class OfficialSearchInteractor(
         return click(action, "打开车票查询入口")
     }
 
+    /**
+     * Validates the two station displays on the current search form. The
+     * evidence is tied to each labelled control; arbitrary occurrences in
+     * history cards, advertisements, or the opposite field are ignored.
+     */
+    fun checkSearchFormRoute(
+        root: AccessibilityNodeInfo,
+        from: String,
+        to: String
+    ): SearchContextCheck {
+        val departureMatches = hasConfirmedStationDisplay(root, null, SearchField.DEPARTURE, from)
+        val arrivalMatches = hasConfirmedStationDisplay(root, null, SearchField.ARRIVAL, to)
+        val departureIsOpposite = hasConfirmedStationDisplay(root, null, SearchField.DEPARTURE, to)
+        val arrivalIsOpposite = hasConfirmedStationDisplay(root, null, SearchField.ARRIVAL, from)
+        val missing = buildList {
+            if (!departureMatches && !departureIsOpposite) add("出发站:$from")
+            if (!arrivalMatches && !arrivalIsOpposite) add("到达站:$to")
+        }
+        val conflicts = buildList {
+            if (departureIsOpposite) add("出发站当前为到达站:$to")
+            if (arrivalIsOpposite) add("到达站当前为出发站:$from")
+        }
+        return when {
+            conflicts.isNotEmpty() -> SearchContextCheck(SearchContextStatus.CONFLICT, missing, conflicts)
+            missing.isNotEmpty() -> SearchContextCheck(SearchContextStatus.MISSING, missing, conflicts)
+            else -> SearchContextCheck(SearchContextStatus.MATCH)
+        }
+    }
+
     fun fillStation(
         root: AccessibilityNodeInfo,
         field: SearchField,
@@ -518,7 +547,12 @@ class OfficialSearchInteractor(
         val scoped = findNodes(root) { node ->
             if (!node.isVisibleToUser || node.isEditable) return@findNodes false
             if (!nodeValues(node).any { stationCandidateMatches(it, target) }) return@findNodes false
-            val association = nearestFieldContext(node, field)
+            val directAssociation = fieldContextKind(nodeValues(node).joinToString(" "), field)
+            val association = if (directAssociation == FieldContext.NONE) {
+                nearestFieldContext(node, field)
+            } else {
+                directAssociation
+            }
             if (association == FieldContext.OPPOSITE || association == FieldContext.AMBIGUOUS) return@findNodes false
             val inContainer = container?.let { isDescendantOrSelf(node, it) } == true
             val clickable = clickableNode(node)
@@ -529,14 +563,10 @@ class OfficialSearchInteractor(
         }
         if (scoped.isNotEmpty()) return true
 
-        // A few releases expose only the two route values without any labels.
-        // Accept that fallback only when the target occurs exactly once.
-        val unscoped = findNodes(root) { node ->
-            node.isVisibleToUser && !node.isEditable && (node.childCount == 0 || node.isClickable) &&
-                nodeValues(node).any { stationCandidateMatches(it, target) }
-        }
-        val displayControls = unscoped.mapNotNull(::clickableNode).distinctBy(::nodeIdentity)
-        return displayControls.size == 1 || (displayControls.isEmpty() && unscoped.size == 1)
+        // Do not fall back to an arbitrary occurrence elsewhere on the page.
+        // The form may contain query history, ads, or the opposite station;
+        // none of those proves that this field has been filled.
+        return false
     }
 
     private fun confirmedStationDisplay(
@@ -549,8 +579,10 @@ class OfficialSearchInteractor(
         return findNodes(root) { node ->
             if (!node.isVisibleToUser || node.isEditable) return@findNodes false
             if (!nodeValues(node).any { stationCandidateMatches(it, target) }) return@findNodes false
+            val directAssociation = fieldContextKind(nodeValues(node).joinToString(" "), field)
+            if (directAssociation == FieldContext.OPPOSITE || directAssociation == FieldContext.AMBIGUOUS) return@findNodes false
             val inContainer = container?.let { isDescendantOrSelf(node, it) } == true
-            inContainer || nearestFieldContext(node, field) == FieldContext.TARGET
+            inContainer || directAssociation == FieldContext.TARGET || nearestFieldContext(node, field) == FieldContext.TARGET
         }.isNotEmpty()
     }
 

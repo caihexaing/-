@@ -94,6 +94,26 @@ class SearchFormMatcherTest {
     }
 
     @Test
+    fun `reversed labelled route is treated as a conflict before search`() {
+        val task = TicketTask(
+            date = "2026-09-19",
+            from = Station("潜江", "QJN"),
+            to = Station("汉口", "HKN"),
+            train = Train("G2386", "潜江", "汉口", "07:00", "08:00", "01:00", emptyMap()),
+            seat = "二等座",
+            passengerName = "乘客",
+            saleDateTime = null
+        )
+        val result = classifyLabeledSearchFormRoute(
+            "出发站: 汉口 到达站: 潜江 查询车票",
+            task.from.name,
+            task.to.name
+        )
+        assertEquals(SearchContextStatus.CONFLICT, result.status)
+        assertTrue(result.conflicts.isNotEmpty())
+    }
+
+    @Test
     fun `ticket search labels are ranked above generic search labels`() {
         assertEquals(4, searchSubmitLabelPriority("查询车票"))
         assertEquals(3, searchSubmitLabelPriority("搜索车票"))

@@ -41,6 +41,47 @@ data class SearchContextCheck(
     val conflicts: List<String> = emptyList()
 )
 
+/**
+ * Classifies labelled form values without considering arbitrary page text.
+ * This mirrors the evidence rule used by the accessibility interactor and
+ * keeps the reversed-route regression test independent of Android nodes.
+ */
+internal fun classifyLabeledSearchFormRoute(
+    text: String,
+    from: String,
+    to: String
+): SearchContextCheck {
+    val normalized = normalizeText(text)
+    fun matches(field: SearchField, station: String): Boolean {
+        val labels = when (field) {
+            SearchField.DEPARTURE -> listOf("出发地", "出发站", "出发城市", "出发点")
+            SearchField.ARRIVAL -> listOf("到达地", "到达站", "到达城市", "到达点")
+            SearchField.DATE -> emptyList()
+        }
+        val target = Regex.escape(normalizeStation(station))
+        return labels.any { label ->
+            Regex("${Regex.escape(label)}(?:[:：是])?$target(?:站)?").containsMatchIn(normalized)
+        }
+    }
+    val departureMatches = matches(SearchField.DEPARTURE, from)
+    val arrivalMatches = matches(SearchField.ARRIVAL, to)
+    val departureOpposite = matches(SearchField.DEPARTURE, to)
+    val arrivalOpposite = matches(SearchField.ARRIVAL, from)
+    val missing = buildList {
+        if (!departureMatches && !departureOpposite) add("出发站:$from")
+        if (!arrivalMatches && !arrivalOpposite) add("到达站:$to")
+    }
+    val conflicts = buildList {
+        if (departureOpposite) add("出发站当前为到达站:$to")
+        if (arrivalOpposite) add("到达站当前为出发站:$from")
+    }
+    return when {
+        conflicts.isNotEmpty() -> SearchContextCheck(SearchContextStatus.CONFLICT, missing, conflicts)
+        missing.isNotEmpty() -> SearchContextCheck(SearchContextStatus.MISSING, missing, conflicts)
+        else -> SearchContextCheck(SearchContextStatus.MATCH)
+    }
+}
+
 /** Classifies the current result-page evidence without allowing a missing field to become a mismatch. */
 fun classifySearchContext(text: String, task: com.example.ticketassistant.data.TicketTask): SearchContextCheck {
     if (detectOfficialPageState(text) != OfficialPageState.SEARCH_RESULT) {
