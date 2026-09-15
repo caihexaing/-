@@ -17,5 +17,19 @@ class SearchStageTest {
     fun `waiting or failed actions never advance`() {
         assertEquals(SearchStage.DATE, nextSearchStage(SearchStage.DATE, OfficialPageState.HOME_PAGE, InteractionResult.WAITING))
         assertEquals(SearchStage.DATE, nextSearchStage(SearchStage.DATE, OfficialPageState.HOME_PAGE, InteractionResult.FAILED))
+        assertEquals(SearchStage.DEPARTURE, nextSearchStage(SearchStage.DEPARTURE, OfficialPageState.HOME_PAGE, InteractionResult.WAITING))
+        assertEquals(SearchStage.ARRIVAL, nextSearchStage(SearchStage.ARRIVAL, OfficialPageState.HOME_PAGE, InteractionResult.WAITING))
+    }
+
+    @Test
+    fun `arrival uses the same successful station transition as departure`() {
+        assertEquals(
+            nextSearchStage(SearchStage.DEPARTURE, OfficialPageState.HOME_PAGE, InteractionResult.DONE),
+            SearchStage.ARRIVAL
+        )
+        assertEquals(
+            nextSearchStage(SearchStage.ARRIVAL, OfficialPageState.HOME_PAGE, InteractionResult.DONE),
+            SearchStage.DATE
+        )
     }
 }

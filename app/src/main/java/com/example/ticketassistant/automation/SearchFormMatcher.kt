@@ -284,13 +284,13 @@ internal fun stationSelectionConfirmed(
     pickerVisible: Boolean,
     candidateCount: Int,
     pickerEvidenceSeen: Boolean,
-    snapshotChanged: Boolean
+    snapshotChanged: Boolean,
+    fieldDisplayConfirmed: Boolean = false
 ): Boolean = phase == StationSelectionPhase.WAITING_CONFIRMATION &&
     pickerEvidenceSeen &&
     snapshotChanged &&
     !pickerVisible &&
-    candidateCount == 0 &&
-    stationCandidateMatches(fieldValue, stationName)
+    (fieldDisplayConfirmed || (candidateCount == 0 && stationCandidateMatches(fieldValue, stationName)))
 
 /** A typed date is not confirmation until the official page reflects the action. */
 internal fun dateSelectionConfirmed(

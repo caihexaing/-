@@ -177,7 +177,18 @@ class OfficialSearchInteractor(
         // picker row was selected, so wait for a post-click page refresh.
         if (stationPhase == StationSelectionPhase.WAITING_CONFIRMATION) {
             val snapshotChanged = stationBeforeClickFingerprint?.let { it != currentFingerprint } == true
-            if (pickerVisible || candidates.isNotEmpty()) {
+            // A few WebView builds keep the selected row in the first form
+            // tree after the picker closes. Confirm the field display before
+            // treating that stale candidate as evidence that the picker is
+            // still open.
+            val formSelectionConfirmed = !pickerVisible &&
+                (confirmedStationDisplay(root, input, field, stationName) || displayedStation)
+            if (snapshotChanged && formSelectionConfirmed) {
+                completeStationFlow()
+                record("${field.actionName()}候选站已确认（表单字段已回填）")
+                return InteractionResult.DONE
+            }
+            if (pickerVisible || (candidates.isNotEmpty() && !formSelectionConfirmed)) {
                 record("等待${field.actionName()}候选站点击后的页面刷新（候选数=${candidates.size}，快照变化=${snapshotChanged}）")
                 return InteractionResult.WAITING
             }
@@ -188,7 +199,8 @@ class OfficialSearchInteractor(
                     pickerVisible,
                     candidates.size,
                     stationPickerSeen || stationCandidateSeen,
-                    snapshotChanged
+                    snapshotChanged,
+                    fieldDisplayConfirmed = formSelectionConfirmed
                 ) ||
                 (snapshotChanged && (stationPickerSeen || stationCandidateSeen) &&
                     confirmedStationDisplay(root, input, field, stationName)) ||

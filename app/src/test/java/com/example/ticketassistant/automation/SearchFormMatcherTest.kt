@@ -225,6 +225,22 @@ class SearchFormMatcherTest {
     }
 
     @Test
+    fun `stale candidate row does not block refreshed form confirmation`() {
+        assertTrue(
+            stationSelectionConfirmed(
+                phase = StationSelectionPhase.WAITING_CONFIRMATION,
+                fieldValue = "汉口",
+                stationName = "汉口",
+                pickerVisible = false,
+                candidateCount = 1,
+                pickerEvidenceSeen = true,
+                snapshotChanged = true,
+                fieldDisplayConfirmed = true
+            )
+        )
+    }
+
+    @Test
     fun `matching text without picker evidence cannot confirm`() {
         assertFalse(
             stationSelectionConfirmed(

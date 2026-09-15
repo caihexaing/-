@@ -29,8 +29,8 @@ android {
         applicationId = "com.example.ticketassistant"
         minSdk = 26
         targetSdk = 36
-        versionCode = 51
-        versionName = "0.4.29-station-label-rebind-fix"
+        versionCode = 52
+        versionName = "0.4.30-station-confirmation-fix"
     }
 
     signingConfigs {
