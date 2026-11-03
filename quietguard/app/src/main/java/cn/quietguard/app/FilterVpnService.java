@@ -58,6 +58,10 @@ public final class FilterVpnService extends VpnService {
         }
     }
     private void startFilter() {
+        Set<String> selected = Prefs.networkSelected(this);
+        if (selected.isEmpty()) {
+            pausedForUpdate = false; stopFilter("仅开屏跳过，未启用网络过滤"); stopSelf(); return;
+        }
         if (UpdateVpnPause.isPaused(this)) { enterUpdatePause(); return; }
         pausedForUpdate = false;
         try {
@@ -65,8 +69,6 @@ public final class FilterVpnService extends VpnService {
             if (Build.VERSION.SDK_INT >= 34) startForeground(7, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED);
             else startForeground(7, n);
             closeSession();
-            Set<String> selected = Prefs.selected(this);
-            if (selected.isEmpty()) { stopFilter("请先选择需要过滤的应用"); stopSelf(); return; }
             if (VpnService.prepare(this) != null) throw new IllegalStateException("VPN 授权已失效，请重新启动");
             RuleSet rules = new RuleSet(getAssets().open("ad-domains.txt"), Prefs.get(this).getString("exceptions", ""));
             Builder builder = new Builder().setSession("净屏 · 按应用广告过滤").setMtu(32767)

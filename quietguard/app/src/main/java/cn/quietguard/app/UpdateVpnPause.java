@@ -33,7 +33,7 @@ final class UpdateVpnPause {
                 .putLong("installCode", s.installCode).commit()) throw new IllegalStateException("无法保存更新前的 VPN 状态，已停止更新");
     }
     static boolean isPaused(Context c) { return read(c).paused; }
-    static boolean needsRestore(Context c) { UpdateVpnState s = read(c); return s.restore && !s.paused; }
+    static boolean needsRestore(Context c) { UpdateVpnState s = read(c); return s.restore && !s.paused && !Prefs.networkSelected(c).isEmpty(); }
     static long beginCheck(Context c) {
         if (activeCheck != 0 || read(c).downloadId != -1) throw new IllegalStateException("已有更新任务，请稍后再试");
         UpdateVpnState s = read(c); if (!Prefs.enabled(c)) s.userDisabled();
@@ -121,16 +121,20 @@ final class UpdateVpnPause {
     static void userDisabled(Context c) {
         UpdateVpnState s = read(c); s.userDisabled(); save(c, s);
     }
+    static void networkRequested(Context c) {
+        if (!Prefs.enabled(c) || Prefs.networkSelected(c).isEmpty()) return;
+        UpdateVpnState s = read(c); s.networkRequested(); save(c, s);
+    }
     static void vpnStarted(Context c) {
         UpdateVpnState s = read(c); if (!s.paused) { s.restored(); save(c, s); }
     }
     private static void restore(Context c) {
         UpdateVpnState s = read(c);
         if (s.paused) return;
-        if (!Prefs.enabled(c) || Prefs.selected(c).isEmpty()) { s.userDisabled(); save(c, s); }
+        if (!Prefs.enabled(c) || Prefs.networkSelected(c).isEmpty()) { s.userDisabled(); save(c, s); }
         if (!s.restore) { FilterVpnService.stopUpdatePause(); return; }
         if (FilterVpnService.running) { vpnStarted(c); return; }
-        if (!s.canRestore(Prefs.enabled(c), !Prefs.selected(c).isEmpty(), VpnService.prepare(c) == null)) {
+        if (!s.canRestore(Prefs.enabled(c), !Prefs.networkSelected(c).isEmpty(), VpnService.prepare(c) == null)) {
             FilterVpnService.stopUpdatePause();
             FilterVpnService.status = "更新已结束，VPN 需要重新授权，请点击恢复 VPN"; return;
         }

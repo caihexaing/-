@@ -1,4 +1,5 @@
 <resources>
+    <string name="app_mode_skip_only">%1$s · 仅跳过</string>
     <string name="restore_vpn">恢复 VPN</string>
     <string name="application_count">显示 %1$d 个应用   ·   已选择 %2$d 个</string>
     <string name="dns_stats">DNS 请求 %1$d · 规则命中 %2$d · 转发失败 %3$d</string>

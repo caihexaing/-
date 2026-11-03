@@ -20,6 +20,7 @@ public final class SplashWindow {
             && attempts < 2 && (attempts == 0 || now - lastAttempt >= 1000);
     }
     public void attempted(long now) { attempts++; lastAttempt = now; }
+    public boolean exhausted(long now) { return attempts >= 2 && now - lastAttempt >= 1000; }
     public void accepted(int left, int top, int right, int bottom) {
         accepted = true;
         acceptedLeft = left; acceptedTop = top; acceptedRight = right; acceptedBottom = bottom;

@@ -17,6 +17,7 @@ final class UpdateVpnState {
     void installFinished() { installing = false; installCode = 0; releaseIfIdle(); }
     void userDisabled() { restore = false; installing = false; installCode = 0; releaseIfIdle(); }
     void restored() { restore = false; }
+    void networkRequested() { if (paused) restore = true; }
     boolean canRestore(boolean enabled, boolean selected, boolean authorized) {
         return !paused && restore && enabled && selected && authorized;
     }

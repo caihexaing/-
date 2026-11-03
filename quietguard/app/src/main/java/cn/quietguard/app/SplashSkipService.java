@@ -7,7 +7,7 @@ import android.content.Intent;
 import android.graphics.Path;
 import android.graphics.Rect;
 import android.os.Handler;
-import android.os.Looper;
+import android.os.HandlerThread;
 import android.os.SystemClock;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
@@ -19,28 +19,41 @@ import java.util.List;
 public final class SplashSkipService extends AccessibilityService {
     public static volatile boolean connected;
     private static final int MAX_NODES = 1200, MAX_DEPTH = 32, MAX_CANDIDATES = 24;
-    private final Handler handler = new Handler(Looper.getMainLooper());
+    private final HandlerThread scanThread = new HandlerThread("quietguard-skip");
+    private Handler handler;
+    private final SplashScanBudget budget = new SplashScanBudget();
     private final SplashWindow window = new SplashWindow();
-    private boolean scanning;
+    private boolean scanning, pollScheduled;
+    private volatile boolean destroyed;
+    private volatile String latestEventPkg = "";
     private String eventPkg = "", sessionPkg = "", lastReason = "";
-    private long waitingUntil, lastReport, acceptedAt;
+    private long waitingUntil, lastReport, acceptedAt, maxScanMs;
     private int maxNodes;
     private boolean limited, sawSkip, sawAd;
-    private final Runnable poll = this::inspect;
-
-    @Override protected void onServiceConnected() { connected = true; window.reset(); }
-    @Override public void onAccessibilityEvent(AccessibilityEvent event) {
+    private final Runnable poll = () -> { pollScheduled = false; inspect(); };
+    private final Runnable eventTask = () -> {
         if (!enabled()) { cancel(); return; }
-        // Package metadata can schedule retries; event text is never read.
-        String pkg = event.getPackageName() == null ? "" : event.getPackageName().toString();
+        String pkg = latestEventPkg;
         if (!pkg.equals(eventPkg)) {
             eventPkg = pkg;
             waitingUntil = permitted(pkg) ? SystemClock.elapsedRealtime() + SplashWindow.DURATION_MS : 0;
         }
-        handler.removeCallbacks(poll); handler.post(poll);
+        if (pkg.equals(sessionPkg) && !window.observe(pkg, true, true, SystemClock.elapsedRealtime())) return;
+        schedule();
+    };
+
+    @Override public void onCreate() {
+        super.onCreate(); scanThread.start(); handler = new Handler(scanThread.getLooper());
+    }
+    @Override protected void onServiceConnected() { connected = true; handler.post(this::cancel); }
+    @Override public void onAccessibilityEvent(AccessibilityEvent event) {
+        // Package metadata can schedule retries; event text is never read.
+        if (destroyed) return;
+        latestEventPkg = event.getPackageName() == null ? "" : event.getPackageName().toString();
+        handler.removeCallbacks(eventTask); handler.post(eventTask);
     }
     private boolean enabled() {
-        return Prefs.enabled(this) && Prefs.get(this).getBoolean("skip_consent", false) && !Prefs.selected(this).isEmpty();
+        return connected && !destroyed && Prefs.enabled(this) && Prefs.get(this).getBoolean("skip_consent", false) && !Prefs.selected(this).isEmpty();
     }
     private boolean permitted(String pkg) {
         return enabled() && pkg != null && !pkg.equals(getPackageName()) && !pkg.equals("android")
@@ -53,7 +66,7 @@ public final class SplashSkipService extends AccessibilityService {
     private void beginReport(String pkg) {
         if (pkg.equals(sessionPkg)) return;
         sessionPkg = pkg; maxNodes = 0; limited = false; sawSkip = false; sawAd = false;
-        lastReason = ""; lastReport = 0; acceptedAt = 0;
+        lastReason = ""; lastReport = 0; acceptedAt = 0; maxScanMs = 0;
     }
     private void report(String reason) {
         if (sessionPkg.isEmpty()) return;
@@ -65,14 +78,23 @@ public final class SplashSkipService extends AccessibilityService {
             .putString("package", sessionPkg).putString("reason", reason)
             .putInt("nodes", maxNodes).putBoolean("limited", limited)
             .putBoolean("skip", sawSkip).putBoolean("ad", sawAd)
+            .putLong("max_scan_ms", maxScanMs)
             .putLong("time", System.currentTimeMillis()).apply();
     }
-    private void schedule() { handler.removeCallbacks(poll); handler.postDelayed(poll, 220); }
+    private void schedule() {
+        if (destroyed || pollScheduled) return;
+        pollScheduled = true; handler.postDelayed(poll, budget.delay(SystemClock.elapsedRealtime()));
+    }
     private void inspect() {
         if (scanning) return;
+        if (budget.delay(SystemClock.elapsedRealtime()) > 0) { schedule(); return; }
+        budget.completed(SystemClock.elapsedRealtime());
         if (!enabled() || !unlocked()) { cancel(); return; }
-        AccessibilityNodeInfo root = getRootInActiveWindow();
+        AccessibilityNodeInfo root;
+        try { root = getRootInActiveWindow(); }
+        catch (IllegalStateException | SecurityException e) { report("当前窗口读取被系统中断"); return; }
         if (root == null) {
+            budget.completed(SystemClock.elapsedRealtime());
             if (SystemClock.elapsedRealtime() < waitingUntil && permitted(eventPkg)) {
                 beginReport(eventPkg); report("暂时无法读取当前窗口，正在重试"); schedule();
             }
@@ -87,10 +109,17 @@ public final class SplashSkipService extends AccessibilityService {
             long now = SystemClock.elapsedRealtime();
             if (!window.observe(pkg, true, true, now)) return;
             Rect bounds = new Rect(); root.getBoundsInScreen(bounds);
-            Snapshot snapshot = new Snapshot(); collect(root, candidates, snapshot);
+            long started = SystemClock.elapsedRealtime();
+            boolean plain = Prefs.plainSkip(this, pkg);
+            Snapshot snapshot = new Snapshot(); search(root, candidates, snapshot);
+            boolean needsTree = candidates.isEmpty() || (!plain && !snapshot.ad
+                && candidates.stream().noneMatch(c -> SplashPolicy.countdownLabel(c.label) || SplashPolicy.explicitAdSkip(c.label)));
+            if (needsTree && !window.hasAccepted() && budget.allowTree(started)) collect(root, candidates, snapshot);
+            maxScanMs = Math.max(maxScanMs, SystemClock.elapsedRealtime() - started);
+            now = SystemClock.elapsedRealtime();
+            if (!window.observe(pkg, permitted(pkg), enabled(), now)) return;
             maxNodes = Math.max(maxNodes, snapshot.visited); limited |= snapshot.limited;
             sawSkip |= !candidates.isEmpty(); sawAd |= snapshot.ad;
-            boolean plain = Prefs.plainSkip(this, pkg);
             Candidate target = null;
             boolean lacksEvidence = false, wrongBounds = false, originalStillReadable = false;
             for (Candidate candidate : candidates) {
@@ -108,13 +137,13 @@ public final class SplashSkipService extends AccessibilityService {
             if (target == null) {
                 if (window.hasAccepted()) {
                     if (originalStillReadable) report("原跳过控件仍可读取，但缺少当前广告证据，未继续点击");
-                    else if (snapshot.limited || snapshot.labelled == 0) report("已发送点击请求，当前窗口不足以判断原按钮是否还在");
+                    else if (snapshot.limited) report("已发送点击请求，当前窗口不足以判断原按钮是否还在");
                     else if (now - acceptedAt >= 500) {
                         report("点击后原跳过控件未再读到；不等同于已清除广告"); window.finish();
                     }
                 } else if (lacksEvidence) report("读到跳过，但缺少可读取的倒计时或广告标识；可为此应用开启兼容识别");
                 else if (wrongBounds) report("读到跳过，但控件大小或边界不符合点击条件");
-                else if (snapshot.labelled == 0) report("窗口没有可读取的文字；图片或自绘按钮暂不支持");
+                else if (snapshot.full && !snapshot.limited && snapshot.labelled == 0) report("窗口没有可读取的文字；图片或自绘按钮暂不支持");
                 else report("本次扫描未读到跳过文字；可能为图片、自绘按钮或未出现");
             } else if (window.canAttempt(now)) {
                 if (!foregroundMatches(pkg)) return;
@@ -128,15 +157,15 @@ public final class SplashSkipService extends AccessibilityService {
                     report(retryGesture ? "同一跳过控件仍存在，已补发一次手势；等待界面变化"
                         : "系统接受了点击请求，正在检查原跳过控件是否还在");
                 } else report("找到符合条件的跳过，但控件失效或系统未接受点击");
-            } else if (window.hasAccepted() && now - acceptedAt >= 1000) {
-                report("两次尝试后原跳过控件仍可读取；尚未确认跳过成功");
+            } else if (window.exhausted(now)) {
+                report("两次尝试后原跳过控件仍可读取；尚未确认跳过成功"); window.finish();
             }
             if (window.observe(pkg, permitted(pkg), enabled(), SystemClock.elapsedRealtime())) schedule();
         } catch (IllegalStateException | SecurityException ignored) {
             report("读取或点击被窗口变化/系统限制中断");
         } finally {
             for (Candidate candidate : candidates) candidate.node.recycle();
-            root.recycle(); scanning = false;
+            root.recycle(); scanning = false; budget.completed(SystemClock.elapsedRealtime());
         }
     }
     private boolean foregroundMatches(String pkg) {
@@ -146,33 +175,56 @@ public final class SplashSkipService extends AccessibilityService {
         try { return current.getPackageName() != null && pkg.contentEquals(current.getPackageName()); }
         finally { current.recycle(); }
     }
+    private void search(AccessibilityNodeInfo root, List<Candidate> out, Snapshot state) {
+        // Ask for relevant text first instead of performing hundreds of child IPC calls on every event.
+        for (String term : new String[]{"跳过", "skip", "广告", "ad"}) {
+            if (destroyed) return;
+            List<AccessibilityNodeInfo> found = root.findAccessibilityNodeInfosByText(term);
+            if (found == null) continue;
+            try {
+                int count = Math.min(found.size(), 40);
+                for (int i = 0; i < count; i++) {
+                    AccessibilityNodeInfo node = found.get(i);
+                    if (node != null) { state.visited++; consume(node, out, state); }
+                }
+                state.limited |= found.size() > count;
+            } finally { for (AccessibilityNodeInfo node : found) if (node != null) node.recycle(); }
+        }
+    }
+    private void consume(AccessibilityNodeInfo node, List<Candidate> out, Snapshot state) {
+        if (!node.isVisibleToUser()) return;
+        String skip = null;
+        for (CharSequence value : new CharSequence[]{node.getText(), node.getContentDescription()}) {
+            if (value == null || value.length() == 0 || value.length() > 64) continue;
+            state.labelled++;
+            String label = value.toString(); state.ad |= SplashPolicy.adMarker(label);
+            if (node.isEnabled() && SplashPolicy.skipLabel(label)
+                    && (skip == null || SplashPolicy.countdownLabel(label) || SplashPolicy.explicitAdSkip(label))) skip = label;
+        }
+        if (skip == null) return;
+        for (Candidate existing : out) if (existing.node.equals(node)) return;
+        if (out.size() < MAX_CANDIDATES) out.add(new Candidate(AccessibilityNodeInfo.obtain(node), skip));
+        else state.limited = true;
+    }
     private void collect(AccessibilityNodeInfo root, List<Candidate> out, Snapshot state) {
+        state.full = true;
+        long deadline = SystemClock.elapsedRealtime() + SplashScanBudget.TREE_SLICE_MS;
         ArrayDeque<NodeDepth> queue = new ArrayDeque<>();
         queue.add(new NodeDepth(AccessibilityNodeInfo.obtain(root), 0));
-        int enqueued = 1;
+        int enqueued = state.visited + 1;
         try {
             while (!queue.isEmpty()) {
+                if (destroyed || SystemClock.elapsedRealtime() >= deadline) { state.limited = true; break; }
                 NodeDepth item = queue.removeFirst();
                 AccessibilityNodeInfo node = item.node;
                 try {
                     state.visited++;
-                    String skip = null;
-                    if (node.isVisibleToUser()) {
-                        for (CharSequence value : new CharSequence[]{node.getText(), node.getContentDescription()}) {
-                            if (value == null || value.length() == 0 || value.length() > 64) continue;
-                            state.labelled++;
-                            String label = value.toString(); state.ad |= SplashPolicy.adMarker(label);
-                            if (skip == null && node.isEnabled() && SplashPolicy.skipLabel(label)) skip = label;
-                        }
-                        if (skip != null) {
-                            if (out.size() < MAX_CANDIDATES) out.add(new Candidate(AccessibilityNodeInfo.obtain(node), skip));
-                            else state.limited = true;
-                        }
-                    }
+                    consume(node, out, state);
                     // An invisible container can have visible descendants; do not prune it wholesale.
                     int children = node.getChildCount();
                     for (int i = 0; i < children; i++) {
-                        if (item.depth >= MAX_DEPTH || enqueued >= MAX_NODES) { state.limited = true; break; }
+                        if (item.depth >= MAX_DEPTH || enqueued >= MAX_NODES || destroyed
+                                || SystemClock.elapsedRealtime() >= deadline) { state.limited = true; break; }
                         AccessibilityNodeInfo child = node.getChild(i);
                         if (child != null) { queue.addLast(new NodeDepth(child, item.depth + 1)); enqueued++; }
                     }
@@ -210,12 +262,15 @@ public final class SplashSkipService extends AccessibilityService {
             .addStroke(new GestureDescription.StrokeDescription(path, 0, 40)).build(), null, null);
     }
     private void cancel() {
-        handler.removeCallbacks(poll); window.reset(); sessionPkg = ""; eventPkg = ""; waitingUntil = 0;
+        handler.removeCallbacks(poll); pollScheduled = false; budget.reset(); window.reset();
+        sessionPkg = ""; eventPkg = ""; waitingUntil = 0;
     }
-    @Override public void onInterrupt() { cancel(); }
-    @Override public boolean onUnbind(Intent intent) { connected = false; cancel(); return super.onUnbind(intent); }
-    @Override public void onDestroy() { connected = false; cancel(); super.onDestroy(); }
-    private static final class Snapshot { boolean ad, limited; int visited, labelled; }
+    @Override public void onInterrupt() { handler.post(this::cancel); }
+    @Override public boolean onUnbind(Intent intent) { connected = false; handler.post(this::cancel); return super.onUnbind(intent); }
+    @Override public void onDestroy() {
+        connected = false; destroyed = true; handler.removeCallbacksAndMessages(null); scanThread.quitSafely(); super.onDestroy();
+    }
+    private static final class Snapshot { boolean ad, limited, full; int visited, labelled; }
     private static final class NodeDepth {
         final AccessibilityNodeInfo node; final int depth;
         NodeDepth(AccessibilityNodeInfo node, int depth) { this.node = node; this.depth = depth; }
