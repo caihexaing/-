@@ -1,0 +1,4 @@
+<resources>
+    <string name="application_count">显示 %1$d 个应用   ·   已选择 %2$d 个</string>
+    <string name="dns_stats">DNS 请求 %1$d    拦截 %2$d    失败 %3$d</string>
+</resources>
