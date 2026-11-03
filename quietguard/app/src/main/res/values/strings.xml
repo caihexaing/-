@@ -4,7 +4,7 @@
     <string name="application_count">显示 %1$d 个应用   ·   已选择 %2$d 个</string>
     <string name="dns_stats">DNS 请求 %1$d · 规则命中 %2$d · 转发失败 %3$d</string>
     <string name="splash_service_label">净屏 · 开屏广告跳过</string>
-    <string name="splash_service_description">仅在净屏中开启的应用进入前台后15秒内，在本机识别任意位置的广告跳过控件并尝试点击。纯“跳过”兼容需为单个应用主动开启，也可能跳过该应用的教程。需要读取控件和执行点击，不保存或上传界面文字和截图，不读取未选择应用的页面内容；仅在本机保存可清除的最近包名、时间、节点数和诊断原因。不会点击推广入口、下载或购买按钮。无法保证所有广告都能跳过，可随时暂停或撤销授权。</string>
+    <string name="splash_service_description">仅在净屏中开启的应用进入前台后15秒内，在本机识别明确且自身可点击的广告跳过控件，每次进入最多发出一次控件点击请求；不模拟手势、不点击父容器、不补点。纯“跳过”兼容需为单个应用主动开启，也可能跳过该应用教程。不保存或上传界面文字和截图，不读取未选择应用的页面内容；仅在本机保存可清除的最近包名、时间、节点数、是否发出点击及诊断原因。无法保证所有广告都能跳过或应用不会自行跳转，可随时暂停或撤销授权。</string>
     <string name="splash_status">开屏跳过：%1$s · 点击操作 %2$d 次</string>
     <string name="update_transfer">%1$s   %2$s%3$s</string>
 </resources>

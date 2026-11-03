@@ -1,10 +1,8 @@
 package cn.quietguard.app;
 
 import android.accessibilityservice.AccessibilityService;
-import android.accessibilityservice.GestureDescription;
 import android.app.KeyguardManager;
 import android.content.Intent;
-import android.graphics.Path;
 import android.graphics.Rect;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -79,6 +77,8 @@ public final class SplashSkipService extends AccessibilityService {
             .putInt("nodes", maxNodes).putBoolean("limited", limited)
             .putBoolean("skip", sawSkip).putBoolean("ad", sawAd)
             .putLong("max_scan_ms", maxScanMs)
+            .putString("action", window.hasAccepted() ? "控件点击请求被接受"
+                : window.hasAttempted() ? "已发出一次控件点击请求" : "本次未发送点击请求")
             .putLong("time", System.currentTimeMillis()).apply();
     }
     private void schedule() {
@@ -121,10 +121,10 @@ public final class SplashSkipService extends AccessibilityService {
             maxNodes = Math.max(maxNodes, snapshot.visited); limited |= snapshot.limited;
             sawSkip |= !candidates.isEmpty(); sawAd |= snapshot.ad;
             Candidate target = null;
-            boolean lacksEvidence = false, wrongBounds = false, originalStillReadable = false;
+            boolean lacksEvidence = false, wrongBounds = false, originalStillReadable = false, unsafeAction = false;
             for (Candidate candidate : candidates) {
                 Rect r = new Rect(); candidate.node.getBoundsInScreen(r);
-                originalStillReadable |= window.hasAccepted() && window.retryTarget(r.left, r.top, r.right, r.bottom);
+                originalStillReadable |= window.hasAccepted() && window.matchesAcceptedTarget(r.left, r.top, r.right, r.bottom);
                 if (!SplashPolicy.candidate(candidate.label, snapshot.ad, plain, r.left, r.top, r.right, r.bottom,
                         bounds.left, bounds.top, bounds.right, bounds.bottom)) {
                     if (!plain && !snapshot.ad && !SplashPolicy.countdownLabel(candidate.label)
@@ -132,7 +132,12 @@ public final class SplashSkipService extends AccessibilityService {
                     else wrongBounds = true;
                     continue;
                 }
-                if (window.retryTarget(r.left, r.top, r.right, r.bottom)) { target = candidate; break; }
+                if (!directClick(candidate.node)) { unsafeAction = true; continue; }
+                CharSequence text = candidate.node.getText(), desc = candidate.node.getContentDescription();
+                if (SplashPolicy.actionLabel(text == null ? null : text.toString(), desc == null ? null : desc.toString()) == null) {
+                    unsafeAction = true; continue;
+                }
+                if (window.matchesAcceptedTarget(r.left, r.top, r.right, r.bottom)) { target = candidate; break; }
             }
             if (target == null) {
                 if (window.hasAccepted()) {
@@ -141,24 +146,21 @@ public final class SplashSkipService extends AccessibilityService {
                     else if (now - acceptedAt >= 500) {
                         report("点击后原跳过控件未再读到；不等同于已清除广告"); window.finish();
                     }
-                } else if (lacksEvidence) report("读到跳过，但缺少可读取的倒计时或广告标识；可为此应用开启兼容识别");
+                } else if (unsafeAction) report("读到跳过，但控件自身不可点击或文字描述冲突；未发送点击");
+                else if (lacksEvidence) report("读到跳过，但缺少可读取的倒计时或广告标识；可为此应用开启兼容识别");
                 else if (wrongBounds) report("读到跳过，但控件大小或边界不符合点击条件");
                 else if (snapshot.full && !snapshot.limited && snapshot.labelled == 0) report("窗口没有可读取的文字；图片或自绘按钮暂不支持");
                 else report("本次扫描未读到跳过文字；可能为图片、自绘按钮或未出现");
             } else if (window.canAttempt(now)) {
-                if (!foregroundMatches(pkg)) return;
-                boolean retryGesture = window.hasAccepted();
-                window.attempted(now);
                 Rect acted = new Rect();
-                if (click(target, bounds, snapshot.ad, plain, retryGesture, acted)) {
+                if (click(target, pkg, root.getWindowId(), bounds, snapshot.ad, plain, acted)) {
                     long n = Prefs.get(this).getLong("skip_clicks", 0);
                     Prefs.get(this).edit().putLong("skip_clicks", n + 1).apply();
                     window.accepted(acted.left, acted.top, acted.right, acted.bottom); acceptedAt = now;
-                    report(retryGesture ? "同一跳过控件仍存在，已补发一次手势；等待界面变化"
-                        : "系统接受了点击请求，正在检查原跳过控件是否还在");
-                } else report("找到符合条件的跳过，但控件失效或系统未接受点击");
+                    report("已向跳过控件本身发送一次点击；不补点，等待界面变化");
+                }
             } else if (window.exhausted(now)) {
-                report("两次尝试后原跳过控件仍可读取；尚未确认跳过成功"); window.finish();
+                report("一次控件点击后跳过仍可读取；已停止，不执行补点"); window.finish();
             }
             if (window.observe(pkg, permitted(pkg), enabled(), SystemClock.elapsedRealtime())) schedule();
         } catch (IllegalStateException | SecurityException ignored) {
@@ -168,11 +170,11 @@ public final class SplashSkipService extends AccessibilityService {
             root.recycle(); scanning = false; budget.completed(SystemClock.elapsedRealtime());
         }
     }
-    private boolean foregroundMatches(String pkg) {
+    private boolean foregroundMatches(String pkg, int windowId) {
         if (!permitted(pkg) || !unlocked()) return false;
         AccessibilityNodeInfo current = getRootInActiveWindow();
         if (current == null) return false;
-        try { return current.getPackageName() != null && pkg.contentEquals(current.getPackageName()); }
+        try { return current.getWindowId() == windowId && current.getPackageName() != null && pkg.contentEquals(current.getPackageName()); }
         finally { current.recycle(); }
     }
     private void search(AccessibilityNodeInfo root, List<Candidate> out, Snapshot state) {
@@ -232,34 +234,36 @@ public final class SplashSkipService extends AccessibilityService {
             }
         } finally { for (NodeDepth item : queue) item.node.recycle(); }
     }
-    private boolean click(Candidate candidate, Rect windowBounds, boolean ad, boolean plain,
-                          boolean gestureOnly, Rect acted) {
+    private boolean directClick(AccessibilityNodeInfo node) {
+        return node.isClickable() && !node.isEditable() && !node.isScrollable()
+            && node.getActionList().contains(AccessibilityNodeInfo.AccessibilityAction.ACTION_CLICK);
+    }
+    private boolean click(Candidate candidate, String pkg, int windowId, Rect windowBounds,
+                          boolean ad, boolean plain, Rect acted) {
         AccessibilityNodeInfo node = candidate.node;
-        if (!node.refresh() || !node.isVisibleToUser() || !node.isEnabled()) return false;
-        CharSequence text = node.getText(), desc = node.getContentDescription();
-        // Countdown text can change between reads; validate the current meaning, not stale text.
-        String label = text != null && SplashPolicy.skipLabel(text.toString()) ? text.toString()
-            : desc != null && SplashPolicy.skipLabel(desc.toString()) ? desc.toString() : "";
-        Rect bounds = new Rect(); node.getBoundsInScreen(bounds);
-        if (!window.retryTarget(bounds.left, bounds.top, bounds.right, bounds.bottom)
-                || !SplashPolicy.candidate(label, ad, plain, bounds.left, bounds.top, bounds.right, bounds.bottom,
-                    windowBounds.left, windowBounds.top, windowBounds.right, windowBounds.bottom)) return false;
-        acted.set(bounds);
-        if (!gestureOnly && node.isClickable() && node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true;
-        AccessibilityNodeInfo parent = gestureOnly ? null : node.getParent();
-        if (parent != null) {
-            try {
-                Rect p = new Rect(); parent.getBoundsInScreen(p);
-                if (parent.isVisibleToUser() && parent.isEnabled() && parent.isClickable() && p.contains(bounds)
-                    && p.width() <= bounds.width() * 2 + 24 && p.height() <= bounds.height() * 2 + 24
-                    && SplashPolicy.candidate(label, ad, plain, p.left, p.top, p.right, p.bottom,
-                        windowBounds.left, windowBounds.top, windowBounds.right, windowBounds.bottom)
-                    && parent.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true;
-            } finally { parent.recycle(); }
+        if (!node.refresh() || !node.isVisibleToUser() || !node.isEnabled()) {
+            report("跳过控件已失效或不可见，未发送点击"); return false;
         }
-        Path path = new Path(); path.moveTo(bounds.exactCenterX(), bounds.exactCenterY());
-        return dispatchGesture(new GestureDescription.Builder()
-            .addStroke(new GestureDescription.StrokeDescription(path, 0, 40)).build(), null, null);
+        CharSequence text = node.getText(), desc = node.getContentDescription();
+        String label = SplashPolicy.actionLabel(text == null ? null : text.toString(), desc == null ? null : desc.toString());
+        if (label == null) { report("控件文字与描述不明确或冲突，未发送点击"); return false; }
+        if (!directClick(node)) {
+            report("跳过文字自身未提供可点击动作，已放弃；不点击父容器或屏幕坐标"); return false;
+        }
+        if (node.getPackageName() == null || !pkg.contentEquals(node.getPackageName())
+                || node.getWindowId() != windowId) {
+            report("控件所属应用或窗口已变化，未发送点击"); return false;
+        }
+        Rect bounds = new Rect(); node.getBoundsInScreen(bounds);
+        if (!SplashPolicy.candidate(label, ad, plain, bounds.left, bounds.top, bounds.right, bounds.bottom,
+                    windowBounds.left, windowBounds.top, windowBounds.right, windowBounds.bottom)
+                || !foregroundMatches(pkg, windowId)) {
+            report("窗口或控件点击条件已变化，未发送点击"); return false;
+        }
+        if (!window.attempted(SystemClock.elapsedRealtime())) return false;
+        acted.set(bounds);
+        if (node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true;
+        report("系统未接受控件点击请求，已停止；不补点"); window.finish(); return false;
     }
     private void cancel() {
         handler.removeCallbacks(poll); pollScheduled = false; budget.reset(); window.reset();

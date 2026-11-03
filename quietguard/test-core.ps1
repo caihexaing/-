@@ -12,6 +12,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Splash checks failed' }
     & java -cp build/core-checks cn.quietguard.app.RuntimeChecks
     if ($LASTEXITCODE -ne 0) { throw 'Runtime checks failed' }
+    & python tests/check_splash_safety.py
+    if ($LASTEXITCODE -ne 0) { throw 'Splash safety release guards failed' }
     & java -cp build/core-checks cn.quietguard.app.UpdateChecks
     if ($LASTEXITCODE -ne 0) { throw 'Update checks failed' }
     & java -cp build/core-checks cn.quietguard.app.UpdateVpnChecks

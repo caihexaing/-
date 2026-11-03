@@ -46,9 +46,10 @@ public final class RuntimeChecks {
 
         SplashWindow w = new SplashWindow(); w.observe("target", true, true, 0);
         check(!w.exhausted(5000), "no attempts is not exhausted");
-        w.attempted(0); check(!w.exhausted(5000), "one attempt permits retry");
-        w.attempted(1000); check(!w.exhausted(1999), "wait for last click observation");
-        check(w.exhausted(2000), "two attempts stop scanning after observation");
+        check(w.attempted(0), "one action can be reserved");
+        check(!w.exhausted(499), "wait for one click observation");
+        check(!w.attempted(1000), "no second action can be reserved");
+        check(w.exhausted(500), "single action stops scanning after observation");
         w.reset(); check(!w.exhausted(5000), "new session clears exhaustion");
         UpdateVpnState update = new UpdateVpnState();
         update.networkRequested(); check(!update.restore, "request outside update does not invent restore intent");

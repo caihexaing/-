@@ -17,18 +17,22 @@ public final class SplashWindow {
     }
     public boolean canAttempt(long now) {
         return !foreground.isEmpty() && !finished && now >= entered && now - entered <= DURATION_MS
-            && attempts < 2 && (attempts == 0 || now - lastAttempt >= 1000);
+            && attempts == 0;
     }
-    public void attempted(long now) { attempts++; lastAttempt = now; }
-    public boolean exhausted(long now) { return attempts >= 2 && now - lastAttempt >= 1000; }
+    public boolean attempted(long now) {
+        if (!canAttempt(now)) return false;
+        attempts = 1; lastAttempt = now; return true;
+    }
+    public boolean hasAttempted() { return attempts > 0; }
+    public boolean exhausted(long now) { return hasAttempted() && now - lastAttempt >= 500; }
     public void accepted(int left, int top, int right, int bottom) {
         accepted = true;
         acceptedLeft = left; acceptedTop = top; acceptedRight = right; acceptedBottom = bottom;
     }
     public boolean hasAccepted() { return accepted; }
-    public boolean retryTarget(int left, int top, int right, int bottom) {
+    public boolean matchesAcceptedTarget(int left, int top, int right, int bottom) {
         if (!accepted) return true;
-        // A retry must still be attached to the same small control, not a button on the next page.
+        // Observation only: these bounds never authorize a second action or a screen gesture.
         return left < acceptedRight && right > acceptedLeft && top < acceptedBottom && bottom > acceptedTop
             && Math.abs(((long)left + right) - ((long)acceptedLeft + acceptedRight)) <= 48
             && Math.abs(((long)top + bottom) - ((long)acceptedTop + acceptedBottom)) <= 48;

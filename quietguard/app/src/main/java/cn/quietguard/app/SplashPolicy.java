@@ -18,6 +18,19 @@ public final class SplashPolicy {
         String s = compact(text);
         return s.equals("跳过广告") || s.equals("关闭广告") || s.equals("skipad");
     }
+    private static boolean supportingLabel(String text) {
+        String s = compact(text);
+        return s.isEmpty() || skipLabel(text) || s.equals("广告") || s.equals("ad")
+            || s.matches("[0-9]{1,2}(?:s|秒)?");
+    }
+    /** Conflicting text/description can describe an ad link, not the skip control itself. */
+    public static String actionLabel(String text, String description) {
+        if ((text != null && text.length() > 64) || (description != null && description.length() > 64)) return null;
+        if (!supportingLabel(text) || !supportingLabel(description)) return null;
+        if (skipLabel(text) && (countdownLabel(text) || explicitAdSkip(text))) return text;
+        if (skipLabel(description) && (countdownLabel(description) || explicitAdSkip(description))) return description;
+        return skipLabel(text) ? text : skipLabel(description) ? description : null;
+    }
     public static boolean adMarker(String text) {
         if (text == null || text.length() > 32) return false;
         String s = compact(text);

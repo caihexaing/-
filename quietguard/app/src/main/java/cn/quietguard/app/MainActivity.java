@@ -169,7 +169,7 @@ public final class MainActivity extends Activity {
     private void showSkipSetup() {
         Prefs.get(this).edit().putBoolean("skip_prompted", true).apply();
         new AlertDialog.Builder(this).setTitle("启用开屏广告自动跳过")
-            .setMessage("为识别开屏广告中的“跳过”按钮，净屏需要 Android 无障碍授权。\n\n只在已开启的应用进入前台后 15 秒内，读取其界面控件，识别任意位置明确的广告跳过按钮，或带倒计时/广告标识的“跳过”按钮并尝试点击。可长按单个应用开启纯“跳过”兼容，这也可能跳过该应用的教程。不会点击广告主体或“立即进入”等推广按钮。\n\n界面文字只在本机临时处理，不保存、不上传。仅在本机保留最近目标应用包名、检测时间、节点数和固定原因说明，可在设置中查看和清除。你可随时在系统设置中关闭无障碍，也可在净屏暂停防护。\n\n系统授权后回到净屏，确认“开屏跳过：已就绪”，再重新打开目标应用。广告可能短暂出现；无法保证跳过所有广告。")
+            .setMessage("为识别开屏广告中的“跳过”按钮，净屏需要 Android 无障碍授权。\n\n只在已开启的应用进入前台后 15 秒内，读取其界面控件，识别任意位置明确的广告跳过按钮，或带倒计时/广告标识的“跳过”按钮并尝试点击。可长按单个应用开启纯“跳过”兼容，这也可能跳过该应用的教程。只向符合条件的跳过控件自身发送一次点击请求，不点击父容器或屏幕坐标，也不补点；文字与描述冲突时放弃。无法保证应用不会自行跳转。\n\n界面文字只在本机临时处理，不保存、不上传。仅在本机保留最近目标应用包名、检测时间、节点数和固定原因说明，可在设置中查看和清除。你可随时在系统设置中关闭无障碍，也可在净屏暂停防护。\n\n系统授权后回到净屏，确认“开屏跳过：已就绪”，再重新打开目标应用。广告可能短暂出现；无法保证跳过所有广告。")
             .setNegativeButton("暂不开启", null).setPositiveButton("同意并前往设置", (d,w) -> {
                 Prefs.get(this).edit().putBoolean("skip_consent", true).apply();
                 try { startActivity(new Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)); }
@@ -283,6 +283,7 @@ public final class MainActivity extends Activity {
             + "\n曾读到广告标识：" + (record.getBoolean("ad", false) ? "是" : "否")
             + "\n扫描曾达到上限：" + (record.getBoolean("limited", false) ? "是" : "否")
             + "\n纯跳过兼容：" + (Prefs.plainSkip(this, pkg) ? "开启" : "关闭")
+            + "\n本次点击：" + record.getString("action", "旧版记录，请重新检测")
             + "\n\n" + record.getString("reason", "暂无结果")
             + "\n\n只有状态记录保存在手机，不保存界面文字或截图、不上传；控件消失和点击请求次数都不等于确认广告清除。";
         AlertDialog.Builder builder = new AlertDialog.Builder(this).setTitle("最近跳过诊断").setMessage(detail)

@@ -55,6 +55,24 @@ public final class SplashChecks {
         check(!SplashPolicy.candidate("跳过并领取奖励",true,true,44,1476,140,1572,0,0,922,2048), "compatibility still rejects reward CTA");
         check(!SplashPolicy.candidate("跳过",false,true,0,0,922,2048,0,0,922,2048), "compatibility still rejects full screen");
         check(!SplashPolicy.candidate("跳过",false,true,-20,1476,140,1572,0,0,922,2048), "compatibility still rejects offscreen");
+        check("跳过".equals(SplashPolicy.actionLabel("跳过",null)), "direct skip text");
+        check("跳过".equals(SplashPolicy.actionLabel(null,"跳过")), "direct skip description");
+        check("4s|跳过".equals(SplashPolicy.actionLabel("4s|跳过","跳过")), "prefer countdown evidence");
+        check("跳过广告".equals(SplashPolicy.actionLabel("跳过","跳过广告")), "prefer explicit ad meaning");
+        check("跳过".equals(SplashPolicy.actionLabel("跳过","广告")), "short ad marker is supporting text");
+        check("跳过".equals(SplashPolicy.actionLabel("跳过","5s")), "countdown can be a separate description");
+        check(SplashPolicy.actionLabel("跳过","立即进入") == null, "skip text with promotion description is rejected");
+        check(SplashPolicy.actionLabel("立即进入","跳过") == null, "promotion text with skip description is rejected");
+        check(SplashPolicy.actionLabel("跳过","点击跳转至详情页或第三方应用") == null, "redirect description rejected");
+        check(SplashPolicy.actionLabel("跳过","下载") == null, "download description rejected");
+        check(SplashPolicy.actionLabel("跳过","广告详情") == null, "ad details link not treated as supporting marker");
+        check(SplashPolicy.actionLabel("跳过","广告反馈") == null, "ad feedback link rejected");
+        check(SplashPolicy.actionLabel("跳过","向上滑动") == null, "swipe target description rejected");
+        check(SplashPolicy.actionLabel("跳过","摇一摇") == null, "shake target description rejected");
+        check(SplashPolicy.actionLabel("跳过","领取奖励") == null, "reward target description rejected");
+        check(SplashPolicy.actionLabel(" "," ") == null, "empty control never actionable");
+        check(SplashPolicy.actionLabel("广告",null) == null, "marker alone never actionable");
+        check(SplashPolicy.actionLabel("跳过", "跳过" + " ".repeat(65)) == null, "long conflicting description not ignored");
 
         SplashWindow w = new SplashWindow();
         check(!w.observe("target",true,false,100), "master disabled");
@@ -63,8 +81,9 @@ public final class SplashChecks {
         check(w.observe("target",true,true,100), "target foreground entry");
         check(w.canAttempt(100), "first attempt"); w.attempted(100);
         check(!w.canAttempt(999), "retry interval");
-        check(w.canAttempt(1100), "second attempt allowed"); w.attempted(1100);
-        check(!w.canAttempt(2500), "two attempt cap");
+        check(!w.canAttempt(1100), "no second attempt even when first was rejected");
+        check(!w.attempted(1100), "second action reservation is rejected");
+        check(!w.canAttempt(2500), "one action cap remains for whole entry");
         check(!w.observe("target",true,true,15101), "startup window expires");
         check(!w.observe("target",true,true,17000), "same-package events do not renew window");
         check(!w.observe("launcher",false,true,18000), "foreground exit resets");
@@ -82,13 +101,14 @@ public final class SplashChecks {
         check(w.hasAccepted(), "accepted request is tracked");
         check(w.observe("target",true,true,40220), "accepted request does not stop verification");
         check(!w.canAttempt(40999), "accepted request still observes retry delay");
-        check(w.canAttempt(41000), "one retry after accepted action");
-        check(w.retryTarget(44,1476,140,1572), "same actual control can retry");
-        check(w.retryTarget(46,1476,142,1572), "minor layout change can retry");
-        check(!w.retryTarget(650,110,920,195), "next page target cannot retry");
-        check(!w.retryTarget(0,0,922,2048), "enlarged container cannot retry");
-        check(!w.retryTarget(200,1476,296,1572), "unrelated nearby control cannot retry");
-        w.attempted(41000); check(!w.canAttempt(42000), "retry still respects two-attempt cap");
+        check(!w.canAttempt(41000), "accepted request is never followed by retry");
+        check(w.matchesAcceptedTarget(44,1476,140,1572), "same control can be observed");
+        check(w.matchesAcceptedTarget(46,1476,142,1572), "minor layout change can be observed");
+        check(!w.matchesAcceptedTarget(650,110,920,195), "other position is not the original target");
+        check(!w.matchesAcceptedTarget(0,0,922,2048), "enlarged container not the original target");
+        check(!w.matchesAcceptedTarget(200,1476,296,1572), "unrelated nearby control not the original target");
+        check(!w.attempted(41000), "accepted request cannot reserve a second action");
+        check(!w.canAttempt(42000), "one action cap also applies to same position");
         w.observe("other",false,true,43000); check(!w.hasAccepted(), "foreground exit clears accepted target");
         System.out.println("PASS: " + checks + " screenshot matching, misclick prevention and startup window checks.");
     }

@@ -48,6 +48,7 @@ jobs:
           java -cp build/core-checks cn.quietguard.app.VersionChecks
           java -cp build/core-checks cn.quietguard.app.SplashChecks
           java -cp build/core-checks cn.quietguard.app.RuntimeChecks
+          python3 tests/check_splash_safety.py
           java -cp build/core-checks cn.quietguard.app.UpdateChecks
           java -cp build/core-checks cn.quietguard.app.UpdateVpnChecks
       - name: 构建并静态检查
