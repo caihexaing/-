@@ -43,6 +43,18 @@ public final class SplashChecks {
         check(SplashPolicy.adMarker("广告"), "ad marker");
         check(SplashPolicy.adMarker("AD"), "English marker");
         check(!SplashPolicy.adMarker("我的广告设置"), "not an arbitrary ad-related page");
+        check(candidate("跳过广告",false,44,1476,140,1572), "explicit ad skip supplies its own evidence");
+        check(candidate("关闭广告",false,44,1476,140,1572), "explicit close ad supplies its own evidence");
+        check(candidate("Skip Ad",false,44,1476,140,1572), "English explicit ad skip");
+        check(candidate("跳过",true,44,1476,140,1572), "WakeUp screenshot lower-left with readable ad marker");
+        check(!candidate("跳过",false,44,1476,140,1572), "WakeUp without readable evidence stays off by default");
+        check(SplashPolicy.candidate("跳过",false,true,44,1476,140,1572,0,0,922,2048), "per-app compatibility allows plain skip");
+        check(!SplashPolicy.candidate("立即进入",true,true,650,110,920,195,0,0,922,2048), "WakeUp promotion CTA never matches");
+        check(!SplashPolicy.candidate("向上滑动",true,true,300,1350,600,1440,0,0,922,2048), "swipe promotion never matches");
+        check(!SplashPolicy.candidate("跳转至详情页或第三方应用",true,true,200,1440,700,1500,0,0,922,2048), "redirect promotion never matches");
+        check(!SplashPolicy.candidate("跳过并领取奖励",true,true,44,1476,140,1572,0,0,922,2048), "compatibility still rejects reward CTA");
+        check(!SplashPolicy.candidate("跳过",false,true,0,0,922,2048,0,0,922,2048), "compatibility still rejects full screen");
+        check(!SplashPolicy.candidate("跳过",false,true,-20,1476,140,1572,0,0,922,2048), "compatibility still rejects offscreen");
 
         SplashWindow w = new SplashWindow();
         check(!w.observe("target",true,false,100), "master disabled");
@@ -64,6 +76,20 @@ public final class SplashChecks {
         check(w.canAttempt(35000), "end boundary"); check(!w.canAttempt(35001), "after boundary");
         check(!w.observe("target",false,true,35002), "deselect cancels");
         check(!w.canAttempt(35002), "no action after deselect");
+        w.reset(); w.observe("target",true,true,40000);
+        check(!w.hasAccepted(), "new session has no accepted action");
+        w.attempted(40000); w.accepted(44,1476,140,1572);
+        check(w.hasAccepted(), "accepted request is tracked");
+        check(w.observe("target",true,true,40220), "accepted request does not stop verification");
+        check(!w.canAttempt(40999), "accepted request still observes retry delay");
+        check(w.canAttempt(41000), "one retry after accepted action");
+        check(w.retryTarget(44,1476,140,1572), "same actual control can retry");
+        check(w.retryTarget(46,1476,142,1572), "minor layout change can retry");
+        check(!w.retryTarget(650,110,920,195), "next page target cannot retry");
+        check(!w.retryTarget(0,0,922,2048), "enlarged container cannot retry");
+        check(!w.retryTarget(200,1476,296,1572), "unrelated nearby control cannot retry");
+        w.attempted(41000); check(!w.canAttempt(42000), "retry still respects two-attempt cap");
+        w.observe("other",false,true,43000); check(!w.hasAccepted(), "foreground exit clears accepted target");
         System.out.println("PASS: " + checks + " screenshot matching, misclick prevention and startup window checks.");
     }
 }

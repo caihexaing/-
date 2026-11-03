@@ -52,7 +52,7 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams powerLp = new LinearLayout.LayoutParams(-1, dp(48)); powerLp.topMargin = dp(12); card.addView(power, powerLp); root.addView(card);
         skipSetup = button("开启开屏广告跳过", false); skipSetup.setOnClickListener(v -> showSkipSetup());
         root.addView(skipSetup, new LinearLayout.LayoutParams(-1, dp(44)));
-        TextView note = text("DNS 规则命中 ≠ 去除广告数；开屏跳过需无障碍授权", 11, MUTED); note.setPadding(0, dp(4), 0, dp(10)); root.addView(note);
+        TextView note = text("DNS 命中 ≠ 去除广告数；长按应用可设置跳过兼容\n设置中可查看最近跳过诊断", 11, MUTED); note.setPadding(0, dp(4), 0, dp(10)); root.addView(note);
 
         search = new EditText(this); search.setSingleLine(true); search.setTextSize(14); search.setTextColor(INK);
         search.setHintTextColor(MUTED); search.setHint("搜索应用名称或包名"); search.setPadding(dp(16), 0, dp(16), 0); search.setBackground(shape(Color.WHITE, 14));
@@ -161,7 +161,7 @@ public final class MainActivity extends Activity {
     private void showSkipSetup() {
         Prefs.get(this).edit().putBoolean("skip_prompted", true).apply();
         new AlertDialog.Builder(this).setTitle("启用开屏广告自动跳过")
-            .setMessage("为识别开屏广告中的“跳过”按钮，净屏需要 Android 无障碍授权。\n\n只在已开启的应用进入前台后 15 秒内，读取其界面控件，识别窗口内任意位置带倒计时或广告标识的“跳过”按钮并尝试点击。不会点击广告主体或“启动”等推广按钮。\n\n界面内容只在本机临时处理，不保存、不上传。无障碍属于敏感权限，你可随时在系统设置中关闭，也可在净屏暂停防护。\n\n系统授权后回到净屏，确认“开屏跳过：已就绪”，再重新打开目标应用。广告可能短暂出现；无法保证跳过所有广告。")
+            .setMessage("为识别开屏广告中的“跳过”按钮，净屏需要 Android 无障碍授权。\n\n只在已开启的应用进入前台后 15 秒内，读取其界面控件，识别任意位置明确的广告跳过按钮，或带倒计时/广告标识的“跳过”按钮并尝试点击。可长按单个应用开启纯“跳过”兼容，这也可能跳过该应用的教程。不会点击广告主体或“立即进入”等推广按钮。\n\n界面文字只在本机临时处理，不保存、不上传。仅在本机保留最近目标应用包名、检测时间、节点数和固定原因说明，可在设置中查看和清除。你可随时在系统设置中关闭无障碍，也可在净屏暂停防护。\n\n系统授权后回到净屏，确认“开屏跳过：已就绪”，再重新打开目标应用。广告可能短暂出现；无法保证跳过所有广告。")
             .setNegativeButton("暂不开启", null).setPositiveButton("同意并前往设置", (d,w) -> {
                 Prefs.get(this).edit().putBoolean("skip_consent", true).apply();
                 try { startActivity(new Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)); }
@@ -202,6 +202,7 @@ public final class MainActivity extends Activity {
     private void showSettings() {
         LinearLayout panel = column(); panel.setPadding(dp(24), dp(8), dp(24), dp(8));
         Button skip = button("设置开屏广告跳过", false); skip.setOnClickListener(v -> showSkipSetup()); panel.addView(skip);
+        Button diagnostic = button("查看最近跳过诊断", false); diagnostic.setOnClickListener(v -> showSkipDiagnostic()); panel.addView(diagnostic);
         TextView explanation = text("同一个应用开关控制 DNS 过滤和开屏跳过。跳过功能需要额外的系统无障碍授权。域名命中与跳过点击都不代表清除全部广告。", 12, MUTED);
         panel.addView(explanation);
         Button update = button("检查更新 · 当前 v" + BuildConfig.VERSION_NAME + "（构建 " + BuildConfig.VERSION_CODE + "）", false);
@@ -236,6 +237,38 @@ public final class MainActivity extends Activity {
             if (FilterVpnService.running) startFiltering(); dialog.dismiss(); toast("设置已保存");
         })); dialog.show();
     }
+    private String appLabel(String pkg) {
+        try { return getPackageManager().getApplicationLabel(getPackageManager().getApplicationInfo(pkg, 0)).toString(); }
+        catch (PackageManager.NameNotFoundException e) { return pkg; }
+    }
+    private void showPlainSkip(String pkg, String label) {
+        if (!Prefs.selected(this).contains(pkg)) { toast("请先打开这个应用的广告防护开关，再长按设置兼容"); return; }
+        boolean on = Prefs.plainSkip(this, pkg);
+        new AlertDialog.Builder(this).setTitle(label + " · 跳过兼容")
+            .setMessage("当前：" + (on ? "已开启" : "已关闭") + "\n\n开启后，仅这个应用在进入前台后的 15 秒内，可点击没有倒计时或可读取广告标识的纯“跳过”按钮；位置仍由实际控件确定。\n\n可能同时跳过教程、登录引导等页面。只适用于能读取文字的按钮，图片/自绘按钮仍可能无法识别。可随时长按这个应用关闭。")
+            .setNegativeButton("取消", null).setPositiveButton(on ? "关闭兼容" : "为此应用开启", (d,w) -> {
+                Prefs.plainSkip(this, pkg, !on); toast(on ? "已关闭此应用的跳过兼容" : "已开启，请退出并重新打开目标应用");
+            }).show();
+    }
+    private void showSkipDiagnostic() {
+        SharedPreferences record = getSharedPreferences("splash_diagnostic", MODE_PRIVATE);
+        String pkg = record.getString("package", "");
+        String detail;
+        if (pkg.isEmpty()) detail = "还没有检测记录。\n\n确认目标应用开关已打开、开屏跳过已就绪，然后退出并重新打开目标应用，再回这里查看。";
+        else detail = "应用：" + appLabel(pkg) + "\n包名：" + pkg
+            + "\n时间：" + java.text.DateFormat.getDateTimeInstance().format(new Date(record.getLong("time", 0)))
+            + "\n单次扫描最多读取节点：" + record.getInt("nodes", 0)
+            + "\n曾读到跳过文字：" + (record.getBoolean("skip", false) ? "是" : "否")
+            + "\n曾读到广告标识：" + (record.getBoolean("ad", false) ? "是" : "否")
+            + "\n扫描曾达到上限：" + (record.getBoolean("limited", false) ? "是" : "否")
+            + "\n纯跳过兼容：" + (Prefs.plainSkip(this, pkg) ? "开启" : "关闭")
+            + "\n\n" + record.getString("reason", "暂无结果")
+            + "\n\n只有状态记录保存在手机，不保存界面文字或截图、不上传；控件消失和点击请求次数都不等于确认广告清除。";
+        AlertDialog.Builder builder = new AlertDialog.Builder(this).setTitle("最近跳过诊断").setMessage(detail)
+            .setPositiveButton("关闭", null).setNegativeButton("清除记录", (d,w) -> record.edit().clear().apply());
+        if (!pkg.isEmpty() && Prefs.selected(this).contains(pkg)) builder.setNeutralButton("此应用兼容设置", (d,w) -> showPlainSkip(pkg, appLabel(pkg)));
+        builder.show();
+    }
     private final class AppAdapter extends BaseAdapter {
         public int getCount() { return visible.size(); } public AppEntry getItem(int i) { return visible.get(i); } public long getItemId(int i) { return i; }
         public View getView(int position, View reuse, android.view.ViewGroup parent) {
@@ -251,6 +284,7 @@ public final class MainActivity extends Activity {
                 cell.addView(h.toggle, new LinearLayout.LayoutParams(-2, dp(48))); outer.setTag(h); reuse = outer;
             } else h = (Holder)reuse.getTag();
             AppEntry a = getItem(position); h.name.setText(a.label); h.pkg.setText(a.info.packageName);
+            reuse.setOnLongClickListener(v -> { showPlainSkip(a.info.packageName, a.label); return true; });
             try { h.icon.setImageDrawable(a.info.loadIcon(getPackageManager())); } catch (Exception e) { h.icon.setImageResource(android.R.drawable.sym_def_app_icon); }
             h.toggle.setOnCheckedChangeListener(null); h.toggle.setChecked(Prefs.selected(MainActivity.this).contains(a.info.packageName));
             h.toggle.setContentDescription(a.label + " 广告防护，网络过滤与开屏跳过");
