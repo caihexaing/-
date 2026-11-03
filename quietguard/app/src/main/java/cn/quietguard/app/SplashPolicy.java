@@ -18,7 +18,8 @@ public final class SplashPolicy {
         String s = compact(text);
         return s.equals("跳过广告") || s.equals("关闭广告") || s.equals("skipad");
     }
-    private static boolean supportingLabel(String text) {
+    static boolean supportingLabel(String text) {
+        if (text != null && text.length() > 64) return false;
         String s = compact(text);
         return s.isEmpty() || skipLabel(text) || s.equals("广告") || s.equals("ad")
             || s.matches("[0-9]{1,2}(?:s|秒)?");

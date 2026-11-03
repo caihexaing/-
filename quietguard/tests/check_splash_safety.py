@@ -10,8 +10,9 @@ android = '{http://schemas.android.com/apk/res/android}'
 assert config.get(android + 'canPerformGestures') == 'false', 'Gesture capability must remain disabled'
 for forbidden in ('dispatchGesture', 'GestureDescription', 'performGlobalAction'):
     assert forbidden not in service, 'Forbidden action path: ' + forbidden
-assert not re.search(r'\.getParent\s*\(', service), 'Never click an ancestor of skip text'
+assert service.count('.getParent(') == 1, 'Only the bounded semantic resolver adapter may read ancestors'
+assert 'SplashButton.resolve(' in service, 'Semantic resolver must gate button actions'
 actions = re.findall(r'\.performAction\s*\(([^)]*)\)', service)
 assert actions == ['AccessibilityNodeInfo.ACTION_CLICK'], 'Only one direct semantic click call site is allowed'
 assert 'if (!window.attempted(SystemClock.elapsedRealtime())) return false;' in service, 'Single-action reservation must gate click'
-print('PASS: 7 release guards: gestures disabled, no gesture/global/ancestor fallback, direct click only and single-action gate.')
+print('PASS: 8 release guards: gestures disabled, no gesture/global fallback, bounded semantic resolution, click only and single-action gate.')

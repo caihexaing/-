@@ -21,11 +21,12 @@ public final class SplashSkipService extends AccessibilityService {
     private Handler handler;
     private final SplashScanBudget budget = new SplashScanBudget();
     private final SplashWindow window = new SplashWindow();
+    private final SplashDiagnostic diagnostic = new SplashDiagnostic();
     private boolean scanning, pollScheduled;
     private volatile boolean destroyed;
     private volatile String latestEventPkg = "";
     private String eventPkg = "", sessionPkg = "", lastReason = "";
-    private long waitingUntil, lastReport, acceptedAt, maxScanMs;
+    private long waitingUntil, lastReport, maxScanMs;
     private int maxNodes;
     private boolean limited, sawSkip, sawAd;
     private final Runnable poll = () -> { pollScheduled = false; inspect(); };
@@ -63,17 +64,20 @@ public final class SplashSkipService extends AccessibilityService {
     }
     private void beginReport(String pkg) {
         if (pkg.equals(sessionPkg)) return;
-        sessionPkg = pkg; maxNodes = 0; limited = false; sawSkip = false; sawAd = false;
-        lastReason = ""; lastReport = 0; acceptedAt = 0; maxScanMs = 0;
+        window.reset(); sessionPkg = pkg; maxNodes = 0; limited = false; sawSkip = false; sawAd = false;
+        lastReason = ""; lastReport = 0; maxScanMs = 0; diagnostic.reset();
+        getSharedPreferences("splash_diagnostic",MODE_PRIVATE).edit().remove("target").apply();
     }
-    private void report(String reason) {
+    private void report(String reason) { report(reason, 0); }
+    private void report(String reason, int priority) {
         if (sessionPkg.isEmpty()) return;
         long now = SystemClock.elapsedRealtime();
         if (reason.equals(lastReason) && now - lastReport < 1000) return;
-        lastReason = reason; lastReport = now;
+        lastReason = reason; lastReport = now; diagnostic.note(reason, priority);
         // Only fixed diagnostic strings and package metadata persist, never page text or screenshots.
         getSharedPreferences("splash_diagnostic", MODE_PRIVATE).edit()
-            .putString("package", sessionPkg).putString("reason", reason)
+            .putString("package", sessionPkg).putString("reason", diagnostic.reason())
+            .putString("status", diagnostic.status())
             .putInt("nodes", maxNodes).putBoolean("limited", limited)
             .putBoolean("skip", sawSkip).putBoolean("ad", sawAd)
             .putLong("max_scan_ms", maxScanMs)
@@ -120,47 +124,46 @@ public final class SplashSkipService extends AccessibilityService {
             if (!window.observe(pkg, permitted(pkg), enabled(), now)) return;
             maxNodes = Math.max(maxNodes, snapshot.visited); limited |= snapshot.limited;
             sawSkip |= !candidates.isEmpty(); sawAd |= snapshot.ad;
-            Candidate target = null;
-            boolean lacksEvidence = false, wrongBounds = false, originalStillReadable = false, unsafeAction = false;
+            boolean lacksEvidence = false, wrongBounds = false, originalStillReadable = false;
+            boolean rejected = false, sentNow = false;
+            long actionDeadline = SystemClock.elapsedRealtime() + 120;
             for (Candidate candidate : candidates) {
                 Rect r = new Rect(); candidate.node.getBoundsInScreen(r);
-                originalStillReadable |= window.hasAccepted() && window.matchesAcceptedTarget(r.left, r.top, r.right, r.bottom);
-                if (!SplashPolicy.candidate(candidate.label, snapshot.ad, plain, r.left, r.top, r.right, r.bottom,
-                        bounds.left, bounds.top, bounds.right, bounds.bottom)) {
+                originalStillReadable |= window.hasAccepted() && window.matchesAcceptedTarget(r.left,r.top,r.right,r.bottom);
+                if (!SplashPolicy.candidate(candidate.label, snapshot.ad, plain, r.left,r.top,r.right,r.bottom,
+                        bounds.left,bounds.top,bounds.right,bounds.bottom)) {
                     if (!plain && !snapshot.ad && !SplashPolicy.countdownLabel(candidate.label)
                             && !SplashPolicy.explicitAdSkip(candidate.label)) lacksEvidence = true;
                     else wrongBounds = true;
                     continue;
                 }
-                if (!directClick(candidate.node)) { unsafeAction = true; continue; }
-                CharSequence text = candidate.node.getText(), desc = candidate.node.getContentDescription();
-                if (SplashPolicy.actionLabel(text == null ? null : text.toString(), desc == null ? null : desc.toString()) == null) {
-                    unsafeAction = true; continue;
+                if (window.hasAttempted()) continue;
+                if (SystemClock.elapsedRealtime() >= actionDeadline) {
+                    report("本轮按钮核对达到时间预算，等待下一轮",0); rejected = true; break;
                 }
-                if (window.matchesAcceptedTarget(r.left, r.top, r.right, r.bottom)) { target = candidate; break; }
-            }
-            if (target == null) {
-                if (window.hasAccepted()) {
-                    if (originalStillReadable) report("原跳过控件仍可读取，但缺少当前广告证据，未继续点击");
-                    else if (snapshot.limited) report("已发送点击请求，当前窗口不足以判断原按钮是否还在");
-                    else if (now - acceptedAt >= 500) {
-                        report("点击后原跳过控件未再读到；不等同于已清除广告"); window.finish();
-                    }
-                } else if (unsafeAction) report("读到跳过，但控件自身不可点击或文字描述冲突；未发送点击");
-                else if (lacksEvidence) report("读到跳过，但缺少可读取的倒计时或广告标识；可为此应用开启兼容识别");
-                else if (wrongBounds) report("读到跳过，但控件大小或边界不符合点击条件");
-                else if (snapshot.full && !snapshot.limited && snapshot.labelled == 0) report("窗口没有可读取的文字；图片或自绘按钮暂不支持");
-                else report("本次扫描未读到跳过文字；可能为图片、自绘按钮或未出现");
-            } else if (window.canAttempt(now)) {
                 Rect acted = new Rect();
-                if (click(target, pkg, root.getWindowId(), bounds, snapshot.ad, plain, acted)) {
-                    long n = Prefs.get(this).getLong("skip_clicks", 0);
-                    Prefs.get(this).edit().putLong("skip_clicks", n + 1).apply();
-                    window.accepted(acted.left, acted.top, acted.right, acted.bottom); acceptedAt = now;
-                    report("已向跳过控件本身发送一次点击；不补点，等待界面变化");
+                if (click(candidate,pkg,root.getWindowId(),bounds,snapshot.ad,plain,acted)) {
+                    long n = Prefs.get(this).getLong("skip_clicks",0);
+                    Prefs.get(this).edit().putLong("skip_clicks",n+1).apply();
+                    window.accepted(acted.left,acted.top,acted.right,acted.bottom);
+                    report("已向核对后的跳过按钮发送一次点击；不补点，等待界面变化",3);
+                    sentNow = true; break;
                 }
-            } else if (window.exhausted(now)) {
-                report("一次控件点击后跳过仍可读取；已停止，不执行补点"); window.finish();
+                rejected = true;
+                if (window.hasAttempted()) break;
+            }
+            if (window.hasAccepted() && !sentNow) {
+                if (window.exhausted(now)) {
+                    report(originalStillReadable ? "一次点击后原跳过仍可读取；已停止，不补点"
+                        : "一次点击后原跳过未再读到；不等同于已清除广告",3);
+                    window.finish();
+                }
+            } else if (!window.hasAttempted() && !rejected) {
+                if (lacksEvidence) report("读到跳过，但缺少可读取的倒计时或广告标识；可为此应用开启兼容识别",2);
+                else if (wrongBounds) report("读到跳过，但控件大小或边界不符合点击条件",2);
+                else if (snapshot.full && !snapshot.limited && snapshot.labelled == 0)
+                    report("窗口没有可读取的文字；图片或自绘按钮暂不支持",1);
+                else report("本次扫描未读到跳过文字；可能为图片、自绘按钮或未出现",1);
             }
             if (window.observe(pkg, permitted(pkg), enabled(), SystemClock.elapsedRealtime())) schedule();
         } catch (IllegalStateException | SecurityException ignored) {
@@ -234,36 +237,69 @@ public final class SplashSkipService extends AccessibilityService {
             }
         } finally { for (NodeDepth item : queue) item.node.recycle(); }
     }
-    private boolean directClick(AccessibilityNodeInfo node) {
-        return node.isClickable() && !node.isEditable() && !node.isScrollable()
-            && node.getActionList().contains(AccessibilityNodeInfo.AccessibilityAction.ACTION_CLICK);
-    }
-    private boolean click(Candidate candidate, String pkg, int windowId, Rect windowBounds,
+    private boolean click(Candidate candidate, String pkg, int windowId, Rect screen,
                           boolean ad, boolean plain, Rect acted) {
-        AccessibilityNodeInfo node = candidate.node;
-        if (!node.refresh() || !node.isVisibleToUser() || !node.isEnabled()) {
-            report("跳过控件已失效或不可见，未发送点击"); return false;
+        if (!foregroundMatches(pkg,windowId)) {
+            report("当前活动窗口变化，未发送点击",2); return false;
         }
-        CharSequence text = node.getText(), desc = node.getContentDescription();
-        String label = SplashPolicy.actionLabel(text == null ? null : text.toString(), desc == null ? null : desc.toString());
-        if (label == null) { report("控件文字与描述不明确或冲突，未发送点击"); return false; }
-        if (!directClick(node)) {
-            report("跳过文字自身未提供可点击动作，已放弃；不点击父容器或屏幕坐标"); return false;
+        SplashButton.Info bounds = new SplashButton.Info();
+        bounds.left=screen.left; bounds.top=screen.top; bounds.right=screen.right; bounds.bottom=screen.bottom;
+        try (AndroidNode source = new AndroidNode(AccessibilityNodeInfo.obtain(candidate.node));
+             SplashButton.Result target = SplashButton.resolve(source,pkg,windowId,bounds,ad,plain,
+                 getResources().getDisplayMetrics().density)) {
+            if (target.node == null) { report(target.reason,2); return false; }
+            if (!foregroundMatches(pkg,windowId) || !enabled() || !permitted(pkg)) {
+                report("点击前应用或窗口变化，未发送点击",2); return false;
+            }
+            AndroidNode control = (AndroidNode)target.node;
+            // Resolve again after the foreground IPC so stale container contents cannot authorize input.
+            try (SplashButton.Result fresh = SplashButton.resolve(source,pkg,windowId,bounds,ad,plain,
+                    getResources().getDisplayMetrics().density)) {
+                if (fresh.node == null || !fresh.node.same(control)) {
+                    report("点击前跳过按钮结构变化，未发送点击",2); return false;
+                }
+                AndroidNode action = (AndroidNode)fresh.node;
+                Rect rect = new Rect(); action.node.getBoundsInScreen(rect);
+                if (!permitted(pkg) || !unlocked()) {
+                    report("点击前防护被暂停或手机锁屏，未发送点击",2); return false;
+                }
+                if (!window.attempted(SystemClock.elapsedRealtime())) return false;
+                acted.set(rect);
+                getSharedPreferences("splash_diagnostic",MODE_PRIVATE).edit()
+                    .putString("target",fresh.container ? "仅含跳过内容的小按钮" : "跳过文字控件自身").apply();
+                if (action.node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true;
+                report("系统未接受这一次按钮点击请求，已停止；不补点",3);
+                window.finish(); return false;
+            }
         }
-        if (node.getPackageName() == null || !pkg.contentEquals(node.getPackageName())
-                || node.getWindowId() != windowId) {
-            report("控件所属应用或窗口已变化，未发送点击"); return false;
+    }
+    private static final class AndroidNode implements SplashButton.Node {
+        final AccessibilityNodeInfo node;
+        AndroidNode(AccessibilityNodeInfo node) { this.node=node; }
+        @Override public SplashButton.Node copy() { return new AndroidNode(AccessibilityNodeInfo.obtain(node)); }
+        @Override public SplashButton.Info read() {
+            if (!node.refresh()) return null;
+            SplashButton.Info i = new SplashButton.Info();
+            CharSequence text=node.getText(), description=node.getContentDescription(), pkg=node.getPackageName();
+            i.text=text==null ? null : text.toString(); i.description=description==null ? null : description.toString();
+            i.pkg=pkg==null ? null : pkg.toString(); i.window=node.getWindowId();
+            Rect r=new Rect(); node.getBoundsInScreen(r);
+            i.left=r.left; i.top=r.top; i.right=r.right; i.bottom=r.bottom;
+            i.visible=node.isVisibleToUser(); i.enabled=node.isEnabled(); i.clickable=node.isClickable();
+            i.action=node.getActionList().contains(AccessibilityNodeInfo.AccessibilityAction.ACTION_CLICK);
+            i.editable=node.isEditable(); i.scrollable=node.isScrollable(); return i;
         }
-        Rect bounds = new Rect(); node.getBoundsInScreen(bounds);
-        if (!SplashPolicy.candidate(label, ad, plain, bounds.left, bounds.top, bounds.right, bounds.bottom,
-                    windowBounds.left, windowBounds.top, windowBounds.right, windowBounds.bottom)
-                || !foregroundMatches(pkg, windowId)) {
-            report("窗口或控件点击条件已变化，未发送点击"); return false;
+        @Override public SplashButton.Node parent() {
+            AccessibilityNodeInfo parent=node.getParent(); return parent==null ? null : new AndroidNode(parent);
         }
-        if (!window.attempted(SystemClock.elapsedRealtime())) return false;
-        acted.set(bounds);
-        if (node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true;
-        report("系统未接受控件点击请求，已停止；不补点"); window.finish(); return false;
+        @Override public int children() { return node.getChildCount(); }
+        @Override public SplashButton.Node child(int index) {
+            AccessibilityNodeInfo child=node.getChild(index); return child==null ? null : new AndroidNode(child);
+        }
+        @Override public boolean same(SplashButton.Node other) {
+            return other instanceof AndroidNode && node.equals(((AndroidNode)other).node);
+        }
+        @Override public void close() { node.recycle(); }
     }
     private void cancel() {
         handler.removeCallbacks(poll); pollScheduled = false; budget.reset(); window.reset();
