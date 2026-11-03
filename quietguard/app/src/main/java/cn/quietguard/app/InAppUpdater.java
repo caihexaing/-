@@ -3,6 +3,7 @@ package cn.quietguard.app;
 import android.app.*;
 import android.content.*;
 import android.content.pm.*;
+import android.database.Cursor;
 import android.net.Uri;
 import android.os.*;
 import android.provider.Settings;
@@ -12,10 +13,11 @@ import java.io.*;
 import java.util.*;
 import java.util.concurrent.*;
 
-/** Activity view of the independent foreground downloader; metadata survives recreation. */
+/** Activity-bound view of a system-owned download; metadata survives activity/process recreation. */
 final class InAppUpdater {
     private final Activity activity;
     private final Context context;
+    private final DownloadManager manager;
     private final SharedPreferences saved;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
@@ -25,8 +27,7 @@ final class InAppUpdater {
     private TextView detail, transfer;
     private UpdateChecker.Release release;
     private long id = -1, received, total = -1, sampleTime, sampleBytes, speed;
-    private String message = "准备下载…";
-    private long startedAt = SystemClock.elapsedRealtime();
+    private String filename, message = "准备下载…";
     private File ready;
     private boolean resumed, closed, failed, verifying, installRequested, downloaded;
     private volatile long generation;
@@ -34,19 +35,16 @@ final class InAppUpdater {
 
     InAppUpdater(Activity activity) {
         this.activity = activity; context = activity.getApplicationContext();
+        manager = context.getSystemService(DownloadManager.class);
         saved = context.getSharedPreferences("update_download", Context.MODE_PRIVATE);
         id = saved.getLong("id", -1);
-        // Retire the previous system-queue task once; never leave an old pending download behind.
-        if (id >= 0 && !"direct".equals(saved.getString("transport", ""))) {
-            DownloadManager legacy = context.getSystemService(DownloadManager.class);
-            if (legacy != null) try { legacy.remove(id); } catch (RuntimeException ignored) { }
-            saved.edit().clear().apply(); id = -1;
-        }
         if (id >= 0) try {
             release = new UpdateChecker.Release(saved.getString("version", ""), saved.getLong("code", 0), "",
                 saved.getString("url", ""), saved.getString("sha256", ""));
+            filename = saved.getString("file", "");
             if (UpdateVersion.fromTag("quietguard-v" + release.version) == null || !UpdateIntegrity.validHash(release.sha256)
-                    || !UpdateIntegrity.validApkUrl(UpdateChecker.REPO, release.version, release.apkUrl)) throw new IllegalArgumentException();
+                    || !UpdateIntegrity.validApkUrl(UpdateChecker.REPO, release.version, release.apkUrl)
+                    || !filename.matches("QuietGuard-[0-9.]+-[a-f0-9-]+\\.apk")) throw new IllegalArgumentException();
             if (release.versionCode <= BuildConfig.VERSION_CODE) clear();
         } catch (RuntimeException e) { clear(); }
     }
@@ -63,12 +61,30 @@ final class InAppUpdater {
         release = target; failed = false; verifying = false; downloaded = false; ready = null; received = 0; total = -1;
         sampleTime = 0; sampleBytes = 0; speed = 0; message = "正在连接下载服务器…";
         try {
-            id = System.currentTimeMillis(); startedAt = SystemClock.elapsedRealtime();
-            if (!saved.edit().clear().putLong("id", id).putString("version", target.version).putLong("code", target.versionCode)
-                .putString("url", target.apkUrl).putString("sha256", target.sha256).putString("transport", "direct").commit())
-                throw new IOException("无法保存下载任务，请重试");
-            UpdateDownloadService.start(context, id);
-        } catch (Exception e) { failed = true; message = "无法开始下载：" + readable(e); }
+            if (manager == null) throw new IOException("系统下载服务不可用");
+            File directory = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+            if (directory == null || (!directory.isDirectory() && !directory.mkdirs())) throw new IOException("下载存储空间不可用");
+            UpdateVpnPause.beginDownload(context);
+            filename = "QuietGuard-" + target.version + "-" + UUID.randomUUID() + ".apk";
+            DownloadManager.Request request = new DownloadManager.Request(Uri.parse(target.apkUrl))
+                .setTitle("净屏 v" + target.version + " 更新")
+                .setDescription("返回净屏查看下载进度并安装")
+                .setMimeType(UpdateApkProvider.MIME).setAllowedOverMetered(true).setAllowedOverRoaming(false)
+                .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
+                .setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, filename);
+            request.addRequestHeader("User-Agent", "QuietGuard/" + BuildConfig.VERSION_NAME);
+            request.addRequestHeader("Cache-Control", "no-cache, no-store, max-age=0");
+            id = manager.enqueue(request);
+            UpdateVpnPause.attachDownload(context, id);
+            if (!saved.edit().putLong("id", id).putString("version", target.version).putLong("code", target.versionCode)
+                .putString("url", target.apkUrl).putString("sha256", target.sha256).putString("file", filename).commit()) {
+                manager.remove(id); throw new IOException("无法保存下载任务，请重试");
+            }
+        } catch (Exception e) {
+            if (id >= 0) { if (manager != null) manager.remove(id); UpdateVpnPause.finishDownload(context, id); }
+            UpdateVpnPause.abortPreparing(context);
+            failed = true; message = "无法开始下载：" + readable(e);
+        }
         showDialog(); if (!failed) refresh();
     }
     void resume() {
@@ -130,37 +146,43 @@ final class InAppUpdater {
         if (closed || !resumed || id < 0 || failed) { render(); return; }
         if (ready != null && ready.isFile()) { render(); return; }
         ready = null;
-        if (saved.getBoolean("direct_complete", false) && UpdateDownloadService.source(context, id).isFile()) {
-            downloaded = true; received = UpdateDownloadService.source(context, id).length(); total = received;
-            if (!verifying) verify(); render(); return;
-        }
-        UpdateDownloadService.Snapshot state = UpdateDownloadService.snapshot;
-        if (state == null || state.id != id) {
-            failed = true; message = "上次下载被系统中断，请点击重新下载"; render(); return;
-        }
-        received = state.received; total = state.total;
-        long now = SystemClock.elapsedRealtime();
-        if (sampleTime > 0 && now > sampleTime) speed = Math.max(0, (received - sampleBytes) * 1000 / (now - sampleTime));
-        sampleTime = now; sampleBytes = received; message = state.message;
-        if (state.failed) { failed = true; render(); return; }
-        if (state.complete) { downloaded = true; if (!verifying) verify(); render(); return; }
-        if ("正在启动直连下载…".equals(state.message) && now - startedAt > 10000) {
-            UpdateDownloadService.cancel(context, id);
-            failed = true; message = "系统未能启动下载服务，请重新下载"; render(); return;
-        }
-        render(); handler.postDelayed(poll, 300);
+        try (Cursor cursor = manager.query(new DownloadManager.Query().setFilterById(id))) {
+            if (cursor == null || !cursor.moveToFirst()) throw new IOException(UpdateVpnPause.problem(context));
+            received = Math.max(0, cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)));
+            total = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES));
+            if (received > UpdateIntegrity.MAX_BYTES || total > UpdateIntegrity.MAX_BYTES) { manager.remove(id); throw new IOException("安装包超过允许的大小"); }
+            long now = SystemClock.elapsedRealtime();
+            if (sampleTime > 0 && now > sampleTime) speed = Math.max(0,(received - sampleBytes) * 1000 / (now - sampleTime));
+            sampleTime = now; sampleBytes = received;
+            int status = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS));
+            int reason = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON));
+            if (status == DownloadManager.STATUS_SUCCESSFUL) {
+                UpdateVpnPause.finishDownload(context, id);
+                downloaded = true;
+                if (!verifying) verify(); render(); return;
+            }
+            if (status == DownloadManager.STATUS_FAILED) throw new IOException(failureReason(reason));
+            if (status == DownloadManager.STATUS_PAUSED) {
+                message = reason == DownloadManager.PAUSED_WAITING_FOR_NETWORK ? "等待网络连接，恢复后继续下载"
+                    : reason == DownloadManager.PAUSED_QUEUED_FOR_WIFI ? "等待 Wi-Fi 连接" : "系统暂停下载，正在等待重试";
+            } else message = status == DownloadManager.STATUS_PENDING ? "下载已排队，等待系统开始…" : "正在应用内下载更新…";
+            render(); handler.postDelayed(poll, 500);
+        } catch (Exception e) { UpdateVpnPause.finishDownload(context, id); failed = true; message = "下载失败：" + readable(e); render(); }
     }
     private void verify() {
         verifying = true; message = "下载完成，正在校验文件与签名…"; render();
         final long token = generation, task = id;
         final UpdateChecker.Release target = release;
+        final String sourceName = filename;
         verification = worker.submit(() -> {
             File temp = null, output = cacheApk(target.version, task); String error = null;
             try {
                 File directory = output.getParentFile();
                 if (!directory.isDirectory() && !directory.mkdirs()) throw new IOException("无法创建安装缓存");
                 temp = File.createTempFile("verify-", ".apk", directory);
-                try (InputStream input = new FileInputStream(UpdateDownloadService.source(context, task)); OutputStream out = new FileOutputStream(temp)) {
+                File sourceDirectory = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+                if (sourceDirectory == null) throw new IOException("下载文件存储不可用");
+                try (InputStream input = new FileInputStream(new File(sourceDirectory, sourceName)); OutputStream out = new FileOutputStream(temp)) {
                     UpdateIntegrity.copyAndCheck(input, out, target.sha256, UpdateIntegrity.MAX_BYTES);
                 }
                 validatePackage(temp, target);
@@ -210,14 +232,15 @@ final class InAppUpdater {
         Uri uri = new Uri.Builder().scheme("content").authority(context.getPackageName() + ".updates").appendPath("apk").appendPath(ready.getName()).build();
         Intent intent = new Intent(Intent.ACTION_VIEW).setDataAndType(uri, UpdateApkProvider.MIME).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
         intent.setClipData(ClipData.newRawUri("净屏更新", uri));
-        try { activity.startActivity(intent); message = "请在系统安装界面确认；取消后可回到这里重试"; }
-        catch (ActivityNotFoundException | SecurityException e) { message = "无法打开系统安装程序：" + readable(e); }
+        try { UpdateVpnPause.beforeInstall(context, release.versionCode); activity.startActivity(intent); message = "请在系统安装界面确认；取消后可回到这里重试"; }
+        catch (RuntimeException e) { UpdateVpnPause.recover(context); message = "无法打开系统安装程序：" + readable(e); }
         render();
     }
     private void clear() {
         generation++; handler.removeCallbacks(poll);
         if (verification != null) verification.cancel(true);
-        if (id >= 0) UpdateDownloadService.cancel(context, id);
+        if (id >= 0 && manager != null) try { manager.remove(id); } catch (RuntimeException ignored) { }
+        if (id >= 0) UpdateVpnPause.finishDownload(context, id);
         if (release != null && id >= 0 && UpdateVersion.fromTag("quietguard-v" + release.version) != null) cacheApk(release.version,id).delete();
         saved.edit().clear().apply(); id = -1; ready = null; verifying = false; failed = false; downloaded = false; installRequested = false;
     }
@@ -228,5 +251,12 @@ final class InAppUpdater {
         if (bytes < 1024) return bytes + " B";
         if (bytes < 1024 * 1024) return String.format(Locale.CHINA,"%.1f KB",bytes / 1024.0);
         return String.format(Locale.CHINA,"%.1f MB",bytes / (1024.0 * 1024));
+    }
+    private static String failureReason(int code) {
+        if (code == DownloadManager.ERROR_INSUFFICIENT_SPACE) return "手机剩余空间不足";
+        if (code == DownloadManager.ERROR_DEVICE_NOT_FOUND) return "下载存储不可用";
+        if (code == DownloadManager.ERROR_CANNOT_RESUME) return "网络中断且无法续传，请重新下载";
+        if (code >= 400 && code <= 599) return "服务器返回 HTTP " + code;
+        return "系统下载错误（" + code + "），可重新下载";
     }
 }

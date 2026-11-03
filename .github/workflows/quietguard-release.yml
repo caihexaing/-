@@ -43,12 +43,12 @@ jobs:
         working-directory: quietguard
         run: |
           mkdir -p build/core-checks
-          javac -encoding UTF-8 -d build/core-checks app/src/main/java/cn/quietguard/app/RuleSet.java app/src/main/java/cn/quietguard/app/DnsPacket.java app/src/main/java/cn/quietguard/app/UpdateVersion.java app/src/main/java/cn/quietguard/app/SplashPolicy.java app/src/main/java/cn/quietguard/app/SplashWindow.java app/src/main/java/cn/quietguard/app/UpdateIntegrity.java app/src/main/java/cn/quietguard/app/UpdateHttpDownloader.java tests/CoreChecks.java tests/VersionChecks.java tests/SplashChecks.java tests/UpdateChecks.java tests/DownloadChecks.java
+          javac -encoding UTF-8 -d build/core-checks app/src/main/java/cn/quietguard/app/RuleSet.java app/src/main/java/cn/quietguard/app/DnsPacket.java app/src/main/java/cn/quietguard/app/UpdateVersion.java app/src/main/java/cn/quietguard/app/SplashPolicy.java app/src/main/java/cn/quietguard/app/SplashWindow.java app/src/main/java/cn/quietguard/app/UpdateIntegrity.java app/src/main/java/cn/quietguard/app/UpdateVpnState.java tests/CoreChecks.java tests/VersionChecks.java tests/SplashChecks.java tests/UpdateChecks.java tests/UpdateVpnChecks.java
           java -cp build/core-checks cn.quietguard.app.CoreChecks
           java -cp build/core-checks cn.quietguard.app.VersionChecks
           java -cp build/core-checks cn.quietguard.app.SplashChecks
           java -cp build/core-checks cn.quietguard.app.UpdateChecks
-          java -cp build/core-checks cn.quietguard.app.DownloadChecks
+          java -cp build/core-checks cn.quietguard.app.UpdateVpnChecks
       - name: 构建并静态检查
         working-directory: quietguard
         run: |
@@ -60,11 +60,25 @@ jobs:
           grep -qi '5384d768f44d11b628fda8b95056f6647cbb9ec8055f84aa6d54a8abef16f204' "$RUNNER_TEMP/signature.txt"
           cp quietguard/app/build/outputs/apk/debug/app-debug.apk "QuietGuard-${VERSION}.apk"
           sha256sum "QuietGuard-${VERSION}.apk" > "QuietGuard-${VERSION}.apk.sha256"
+      - name: 确认版本码递增
+        run: |
+          git fetch origin master
+          python3 - <<'PY'
+          import json, pathlib, re, subprocess
+          current = int(re.search(r'versionCode (\d+)', pathlib.Path('quietguard/app/build.gradle').read_text()).group(1))
+          previous = json.loads(subprocess.check_output(['git', 'show', 'origin/master:quietguard/update.json']))
+          assert current > previous['versionCode'], 'Refusing to overwrite published assets without a higher versionCode'
+          PY
       - name: 发布净屏版本
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" "QuietGuard-${VERSION}.apk" "QuietGuard-${VERSION}.apk.sha256" --verify-tag --title "净屏 v${VERSION}" --notes-file quietguard/RELEASE_NOTES.md --latest=false
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "QuietGuard-${VERSION}.apk" "QuietGuard-${VERSION}.apk.sha256" --clobber
+            gh release edit "$GITHUB_REF_NAME" --title "净屏 v${VERSION}" --notes-file quietguard/RELEASE_NOTES.md --latest=false
+          else
+            gh release create "$GITHUB_REF_NAME" "QuietGuard-${VERSION}.apk" "QuietGuard-${VERSION}.apk.sha256" --verify-tag --title "净屏 v${VERSION}" --notes-file quietguard/RELEASE_NOTES.md --latest=false
+          fi
       - name: 更新手机端版本信息
         run: |
           python3 - <<'PY'
@@ -89,13 +103,9 @@ jobs:
           if new['versionCode'] <= old['versionCode']:
               raise SystemExit('versionCode must increase; refusing to downgrade update feed')
           shutil.copyfile(candidate, target)
-          downloads = pathlib.Path('quietguard/download')
-          downloads.mkdir(exist_ok=True)
-          # Preserve versioned fallback URLs for clients with cached update metadata.
-          shutil.copyfile(f'QuietGuard-{new["versionName"]}.apk', downloads / f'QuietGuard-{new["versionName"]}.apk')
           PY
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add quietguard/update.json quietguard/download
+          git add quietguard/update.json
           git commit -m "chore(quietguard): publish update feed for ${VERSION}"
           git push origin HEAD:master

@@ -45,7 +45,8 @@ public final class MainActivity extends Activity {
         statusText = text("过滤未运行", 22, INK); statusText.setTypeface(null, Typeface.BOLD); statusText.setPadding(0, dp(12), 0, dp(8)); card.addView(statusText);
         statsText = text("", 13, MUTED); card.addView(statsText);
         power = button("启动过滤", true); power.setOnClickListener(v -> {
-            if (Prefs.enabled(this) || FilterVpnService.running) stopFiltering(); else requestStart();
+            if (UpdateVpnPause.needsRestore(this) && !FilterVpnService.running) requestStart();
+            else if (Prefs.enabled(this) || FilterVpnService.running) stopFiltering(); else requestStart();
         });
         skipStatus = text("", 12, MUTED); skipStatus.setPadding(0, dp(8), 0, 0); card.addView(skipStatus);
         LinearLayout.LayoutParams powerLp = new LinearLayout.LayoutParams(-1, dp(48)); powerLp.topMargin = dp(12); card.addView(power, powerLp); root.addView(card);
@@ -76,7 +77,7 @@ public final class MainActivity extends Activity {
         handler.postDelayed(() -> checkUpdate(false), 1500);
     }
     @Override protected void onResume() {
-        super.onResume(); resumed = true; updater.resume(); handler.removeCallbacks(ticker); handler.post(ticker);
+        super.onResume(); resumed = true; UpdateVpnPause.recover(this); updater.resume(); handler.removeCallbacks(ticker); handler.post(ticker);
         if (adapter != null) { adapter.notifyDataSetChanged(); updateStatus(); }
         handler.postDelayed(this::offerSkipSetup, 800);
     }
@@ -123,9 +124,11 @@ public final class MainActivity extends Activity {
         String skip = !Prefs.get(this).getBoolean("skip_consent", false) ? "未授权" : !SplashSkipService.connected ? "未连接，请开启" : active ? "已就绪" : "已暂停";
         skipStatus.setText(getString(R.string.splash_status, skip, Prefs.get(this).getLong("skip_clicks", 0)));
         power.setText(active || FilterVpnService.running ? "暂停防护" : "启用防护");
+        if (UpdateVpnPause.needsRestore(this) && !FilterVpnService.running) power.setText(R.string.restore_vpn);
         skipSetup.setText(SplashSkipService.connected ? "开屏跳过设置" : "开启开屏广告跳过");
     }
     private void requestStart() {
+        if (UpdateVpnPause.isPaused(this)) { toast("更新传输期间 VPN 暂时断开，结束后会按原状态恢复"); return; }
         if (Prefs.selected(this).isEmpty()) { toast("先打开至少一个应用右侧的开关"); return; }
         if (!Prefs.get(this).getBoolean("consent", false)) {
             new AlertDialog.Builder(this).setTitle("启用本地广告过滤").setMessage(
@@ -149,7 +152,7 @@ public final class MainActivity extends Activity {
         handler.postDelayed(this::updateStatus, 400);
         handler.postDelayed(this::offerSkipSetup, 900);
     }
-    private void stopFiltering() { Prefs.enabled(this, false); stopService(new Intent(this, FilterVpnService.class)); handler.postDelayed(this::updateStatus, 250); }
+    private void stopFiltering() { Prefs.enabled(this, false); UpdateVpnPause.userDisabled(this); stopService(new Intent(this, FilterVpnService.class)); handler.postDelayed(this::updateStatus, 250); }
     private void applyChanges() { if (Prefs.selected(this).isEmpty()) stopFiltering(); else if (FilterVpnService.running) startFiltering(); }
     private void offerSkipSetup() {
         if (!destroyed && resumed && !isFinishing() && Prefs.enabled(this) && !Prefs.selected(this).isEmpty()
@@ -175,11 +178,16 @@ public final class MainActivity extends Activity {
                 .setMessage("净屏会访问公开 GitHub 发布记录，GitHub 会收到常规网络连接信息；不上传手机应用列表。开启后每天首次启动时自动检查，也可在设置中关闭。")
                 .setNegativeButton("取消", null).setPositiveButton("同意并检查", (d,w) -> { Prefs.get(this).edit().putBoolean("update_consent", true).apply(); checkUpdate(true); }).show(); return;
         }
-        checkingUpdate = true; if (manual) toast("正在检查新版本…");
+        final long vpnToken;
+        try { vpnToken = UpdateVpnPause.beginCheck(this); }
+        catch (RuntimeException e) { if (manual) toast(e.getMessage()); return; }
+        checkingUpdate = true; if (manual) toast("正在检查新版本，期间暂停净屏 VPN…");
         scanner.execute(() -> {
             UpdateChecker.Release release = null; String problem = null;
             try { release = UpdateChecker.check(); Prefs.get(this).edit().putLong("update_success", System.currentTimeMillis()).apply(); }
             catch (Exception e) { problem = e.getMessage(); }
+            // Use a process handler so rotation/destruction cannot discard the restoration callback.
+            new Handler(Looper.getMainLooper()).post(() -> UpdateVpnPause.endCheck(getApplicationContext(), vpnToken));
             final UpdateChecker.Release found = release; final String error = problem;
             handler.post(() -> {
                 checkingUpdate = false; if (destroyed || isFinishing()) return;
@@ -196,9 +204,9 @@ public final class MainActivity extends Activity {
         Button skip = button("设置开屏广告跳过", false); skip.setOnClickListener(v -> showSkipSetup()); panel.addView(skip);
         TextView explanation = text("同一个应用开关控制 DNS 过滤和开屏跳过。跳过功能需要额外的系统无障碍授权。域名命中与跳过点击都不代表清除全部广告。", 12, MUTED);
         panel.addView(explanation);
-        Button update = button("检查更新 · 当前 v" + BuildConfig.VERSION_NAME, false);
+        Button update = button("检查更新 · 当前 v" + BuildConfig.VERSION_NAME + "（构建 " + BuildConfig.VERSION_CODE + "）", false);
         update.setOnClickListener(v -> checkUpdate(true)); panel.addView(update);
-        TextView updatePrivacy = text("在净屏内下载更新并显示进度，可取消和重试；完成后由系统确认安装。检查和下载仅访问 GitHub，不上传应用列表。", 12, MUTED);
+        TextView updatePrivacy = text("检查和下载前自动暂时断开净屏 VPN，结束、失败或取消后按原状态恢复；安装后再检查恢复。更新中手动暂停防护会保留你的选择。APP 内显示下载进度，安装由系统确认；仅访问 GitHub，不上传应用列表。", 12, MUTED);
         panel.addView(updatePrivacy);
         Switch autoUpdate = new Switch(this); autoUpdate.setText("自动检查新版本"); autoUpdate.setTextSize(14);
         autoUpdate.setChecked(Prefs.get(this).getBoolean("update_consent", false));

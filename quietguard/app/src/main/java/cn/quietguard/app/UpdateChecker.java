@@ -14,10 +14,10 @@ final class UpdateChecker {
         Release(String v, long code, String n, String u, String hash) { version = v; versionCode = code; notes = n; apkUrl = u; sha256 = hash; }
     }
     static Release check() throws Exception {
-        JSONObject feed = new JSONObject(fetch("https://raw.githubusercontent.com/" + REPO + "/master/quietguard/update.json"));
+        JSONObject feed = new JSONObject(fetch("https://raw.githubusercontent.com/" + REPO + "/master/quietguard/update.json?check=" + System.currentTimeMillis()));
         if (!"cn.quietguard.app".equals(feed.getString("applicationId"))) throw new IOException("版本信息与应用不匹配");
         String version = feed.getString("versionName");
-        if (UpdateVersion.compare(version, CURRENT) <= 0 || feed.getLong("versionCode") <= BuildConfig.VERSION_CODE) return null;
+        if (!UpdateVersion.newer(version, feed.getLong("versionCode"), CURRENT, BuildConfig.VERSION_CODE)) return null;
         String url = feed.getString("apkUrl");
         if (!UpdateIntegrity.validApkUrl(REPO, version, url))
             throw new IOException("更新下载地址无效");
@@ -31,6 +31,7 @@ final class UpdateChecker {
         c.setConnectTimeout(10000); c.setReadTimeout(10000);
         c.setRequestProperty("Accept", "application/json");
         c.setUseCaches(false);
+        c.setRequestProperty("Cache-Control", "no-cache, no-store, max-age=0");
         c.setRequestProperty("User-Agent", "QuietGuard/" + CURRENT);
         try {
             int code = c.getResponseCode();

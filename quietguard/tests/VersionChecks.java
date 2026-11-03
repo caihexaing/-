@@ -13,6 +13,11 @@ public final class VersionChecks {
         check(UpdateVersion.fromTag("quietguard-vbad") == null);
         check("0.3.0".equals(UpdateVersion.fromTag("quietguard-v0.3.0")));
         check(UpdateVersion.fromTag("quietguard-v999999999999.0.0") == null);
-        System.out.println("PASS: 10 version comparisons and release tag isolation checks.");
+        check(UpdateVersion.newer("0.4.2", 8, "0.4.1", 6));
+        check(UpdateVersion.newer("0.4.2", 8, "0.4.2", 7));
+        check(!UpdateVersion.newer("0.4.2", 8, "0.4.2", 8));
+        check(!UpdateVersion.newer("0.4.1", 9, "0.4.2", 8));
+        check(!UpdateVersion.newer("0.4.3", 7, "0.4.2", 8));
+        System.out.println("PASS: 15 version comparisons and release tag isolation checks.");
     }
 }

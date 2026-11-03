@@ -2,6 +2,9 @@ package cn.quietguard.app;
 
 /** Release tags are scoped to this app because the repository also contains other projects. */
 public final class UpdateVersion {
+    public static boolean newer(String remote, long remoteCode, String current, long currentCode) {
+        return remoteCode > currentCode && compare(remote, current) >= 0;
+    }
     public static int compare(String left, String right) {
         String[] a = parse(left), b = parse(right);
         for (int i = 0; i < 3; i++) {
