@@ -29,10 +29,10 @@ public final class FilterVpnService extends VpnService {
         PendingIntent stop = PendingIntent.getService(this, 1, new Intent(this, FilterVpnService.class).setAction(STOP), PendingIntent.FLAG_IMMUTABLE);
         return new Notification.Builder(this, "filter").setSmallIcon(cn.quietguard.app.R.drawable.ic_shield)
             .setContentTitle("净屏 · 本地广告过滤").setContentText(text).setContentIntent(open).setOngoing(true)
-            .addAction(new Notification.Action.Builder(null, "停止过滤", stop).build()).build();
+            .addAction(new Notification.Action.Builder(null, "暂停全部防护", stop).build()).build();
     }
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent != null && STOP.equals(intent.getAction())) { stopFilter("过滤已停止"); stopSelf(); return START_NOT_STICKY; }
+        if (intent != null && STOP.equals(intent.getAction())) { Prefs.enabled(this, false); stopFilter("防护已暂停"); stopSelf(); return START_NOT_STICKY; }
         try {
             Notification n = notification("正在配置过滤…");
             if (Build.VERSION.SDK_INT >= 34) startForeground(7, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED);

@@ -24,10 +24,10 @@ public final class MainActivity extends Activity {
     private final ExecutorService scanner = Executors.newSingleThreadExecutor();
     private final List<AppEntry> apps = new ArrayList<>(), visible = new ArrayList<>();
     private AppAdapter adapter;
-    private TextView statusText, countText, statsText, empty;
-    private Button power;
+    private TextView statusText, countText, statsText, empty, skipStatus;
+    private Button power, skipSetup;
     private EditText search;
-    private boolean showSystem, onlySelected, destroyed, scanning, checkingUpdate;
+    private boolean showSystem, onlySelected, destroyed, scanning, checkingUpdate, resumed;
     private final Runnable ticker = new Runnable() { @Override public void run() { updateStatus(); handler.postDelayed(this, 1000); } };
     @Override public void onCreate(Bundle state) {
         super.onCreate(state); getWindow().setStatusBarColor(BG); getWindow().setNavigationBarColor(BG);
@@ -44,9 +44,13 @@ public final class MainActivity extends Activity {
         statusText = text("过滤未运行", 22, INK); statusText.setTypeface(null, Typeface.BOLD); statusText.setPadding(0, dp(12), 0, dp(8)); card.addView(statusText);
         statsText = text("", 13, MUTED); card.addView(statsText);
         power = button("启动过滤", true); power.setOnClickListener(v -> {
-            if (FilterVpnService.running) stopFiltering(); else requestStart();
-        }); LinearLayout.LayoutParams powerLp = new LinearLayout.LayoutParams(-1, dp(48)); powerLp.topMargin = dp(18); card.addView(power, powerLp); root.addView(card);
-        TextView note = text("免 Root · 按应用选择 · 无法保证屏蔽所有广告", 12, MUTED); note.setPadding(0, dp(12), 0, dp(16)); root.addView(note);
+            if (Prefs.enabled(this) || FilterVpnService.running) stopFiltering(); else requestStart();
+        });
+        skipStatus = text("", 12, MUTED); skipStatus.setPadding(0, dp(8), 0, 0); card.addView(skipStatus);
+        LinearLayout.LayoutParams powerLp = new LinearLayout.LayoutParams(-1, dp(48)); powerLp.topMargin = dp(12); card.addView(power, powerLp); root.addView(card);
+        skipSetup = button("开启开屏广告跳过", false); skipSetup.setOnClickListener(v -> showSkipSetup());
+        root.addView(skipSetup, new LinearLayout.LayoutParams(-1, dp(44)));
+        TextView note = text("DNS 规则命中 ≠ 去除广告数；开屏跳过需无障碍授权", 11, MUTED); note.setPadding(0, dp(4), 0, dp(10)); root.addView(note);
 
         search = new EditText(this); search.setSingleLine(true); search.setTextSize(14); search.setTextColor(INK);
         search.setHintTextColor(MUTED); search.setHint("搜索应用名称或包名"); search.setPadding(dp(16), 0, dp(16), 0); search.setBackground(shape(Color.WHITE, 14));
@@ -70,8 +74,12 @@ public final class MainActivity extends Activity {
         scan();
         handler.postDelayed(() -> checkUpdate(false), 1500);
     }
-    @Override protected void onResume() { super.onResume(); handler.removeCallbacks(ticker); handler.post(ticker); if (adapter != null) { adapter.notifyDataSetChanged(); updateStatus(); } }
-    @Override protected void onPause() { handler.removeCallbacks(ticker); super.onPause(); }
+    @Override protected void onResume() {
+        super.onResume(); resumed = true; handler.removeCallbacks(ticker); handler.post(ticker);
+        if (adapter != null) { adapter.notifyDataSetChanged(); updateStatus(); }
+        handler.postDelayed(this::offerSkipSetup, 800);
+    }
+    @Override protected void onPause() { resumed = false; handler.removeCallbacks(ticker); super.onPause(); }
     @Override protected void onDestroy() { destroyed = true; handler.removeCallbacksAndMessages(null); scanner.shutdownNow(); super.onDestroy(); }
     private void scan() {
         if (scanning) return; scanning = true; countText.setText("正在读取已安装应用…");
@@ -110,7 +118,11 @@ public final class MainActivity extends Activity {
         if (statusText == null) return;
         statusText.setText(FilterVpnService.status);
         statsText.setText(getString(R.string.dns_stats, FilterVpnService.queries.get(), FilterVpnService.blocked.get(), FilterVpnService.failed.get()));
-        power.setText(FilterVpnService.running ? "停止过滤" : "启动过滤");
+        boolean active = Prefs.enabled(this);
+        String skip = !Prefs.get(this).getBoolean("skip_consent", false) ? "未授权" : !SplashSkipService.connected ? "未连接，请开启" : active ? "已就绪" : "已暂停";
+        skipStatus.setText(getString(R.string.splash_status, skip, Prefs.get(this).getLong("skip_clicks", 0)));
+        power.setText(active || FilterVpnService.running ? "暂停防护" : "启用防护");
+        skipSetup.setText(SplashSkipService.connected ? "开屏跳过设置" : "开启开屏广告跳过");
     }
     private void requestStart() {
         if (Prefs.selected(this).isEmpty()) { toast("先打开至少一个应用右侧的开关"); return; }
@@ -120,21 +132,38 @@ public final class MainActivity extends Activity {
                 "\n\n会占用系统 VPN 通道，与其他 VPN 互斥。系统严格私人 DNS、应用内加密 DNS、缓存和同域广告可能绕过过滤。首次连接需系统授权。")
                 .setNegativeButton("暂不开启", null).setPositiveButton("同意并继续", (d,w) -> { Prefs.get(this).edit().putBoolean("consent", true).apply(); requestStart(); }).show(); return;
         }
+        Prefs.enabled(this, true);
         Intent permission = VpnService.prepare(this);
         if (permission != null) startActivityForResult(permission, 31); else startFiltering();
     }
     @Override protected void onActivityResult(int request, int result, Intent data) {
-        super.onActivityResult(request, result, data); if (request == 31) { if (result == RESULT_OK) startFiltering(); else toast("未授权 VPN，过滤没有启动"); }
+        super.onActivityResult(request, result, data); if (request == 31) { if (result == RESULT_OK) startFiltering(); else { toast("未授权 VPN，网络过滤未启动；开屏跳过可单独授权使用"); handler.postDelayed(this::offerSkipSetup, 500); } }
     }
     private void startFiltering() {
+        Prefs.enabled(this, true);
         try { startForegroundService(new Intent(this, FilterVpnService.class));
             if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
                 requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 32);
         } catch (Exception e) { toast("无法启动：" + e.getMessage()); }
         handler.postDelayed(this::updateStatus, 400);
+        handler.postDelayed(this::offerSkipSetup, 900);
     }
-    private void stopFiltering() { stopService(new Intent(this, FilterVpnService.class)); handler.postDelayed(this::updateStatus, 250); }
+    private void stopFiltering() { Prefs.enabled(this, false); stopService(new Intent(this, FilterVpnService.class)); handler.postDelayed(this::updateStatus, 250); }
     private void applyChanges() { if (Prefs.selected(this).isEmpty()) stopFiltering(); else if (FilterVpnService.running) startFiltering(); }
+    private void offerSkipSetup() {
+        if (!destroyed && resumed && !isFinishing() && Prefs.enabled(this) && !Prefs.selected(this).isEmpty()
+                && !Prefs.get(this).getBoolean("skip_prompted", false)) showSkipSetup();
+    }
+    private void showSkipSetup() {
+        Prefs.get(this).edit().putBoolean("skip_prompted", true).apply();
+        new AlertDialog.Builder(this).setTitle("启用开屏广告自动跳过")
+            .setMessage("为处理你截图中的“4s｜跳过”，净屏需要 Android 无障碍授权。\n\n只在已开启的应用进入前台后 15 秒内，读取其界面控件，识别右上角带倒计时或广告标识的“跳过”按钮并尝试点击。不会点击广告主体或“启动”等推广按钮。\n\n界面内容只在本机临时处理，不保存、不上传。无障碍属于敏感权限，你可随时在系统设置中关闭，也可在净屏暂停防护。\n\n系统授权后回到净屏，确认“开屏跳过：已就绪”，再重新打开目标应用。广告可能短暂出现；无法保证跳过所有广告。")
+            .setNegativeButton("暂不开启", null).setPositiveButton("同意并前往设置", (d,w) -> {
+                Prefs.get(this).edit().putBoolean("skip_consent", true).apply();
+                try { startActivity(new Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)); }
+                catch (ActivityNotFoundException e) { toast("请在系统设置中搜索“无障碍”，开启“净屏 · 开屏广告跳过”"); }
+            }).show();
+    }
     private void checkUpdate(boolean manual) {
         if (destroyed || checkingUpdate) return;
         if (!manual && System.currentTimeMillis() - Prefs.get(this).getLong("update_success", 0) < 86400000L) return;
@@ -165,6 +194,9 @@ public final class MainActivity extends Activity {
     }
     private void showSettings() {
         LinearLayout panel = column(); panel.setPadding(dp(24), dp(8), dp(24), dp(8));
+        Button skip = button("设置开屏广告跳过", false); skip.setOnClickListener(v -> showSkipSetup()); panel.addView(skip);
+        TextView explanation = text("同一个应用开关控制 DNS 过滤和开屏跳过。跳过功能需要额外的系统无障碍授权。域名命中与跳过点击都不代表清除全部广告。", 12, MUTED);
+        panel.addView(explanation);
         Button update = button("检查更新 · 当前 v" + BuildConfig.VERSION_NAME, false);
         update.setOnClickListener(v -> checkUpdate(true)); panel.addView(update);
         TextView updatePrivacy = text("启动时检查 GitHub 中净屏的新版本，仅发送网络请求，不上传应用列表。下载和安装由你确认。", 12, MUTED);
@@ -184,7 +216,7 @@ public final class MainActivity extends Activity {
         allow.setGravity(Gravity.TOP); allow.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE | android.text.InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
         allow.setText(Prefs.get(this).getString("exceptions", "")); panel.addView(allow);
         int ruleCount = 0; try { ruleCount = new RuleSet(getAssets().open("ad-domains.txt"), "").size(); } catch (Exception ignored) { }
-        TextView details = text("内置 " + ruleCount + " 条精选域名规则 · v" + BuildConfig.VERSION_NAME + "\n\n若应用功能异常，可添加例外域名或关闭该应用的开关。\n\n系统“私人 DNS”建议设为关闭；应用自带加密 DNS 可能绕过过滤。本版处理 UDP DNS，不支持 TCP DNS 隧道。\n\n计数从每次启动或重新配置时开始，代表 DNS 请求，不代表广告数量。选择变更会短暂重建 VPN；进程退出后不会自动恢复。", 12, MUTED);
+        TextView details = text("内置 " + ruleCount + " 条精选域名规则 · v" + BuildConfig.VERSION_NAME + "\n\n若应用功能异常，可添加例外域名或关闭该应用的开关。\n\n系统“私人 DNS”建议设为关闭；应用自带加密 DNS 可能绕过过滤。本版处理 UDP DNS，不支持 TCP DNS 隧道。\n\nDNS 规则命中会重复计数，包含追踪请求；转发失败不代表广告漏拦。跳过点击次数仅表示系统接受了点击请求，无法证明广告消失。DNS 计数从启动或重新配置时开始，跳过点击次数在本机累计。\n\n暂停防护将同时停止过滤和自动跳过。无障碍服务由系统管理，进程被系统重启后可能恢复已授权的自动跳过；VPN 不会自动恢复，请查看首页两个真实状态。", 12, MUTED);
         details.setPadding(0, dp(16), 0, 0); panel.addView(details);
         ScrollView scroll = new ScrollView(this); scroll.addView(panel);
         AlertDialog dialog = new AlertDialog.Builder(this).setTitle("过滤设置").setView(scroll).setNegativeButton("取消", null).setNeutralButton("网络设置", (d,w) -> startActivity(new Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS))).setPositiveButton("保存", null).create();
@@ -214,8 +246,8 @@ public final class MainActivity extends Activity {
             AppEntry a = getItem(position); h.name.setText(a.label); h.pkg.setText(a.info.packageName);
             try { h.icon.setImageDrawable(a.info.loadIcon(getPackageManager())); } catch (Exception e) { h.icon.setImageResource(android.R.drawable.sym_def_app_icon); }
             h.toggle.setOnCheckedChangeListener(null); h.toggle.setChecked(Prefs.selected(MainActivity.this).contains(a.info.packageName));
-            h.toggle.setContentDescription(a.label + " 广告过滤");
-            h.toggle.setOnCheckedChangeListener((b,on) -> { Prefs.select(MainActivity.this, a.info.packageName, on); if (on && !FilterVpnService.running) requestStart(); else applyChanges(); filter(); }); return reuse;
+            h.toggle.setContentDescription(a.label + " 广告防护，网络过滤与开屏跳过");
+            h.toggle.setOnCheckedChangeListener((b,on) -> { Prefs.select(MainActivity.this, a.info.packageName, on); if (on && (!Prefs.enabled(MainActivity.this) || !FilterVpnService.running)) requestStart(); else applyChanges(); filter(); }); return reuse;
         }
     }
     static final class AppEntry { final ApplicationInfo info; final String label; AppEntry(ApplicationInfo i, String l) { info = i; label = l; } }

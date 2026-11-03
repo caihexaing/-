@@ -8,6 +8,8 @@ import java.util.Set;
 final class Prefs {
     static SharedPreferences get(Context c) { return c.getSharedPreferences("quiet_guard", Context.MODE_PRIVATE); }
     static Set<String> selected(Context c) { return new HashSet<>(get(c).getStringSet("apps", new HashSet<>())); }
+    static boolean enabled(Context c) { return get(c).getBoolean("protection_enabled", get(c).getBoolean("consent", false)); }
+    static void enabled(Context c, boolean on) { get(c).edit().putBoolean("protection_enabled", on).apply(); }
     static void select(Context c, String name, boolean on) {
         Set<String> apps = selected(c); if (on) apps.add(name); else apps.remove(name);
         get(c).edit().putStringSet("apps", apps).apply();

@@ -43,9 +43,10 @@ jobs:
         working-directory: quietguard
         run: |
           mkdir -p build/core-checks
-          javac -encoding UTF-8 -d build/core-checks app/src/main/java/cn/quietguard/app/RuleSet.java app/src/main/java/cn/quietguard/app/DnsPacket.java app/src/main/java/cn/quietguard/app/UpdateVersion.java tests/CoreChecks.java tests/VersionChecks.java
+          javac -encoding UTF-8 -d build/core-checks app/src/main/java/cn/quietguard/app/RuleSet.java app/src/main/java/cn/quietguard/app/DnsPacket.java app/src/main/java/cn/quietguard/app/UpdateVersion.java app/src/main/java/cn/quietguard/app/SplashPolicy.java app/src/main/java/cn/quietguard/app/SplashWindow.java tests/CoreChecks.java tests/VersionChecks.java tests/SplashChecks.java
           java -cp build/core-checks cn.quietguard.app.CoreChecks
           java -cp build/core-checks cn.quietguard.app.VersionChecks
+          java -cp build/core-checks cn.quietguard.app.SplashChecks
       - name: 构建并静态检查
         working-directory: quietguard
         run: |
