@@ -1,7 +1,8 @@
 {
   "applicationId": "cn.quietguard.app",
-  "versionName": "0.2.0",
-  "versionCode": 2,
-  "apkUrl": "https://github.com/caihexaing/-/releases/download/quietguard-v0.2.0/QuietGuard-0.2.0.apk",
-  "notes": "新增应用内 GitHub 更新检查。"
+  "versionName": "0.2.1",
+  "versionCode": 3,
+  "apkUrl": "https://github.com/caihexaing/-/releases/download/quietguard-v0.2.1/QuietGuard-0.2.1.apk",
+  "sha256": "a4c8af542a945910c22bda086b3c7065988fde080c25bad7b9176fb93ba9448a",
+  "notes": "# 净屏 v0.2.1\n\n- 新增 GitHub 新版本检查，设置页可手动检查。\n- 同意后每天首次启动自动检查，可在设置中关闭。\n- 新版本提示显示发布说明，并提供浏览器下载入口。\n- 使用仓库公开版本文件检查更新，避免未登录 GitHub API 的限流。\n- 仅识别净屏的 Release，避免与同仓库其他应用版本混淆。\n- 保留应用列表、搜索、独立开关、本地 DNS 过滤及域名例外。\n\n0.1.0 用户需手动安装本版一次，此后可在应用内获得新版本提示。0.2.0 若检查被限流，也请手动安装本版。不能保证屏蔽全部广告；VPN 和过滤效果仍待真机验证。\n"
 }
