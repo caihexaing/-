@@ -3,7 +3,7 @@ package cn.quietguard.app;
 import java.util.Locale;
 import java.util.regex.Pattern;
 
-/** Conservative matching of the screenshot's "4s | 跳过" control, never a raw screen coordinate. */
+/** Position-independent matching of small, labelled skip controls with ad/countdown evidence. */
 public final class SplashPolicy {
     private static final Pattern SKIP = Pattern.compile(
         "^(?:[0-9]{1,2}(?:s|秒)?[|/·:：-]?)?(?:跳过(?:广告)?|关闭广告|skip(?:ad)?)(?:[|/·:：-]?[0-9]{1,2}(?:s|秒)?)?$");
@@ -26,7 +26,6 @@ public final class SplashPolicy {
         long w = (long)right - left, h = (long)bottom - top;
         if (width <= 0 || height <= 0 || w <= 0 || h <= 0) return false;
         if (left < windowLeft || top < windowTop || right > windowRight || bottom > windowBottom) return false;
-        return left - windowLeft >= width * .5 && right - windowLeft >= width * .7 && bottom - windowTop <= height * .25
-            && w <= width * .46 && h <= height * .12;
+        return w <= width * .46 && h <= height * .12;
     }
 }

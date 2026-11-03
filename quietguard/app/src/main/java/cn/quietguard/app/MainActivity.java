@@ -158,7 +158,7 @@ public final class MainActivity extends Activity {
     private void showSkipSetup() {
         Prefs.get(this).edit().putBoolean("skip_prompted", true).apply();
         new AlertDialog.Builder(this).setTitle("启用开屏广告自动跳过")
-            .setMessage("为处理你截图中的“4s｜跳过”，净屏需要 Android 无障碍授权。\n\n只在已开启的应用进入前台后 15 秒内，读取其界面控件，识别右上角带倒计时或广告标识的“跳过”按钮并尝试点击。不会点击广告主体或“启动”等推广按钮。\n\n界面内容只在本机临时处理，不保存、不上传。无障碍属于敏感权限，你可随时在系统设置中关闭，也可在净屏暂停防护。\n\n系统授权后回到净屏，确认“开屏跳过：已就绪”，再重新打开目标应用。广告可能短暂出现；无法保证跳过所有广告。")
+            .setMessage("为识别开屏广告中的“跳过”按钮，净屏需要 Android 无障碍授权。\n\n只在已开启的应用进入前台后 15 秒内，读取其界面控件，识别窗口内任意位置带倒计时或广告标识的“跳过”按钮并尝试点击。不会点击广告主体或“启动”等推广按钮。\n\n界面内容只在本机临时处理，不保存、不上传。无障碍属于敏感权限，你可随时在系统设置中关闭，也可在净屏暂停防护。\n\n系统授权后回到净屏，确认“开屏跳过：已就绪”，再重新打开目标应用。广告可能短暂出现；无法保证跳过所有广告。")
             .setNegativeButton("暂不开启", null).setPositiveButton("同意并前往设置", (d,w) -> {
                 Prefs.get(this).edit().putBoolean("skip_consent", true).apply();
                 try { startActivity(new Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)); }
