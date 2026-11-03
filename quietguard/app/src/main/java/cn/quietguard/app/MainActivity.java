@@ -27,10 +27,11 @@ public final class MainActivity extends Activity {
     private TextView statusText, countText, statsText, empty, skipStatus;
     private Button power, skipSetup;
     private EditText search;
+    private InAppUpdater updater;
     private boolean showSystem, onlySelected, destroyed, scanning, checkingUpdate, resumed;
     private final Runnable ticker = new Runnable() { @Override public void run() { updateStatus(); handler.postDelayed(this, 1000); } };
     @Override public void onCreate(Bundle state) {
-        super.onCreate(state); getWindow().setStatusBarColor(BG); getWindow().setNavigationBarColor(BG);
+        super.onCreate(state); updater = new InAppUpdater(this); getWindow().setStatusBarColor(BG); getWindow().setNavigationBarColor(BG);
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
         LinearLayout root = column(); root.setBackgroundColor(BG); root.setPadding(dp(20), dp(8), dp(20), 0);
         root.setFitsSystemWindows(true); setContentView(root);
@@ -75,12 +76,12 @@ public final class MainActivity extends Activity {
         handler.postDelayed(() -> checkUpdate(false), 1500);
     }
     @Override protected void onResume() {
-        super.onResume(); resumed = true; handler.removeCallbacks(ticker); handler.post(ticker);
+        super.onResume(); resumed = true; updater.resume(); handler.removeCallbacks(ticker); handler.post(ticker);
         if (adapter != null) { adapter.notifyDataSetChanged(); updateStatus(); }
         handler.postDelayed(this::offerSkipSetup, 800);
     }
-    @Override protected void onPause() { resumed = false; handler.removeCallbacks(ticker); super.onPause(); }
-    @Override protected void onDestroy() { destroyed = true; handler.removeCallbacksAndMessages(null); scanner.shutdownNow(); super.onDestroy(); }
+    @Override protected void onPause() { resumed = false; updater.pause(); handler.removeCallbacks(ticker); super.onPause(); }
+    @Override protected void onDestroy() { destroyed = true; updater.close(); handler.removeCallbacksAndMessages(null); scanner.shutdownNow(); super.onDestroy(); }
     private void scan() {
         if (scanning) return; scanning = true; countText.setText("正在读取已安装应用…");
         scanner.execute(() -> {
@@ -166,6 +167,7 @@ public final class MainActivity extends Activity {
     }
     private void checkUpdate(boolean manual) {
         if (destroyed || checkingUpdate) return;
+        if (updater.hasPending()) { if (manual) updater.showExisting(); return; }
         if (!manual && System.currentTimeMillis() - Prefs.get(this).getLong("update_success", 0) < 86400000L) return;
         if (!Prefs.get(this).getBoolean("update_consent", false)) {
             if (!manual) return;
@@ -184,11 +186,8 @@ public final class MainActivity extends Activity {
                 if (error != null) { if (manual) toast("检查失败：" + error); return; }
                 if (found == null) { if (manual) toast("当前已是净屏最新发布版本"); return; }
                 new AlertDialog.Builder(this).setTitle("发现净屏 v" + found.version)
-                    .setMessage(found.notes + "\n\n下载后请打开 APK 并确认安装。若 GitHub 连接不畅，可稍后重试。")
-                    .setNegativeButton("稍后", null).setPositiveButton("下载新版", (d,w) -> {
-                        try { startActivity(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(found.apkUrl))); }
-                        catch (ActivityNotFoundException e) { toast("请安装浏览器以下载更新"); }
-                    }).show();
+                    .setMessage(found.notes + "\n\n将在净屏内使用当前网络下载，显示进度并校验文件；下载完成后点击安装，由系统确认。")
+                    .setNegativeButton("稍后", null).setPositiveButton("立即更新", (d,w) -> updater.start(found)).show();
             });
         });
     }
@@ -199,7 +198,7 @@ public final class MainActivity extends Activity {
         panel.addView(explanation);
         Button update = button("检查更新 · 当前 v" + BuildConfig.VERSION_NAME, false);
         update.setOnClickListener(v -> checkUpdate(true)); panel.addView(update);
-        TextView updatePrivacy = text("启动时检查 GitHub 中净屏的新版本，仅发送网络请求，不上传应用列表。下载和安装由你确认。", 12, MUTED);
+        TextView updatePrivacy = text("在净屏内下载更新并显示进度，可取消和重试；完成后由系统确认安装。检查和下载仅访问 GitHub，不上传应用列表。", 12, MUTED);
         panel.addView(updatePrivacy);
         Switch autoUpdate = new Switch(this); autoUpdate.setText("自动检查新版本"); autoUpdate.setTextSize(14);
         autoUpdate.setChecked(Prefs.get(this).getBoolean("update_consent", false));

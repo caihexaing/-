@@ -9,20 +9,22 @@ final class UpdateChecker {
     static final String REPO = "caihexaing/-";
     static final String CURRENT = BuildConfig.VERSION_NAME;
     static final class Release {
-        final String version, notes, apkUrl;
-        Release(String v, String n, String u) { version = v; notes = n; apkUrl = u; }
+        final String version, notes, apkUrl, sha256;
+        final long versionCode;
+        Release(String v, long code, String n, String u, String hash) { version = v; versionCode = code; notes = n; apkUrl = u; sha256 = hash; }
     }
     static Release check() throws Exception {
         JSONObject feed = new JSONObject(fetch("https://raw.githubusercontent.com/" + REPO + "/master/quietguard/update.json"));
         if (!"cn.quietguard.app".equals(feed.getString("applicationId"))) throw new IOException("版本信息与应用不匹配");
         String version = feed.getString("versionName");
         if (UpdateVersion.compare(version, CURRENT) <= 0 || feed.getLong("versionCode") <= BuildConfig.VERSION_CODE) return null;
-        String url = feed.getString("apkUrl"); URI uri = new URI(url);
-        String expected = "/" + REPO + "/releases/download/quietguard-v" + version + "/QuietGuard-" + version + ".apk";
-        if (!"https".equals(uri.getScheme()) || !"github.com".equals(uri.getHost()) || !expected.equals(uri.getPath()) || uri.getUserInfo() != null || uri.getPort() != -1 || uri.getQuery() != null || uri.getFragment() != null)
+        String url = feed.getString("apkUrl");
+        if (!UpdateIntegrity.validApkUrl(REPO, version, url))
             throw new IOException("更新下载地址无效");
         String notes = feed.optString("notes", "新版本已发布");
-        return new Release(version, notes.substring(0, Math.min(notes.length(), 4000)), url);
+        String hash = feed.getString("sha256");
+        if (!UpdateIntegrity.validHash(hash)) throw new IOException("更新信息缺少有效的文件校验值");
+        return new Release(version, feed.getLong("versionCode"), notes.substring(0, Math.min(notes.length(), 4000)), url, hash);
     }
     private static String fetch(String url) throws Exception {
         HttpURLConnection c = (HttpURLConnection)new URL(url).openConnection();

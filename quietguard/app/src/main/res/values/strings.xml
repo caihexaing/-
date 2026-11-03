@@ -4,4 +4,5 @@
     <string name="splash_service_label">净屏 · 开屏广告跳过</string>
     <string name="splash_service_description">仅在净屏中开启的应用进入前台后 15 秒内，在本机识别右上角带倒计时或广告标识的“跳过”控件并尝试点击。需要读取界面控件和执行点击，不读取、存储或上传未选择应用的页面内容，不会点击广告主体、下载或购买按钮。无法保证所有广告都能跳过，可随时在净屏或系统无障碍设置中关闭。</string>
     <string name="splash_status">开屏跳过：%1$s · 点击操作 %2$d 次</string>
+    <string name="update_transfer">%1$s   %2$s%3$s</string>
 </resources>
