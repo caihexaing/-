@@ -28,6 +28,32 @@ public final class RuntimeChecks {
         check(b.allowTree(5300), "reset clears fallback cooldown");
         check(SplashScanBudget.TREE_SLICE_MS < SplashScanBudget.INTERVAL_MS, "fallback budget is smaller than scan interval");
 
+        b.reset(); b.foreground("residence",true,0);
+        check(b.delay(0)==0,"selected app first read remains immediate");
+        b.completed(100);
+        check(b.delay(100)==200,"entry boost cooldown starts after completion");
+        check(b.delay(299)==1,"entry events cannot bypass fast cooldown");
+        check(b.delay(300)==0,"entry fast boundary allows scan");
+        b.foreground("residence",true,2900); b.completed(2900);
+        check(b.delay(3000)==400,"same-app event cannot extend entry boost");
+        b.foreground("launcher",false,3010);
+        check(b.delay(3100)==300,"unselected foreground has normal cooldown");
+        b.foreground("residence",true,3200); b.completed(3200);
+        check(b.delay(3200)==200,"new foreground entry can receive boost");
+        check(b.allowTree(3200),"tree initially available during boost");
+        check(!b.allowTree(3400),"fast scan cannot accelerate full tree traversal");
+        b.reset(); b.foreground("residence",true,0);
+        scans=0;
+        for (long now=0;now<15000;now++) {
+            b.foreground("residence",true,now);
+            if(b.delay(now)==0) { scans++; b.completed(now); }
+        }
+        check(scans<=40,"event storm remains bounded to forty zero-cost reads per entry");
+        b.foreground(null,true,15000); b.completed(15000);
+        check(b.delay(15000)==500,"null foreground cannot receive boost");
+        b.reset(); check(b.delay(0)==0,"reset removes prior completion and foreground");
+        check(SplashTextTap.MIN_STABLE_MS==350,"speed change preserves text stability threshold");
+
         Set<String> selected = new HashSet<>(Set.of("residence", "calendar"));
         Set<String> skipOnly = new HashSet<>();
         check(ProtectionMode.networkApps(selected, skipOnly).equals(selected), "old installations keep both modes");

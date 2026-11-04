@@ -42,6 +42,7 @@ public final class SplashSkipService extends AccessibilityService {
         if (!pkg.equals(eventPkg)) {
             resetTextTap();
             eventPkg = pkg;
+            budget.foreground(pkg, permitted(pkg), SystemClock.elapsedRealtime());
             waitingUntil = permitted(pkg) ? SystemClock.elapsedRealtime() + SplashWindow.DURATION_MS : 0;
         }
         if (pkg.equals(sessionPkg) && !window.observe(pkg, true, true, SystemClock.elapsedRealtime())) return;
@@ -70,6 +71,7 @@ public final class SplashSkipService extends AccessibilityService {
         return lock == null || !lock.isKeyguardLocked();
     }
     private void beginReport(String pkg) {
+        budget.foreground(pkg, permitted(pkg), SystemClock.elapsedRealtime());
         if (pkg.equals(sessionPkg)) return;
         window.reset(); resetTextTap(); sessionId++; gestureAction=false; sessionPkg = pkg; maxNodes = 0; limited = false; sawSkip = false; sawAd = false;
         lastReason = ""; lastReport = 0; maxScanMs = 0; diagnostic.reset();
@@ -116,14 +118,14 @@ public final class SplashSkipService extends AccessibilityService {
         List<Candidate> candidates = new ArrayList<>();
         try {
             String pkg = root.getPackageName() == null ? "" : root.getPackageName().toString();
-            if (!permitted(pkg)) { window.reset(); resetTextTap(); sessionId++; sessionPkg = ""; return; }
+            if (!permitted(pkg)) { budget.foreground(pkg, false, SystemClock.elapsedRealtime()); window.reset(); resetTextTap(); sessionId++; sessionPkg = ""; return; }
             beginReport(pkg);
             long now = SystemClock.elapsedRealtime();
             if (!window.observe(pkg, true, true, now)) return;
             Rect bounds = new Rect(); root.getBoundsInScreen(bounds);
             long started = SystemClock.elapsedRealtime();
             boolean plain = Prefs.plainSkip(this, pkg);
-            Snapshot snapshot = new Snapshot(); search(root, candidates, snapshot);
+            Snapshot snapshot = new Snapshot(); search(root, candidates, snapshot, plain);
             boolean needsTree = candidates.isEmpty() || (!plain && !snapshot.ad
                 && candidates.stream().noneMatch(c -> SplashPolicy.countdownLabel(c.label) || SplashPolicy.explicitAdSkip(c.label)));
             if (needsTree && !window.hasAccepted() && budget.allowTree(started)) collect(root, candidates, snapshot);
@@ -191,9 +193,11 @@ public final class SplashSkipService extends AccessibilityService {
         try { return current.getWindowId() == windowId && current.getPackageName() != null && pkg.contentEquals(current.getPackageName()); }
         finally { current.recycle(); }
     }
-    private void search(AccessibilityNodeInfo root, List<Candidate> out, Snapshot state) {
+    private void search(AccessibilityNodeInfo root, List<Candidate> out, Snapshot state, boolean plain) {
         // Ask for relevant text first instead of performing hundreds of child IPC calls on every event.
-        for (String term : new String[]{"跳过", "skip", "广告", "ad"}) {
+        // Plain-skip opt-in does not require a separate ad marker; still check both skip languages.
+        String[] terms = plain ? new String[]{"跳过", "skip"} : new String[]{"跳过", "skip", "广告", "ad"};
+        for (String term : terms) {
             if (destroyed) return;
             List<AccessibilityNodeInfo> found = root.findAccessibilityNodeInfosByText(term);
             if (found == null) continue;
