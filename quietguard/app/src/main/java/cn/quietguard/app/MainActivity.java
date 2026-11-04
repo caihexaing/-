@@ -25,7 +25,7 @@ public final class MainActivity extends Activity {
     private final List<AppEntry> apps = new ArrayList<>(), visible = new ArrayList<>();
     private AppAdapter adapter;
     private TextView statusText, countText, statsText, empty, skipStatus;
-    private Button power, skipSetup;
+    private Button power, skipSetup, enableAll;
     private EditText search;
     private InAppUpdater updater;
     private boolean showSystem, onlySelected, destroyed, scanning, checkingUpdate, resumed;
@@ -68,7 +68,12 @@ public final class MainActivity extends Activity {
         system.setOnCheckedChangeListener((b, on) -> { showSystem = on; filter(); }); filters.addView(system);
         Space spacer = new Space(this); filters.addView(spacer, new LinearLayout.LayoutParams(0, 1, 1));
         TextView refresh = text("刷新", 13, GREEN); refresh.setPadding(dp(8), dp(16), 0, dp(16)); refresh.setOnClickListener(v -> scan()); filters.addView(refresh); root.addView(filters);
-        countText = text("正在读取已安装应用…", 12, MUTED); countText.setPadding(0, 0, 0, dp(8)); root.addView(countText);
+        LinearLayout batch = row();
+        countText = text("正在读取已安装应用…", 12, MUTED);
+        batch.addView(countText, new LinearLayout.LayoutParams(0, -2, 1));
+        enableAll = button("一键开启", false); enableAll.setEnabled(false);
+        enableAll.setOnClickListener(v -> enableAllApps());
+        batch.addView(enableAll, new LinearLayout.LayoutParams(-2, dp(48))); root.addView(batch);
         FrameLayout listArea = new FrameLayout(this); root.addView(listArea, new LinearLayout.LayoutParams(-1, 0, 1));
         ListView list = new ListView(this); list.setDivider(null); list.setVerticalScrollBarEnabled(false); list.setClipToPadding(false); list.setPadding(0, 0, 0, dp(16));
         adapter = new AppAdapter(); list.setAdapter(adapter); listArea.addView(list, new FrameLayout.LayoutParams(-1, -1));
@@ -84,7 +89,7 @@ public final class MainActivity extends Activity {
     @Override protected void onPause() { resumed = false; updater.pause(); handler.removeCallbacks(ticker); super.onPause(); }
     @Override protected void onDestroy() { destroyed = true; updater.close(); handler.removeCallbacksAndMessages(null); scanner.shutdownNow(); super.onDestroy(); }
     private void scan() {
-        if (scanning) return; scanning = true; countText.setText("正在读取已安装应用…");
+        if (scanning) return; scanning = true; enableAll.setEnabled(false); countText.setText("正在读取已安装应用…");
         scanner.execute(() -> {
             List<AppEntry> found = new ArrayList<>(); String problem = null;
             try {
@@ -101,9 +106,25 @@ public final class MainActivity extends Activity {
                 if (error != null) { countText.setText(error); empty.setText(error); return; }
                 apps.clear(); apps.addAll(found); Set<String> valid = new HashSet<>(); for (AppEntry a : found) valid.add(a.info.packageName);
                 Set<String> selected = Prefs.selected(this); if (selected.retainAll(valid)) { Prefs.get(this).edit().putStringSet("apps", selected).apply(); if (FilterVpnService.running) applyChanges(); }
-                filter();
+                enableAll.setEnabled(true); filter();
             });
         });
+    }
+    private void enableAllApps() {
+        if (scanning || !enableAll.isEnabled()) return;
+        Set<String> selected = Prefs.selected(this);
+        int added = 0, total = 0;
+        for (AppEntry app : apps) {
+            if ((app.info.flags & (ApplicationInfo.FLAG_SYSTEM | ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0) continue;
+            total++;
+            if (selected.add(app.info.packageName)) added++;
+        }
+        if (total == 0) { toast("没有可开启的普通应用，请刷新应用列表"); return; }
+        // Persist once; compatibility choices and previously selected system apps stay intact.
+        Prefs.get(this).edit().putStringSet("apps", selected).apply();
+        filter();
+        toast(added == 0 ? "全部普通应用已开启，兼容设置已保留" : "已新增开启 " + added + " 个普通应用，兼容设置已保留");
+        requestStart();
     }
     private void filter() {
         if (adapter == null) return; String q = search.getText().toString().trim().toLowerCase(Locale.ROOT); Set<String> selected = Prefs.selected(this);
