@@ -189,13 +189,37 @@ public final class MainActivity extends Activity {
     }
     private void showSkipSetup() {
         Prefs.get(this).edit().putBoolean("skip_prompted", true).apply();
+        if (Prefs.get(this).getBoolean("skip_consent",false)) { enableSkip(); return; }
         new AlertDialog.Builder(this).setTitle("启用开屏广告自动跳过")
-            .setMessage("为识别开屏广告中的“跳过”按钮，净屏需要 Android 无障碍授权。\n\n只在已开启的应用进入前台后 15 秒内，读取其界面控件，识别任意位置明确的广告跳过按钮，或带倒计时/广告标识的“跳过”按钮并尝试点击。可长按单个应用开启纯“跳过”兼容，这也可能跳过该应用的教程。只向明确的跳过控件，或经过完整内容核对的小型跳过按钮发送一次点击请求；最多核对两层外层按钮，含其他入口或范围过大时放弃。默认不模拟屏幕触摸；单个应用主动开启“文字定位点击”后，可在两次确认同一跳过文字位置稳定时模拟触摸文字中心，仍可能误触。不补点；文字与描述冲突时放弃。无法保证应用不会自行跳转。\n\n界面文字只在本机临时处理，不保存、不上传。仅在本机保留最近目标应用包名、检测时间、节点数和固定原因说明，可在设置中查看和清除。你可随时在系统设置中关闭无障碍，也可在净屏暂停防护。\n\n系统授权后回到净屏，确认“开屏跳过：已就绪”，再重新打开目标应用。广告可能短暂出现；无法保证跳过所有广告。")
-            .setNegativeButton("暂不开启", null).setPositiveButton("同意并前往设置", (d,w) -> {
+            .setMessage("为识别开屏广告中的“跳过”按钮，净屏需要 Android 无障碍授权。\n\n只在已开启的应用进入前台后 15 秒内，读取其界面控件，识别任意位置明确的广告跳过按钮，或带倒计时/广告标识的“跳过”按钮并尝试点击。可长按单个应用开启纯“跳过”兼容，这也可能跳过该应用的教程。只向明确的跳过控件，或经过完整内容核对的小型跳过按钮发送一次点击请求；最多核对两层外层按钮，含其他入口或范围过大时放弃。默认不模拟屏幕触摸；单个应用主动开启“文字定位点击”后，可在两次确认同一跳过文字位置稳定时模拟触摸文字中心，仍可能误触。不补点；文字与描述冲突时放弃。无法保证应用不会自行跳转。\n\n界面文字只在本机临时处理，不保存、不上传。仅在本机保留最近目标应用包名、检测时间、节点数和固定原因说明，可在设置中查看和清除。若已通过电脑一次授权快捷开启，点击即可写入净屏自己的无障碍开关，保留其他服务；拔掉USB后仍可使用。你可随时在系统设置中关闭无障碍，也可在净屏暂停防护。\n\n系统授权后回到净屏，确认“开屏跳过：已就绪”，再重新打开目标应用。广告可能短暂出现；无法保证跳过所有广告。")
+            .setNegativeButton("暂不开启", null).setPositiveButton(AccessibilitySetup.authorized(this) ? "同意并开启" : "同意并前往设置", (d,w) -> {
                 Prefs.get(this).edit().putBoolean("skip_consent", true).apply();
-                try { startActivity(new Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)); }
-                catch (ActivityNotFoundException e) { toast("请在系统设置中搜索“无障碍”，开启“净屏 · 开屏广告跳过”"); }
+                enableSkip();
             }).show();
+    }
+    private void enableSkip() {
+        if (SplashSkipService.connected) {
+            if (!Prefs.enabled(this)) requestStart();
+            updateStatus(); toast("开屏跳过已连接"); return;
+        }
+        if (AccessibilitySetup.authorized(this)) {
+            try {
+                if (AccessibilitySetup.enable(this)) {
+                    if (!Prefs.enabled(this)) requestStart();
+                    toast("已开启，正在等待系统连接开屏跳过服务…");
+                    handler.postDelayed(() -> {
+                        if (destroyed || isFinishing()) return;
+                        updateStatus();
+                        toast(SplashSkipService.connected ? "开屏跳过已连接，无需连接电脑" : "开关已设置，但服务尚未连接；可重试或在设置中检查系统无障碍");
+                    },1500);
+                    return;
+                }
+            } catch (SecurityException | IllegalArgumentException e) {
+                toast("系统未允许快捷开启，将进入无障碍设置");
+            }
+        }
+        try { startActivity(new Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)); }
+        catch (ActivityNotFoundException e) { toast("请在系统设置中搜索“无障碍”，开启“净屏 · 开屏广告跳过”"); }
     }
     private void checkUpdate(boolean manual) {
         if (destroyed || checkingUpdate) return;
@@ -230,7 +254,8 @@ public final class MainActivity extends Activity {
     }
     private void showSettings() {
         LinearLayout panel = column(); panel.setPadding(dp(24), dp(8), dp(24), dp(8));
-        Button skip = button("设置开屏广告跳过", false); skip.setOnClickListener(v -> showSkipSetup()); panel.addView(skip);
+        TextView setupGrant = text(AccessibilitySetup.authorized(this) ? "快捷开启：已授权，可拔掉USB使用" : "快捷开启：未做电脑一次授权，开启时需系统设置确认",12,MUTED); panel.addView(setupGrant);
+        Button skip = button("开启开屏广告跳过", false); skip.setOnClickListener(v -> showSkipSetup()); panel.addView(skip);
         Button diagnostic = button("查看最近跳过诊断", false); diagnostic.setOnClickListener(v -> showSkipDiagnostic()); panel.addView(diagnostic);
         TextView explanation = text("同一个应用开关控制 DNS 过滤和开屏跳过。跳过功能需要额外的系统无障碍授权。域名命中与跳过点击都不代表清除全部广告。", 12, MUTED);
         panel.addView(explanation);
