@@ -29,6 +29,14 @@ final class Prefs {
         if (on) apps.add(pkg); else apps.remove(pkg);
         get(c).edit().putStringSet("skip_plain_apps", apps).apply();
     }
+    static boolean textTap(Context c,String pkg) {
+        return get(c).getStringSet("skip_text_tap_apps",new HashSet<>()).contains(pkg);
+    }
+    static void textTap(Context c,String pkg,boolean on) {
+        Set<String> apps=new HashSet<>(get(c).getStringSet("skip_text_tap_apps",new HashSet<>()));
+        if (on) apps.add(pkg); else apps.remove(pkg);
+        get(c).edit().putStringSet("skip_text_tap_apps",apps).apply();
+    }
     static void select(Context c, String name, boolean on) {
         Set<String> apps = selected(c); if (on) apps.add(name); else apps.remove(name);
         get(c).edit().putStringSet("apps", apps).apply();

@@ -24,8 +24,10 @@ public final class SplashButton {
         public final Node node;
         public final boolean container;
         public final String reason;
-        private Result(Node node, boolean container, String reason) {
-            this.node = node; this.container = container; this.reason = reason;
+        public final boolean textTapEligible;
+        private Result(Node node, boolean container, String reason) { this(node,container,reason,false); }
+        private Result(Node node, boolean container, String reason, boolean textTapEligible) {
+            this.node = node; this.container = container; this.reason = reason; this.textTapEligible=textTapEligible;
         }
         @Override public void close() { if (node != null) node.close(); }
     }
@@ -68,7 +70,7 @@ public final class SplashButton {
                 if (level > 0 && (!compact(info,label,density)
                         || !SplashPolicy.candidate(text,ad,plain,info.left,info.top,info.right,info.bottom,
                             screen.left,screen.top,screen.right,screen.bottom)))
-                    return reject("跳过文字外层过大或越界，已拒绝点击");
+                    return new Result(null,false,"跳过文字外层过大或越界，已拒绝点击",true);
                 if (info.action) {
                     if (cursor.children() > 0 && !onlySkipContents(cursor,source,pkg,window,info))
                         return reject("跳过按钮内容不唯一、含其他入口或读取不完整，已拒绝点击");
@@ -78,7 +80,7 @@ public final class SplashButton {
                         ? "已核对仅含跳过文字的小按钮" : "已核对文字控件自身点击动作");
                 }
                 // Stop at a clickable-looking control that doesn't advertise ACTION_CLICK.
-                if (info.clickable) return reject("按钮未公开点击动作，未发送点击");
+                if (info.clickable) return new Result(null,false,"按钮未公开点击动作，未发送点击",true);
                 if (level == 2) break;
                 Node parent = cursor.parent();
                 if (parent == null) break;
@@ -86,7 +88,7 @@ public final class SplashButton {
                 cursor.close(); cursor = parent;
                 if (cycle) return reject("控件结构异常，未发送点击");
             }
-            return reject("跳过文字和两层内的小按钮均未提供点击动作");
+            return new Result(null,false,"跳过文字和两层内的小按钮均未提供点击动作",true);
         } finally { cursor.close(); }
     }
     private static boolean onlySkipContents(Node root, Node original, String pkg, int window, Info bounds) {

@@ -169,7 +169,7 @@ public final class MainActivity extends Activity {
     private void showSkipSetup() {
         Prefs.get(this).edit().putBoolean("skip_prompted", true).apply();
         new AlertDialog.Builder(this).setTitle("启用开屏广告自动跳过")
-            .setMessage("为识别开屏广告中的“跳过”按钮，净屏需要 Android 无障碍授权。\n\n只在已开启的应用进入前台后 15 秒内，读取其界面控件，识别任意位置明确的广告跳过按钮，或带倒计时/广告标识的“跳过”按钮并尝试点击。可长按单个应用开启纯“跳过”兼容，这也可能跳过该应用的教程。只向明确的跳过控件，或经过完整内容核对的小型跳过按钮发送一次点击请求；最多核对两层外层按钮，含其他入口或范围过大时放弃。不模拟屏幕触摸，不补点；文字与描述冲突时放弃。无法保证应用不会自行跳转。\n\n界面文字只在本机临时处理，不保存、不上传。仅在本机保留最近目标应用包名、检测时间、节点数和固定原因说明，可在设置中查看和清除。你可随时在系统设置中关闭无障碍，也可在净屏暂停防护。\n\n系统授权后回到净屏，确认“开屏跳过：已就绪”，再重新打开目标应用。广告可能短暂出现；无法保证跳过所有广告。")
+            .setMessage("为识别开屏广告中的“跳过”按钮，净屏需要 Android 无障碍授权。\n\n只在已开启的应用进入前台后 15 秒内，读取其界面控件，识别任意位置明确的广告跳过按钮，或带倒计时/广告标识的“跳过”按钮并尝试点击。可长按单个应用开启纯“跳过”兼容，这也可能跳过该应用的教程。只向明确的跳过控件，或经过完整内容核对的小型跳过按钮发送一次点击请求；最多核对两层外层按钮，含其他入口或范围过大时放弃。默认不模拟屏幕触摸；单个应用主动开启“文字定位点击”后，可在两次确认同一跳过文字位置稳定时模拟触摸文字中心，仍可能误触。不补点；文字与描述冲突时放弃。无法保证应用不会自行跳转。\n\n界面文字只在本机临时处理，不保存、不上传。仅在本机保留最近目标应用包名、检测时间、节点数和固定原因说明，可在设置中查看和清除。你可随时在系统设置中关闭无障碍，也可在净屏暂停防护。\n\n系统授权后回到净屏，确认“开屏跳过：已就绪”，再重新打开目标应用。广告可能短暂出现；无法保证跳过所有广告。")
             .setNegativeButton("暂不开启", null).setPositiveButton("同意并前往设置", (d,w) -> {
                 Prefs.get(this).edit().putBoolean("skip_consent", true).apply();
                 try { startActivity(new Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)); }
@@ -258,13 +258,16 @@ public final class MainActivity extends Activity {
         RadioButton skipOnly = new RadioButton(this); skipOnly.setId(View.generateViewId()); skipOnly.setText("仅开屏跳过（启动兼容）"); modes.addView(skipOnly);
         modes.check(Prefs.skipOnly(this, pkg) ? skipOnly.getId() : both.getId()); panel.addView(modes);
         CheckBox plain = new CheckBox(this); plain.setText("允许纯“跳过”按钮（跳过兼容）"); plain.setChecked(Prefs.plainSkip(this, pkg)); panel.addView(plain);
-        TextView warning = text("纯跳过兼容只对这个应用生效，也可能跳过教程或登录引导。两种方式都只在进入应用后15秒内处理可读取的按钮，不点击推广入口。", 12, MUTED); panel.addView(warning);
+        CheckBox tap = new CheckBox(this); tap.setText("文字定位点击（兼容，可能误触）"); tap.setChecked(Prefs.textTap(this,pkg)); panel.addView(tap);
+        TextView tapInfo = text("仅对本应用生效，默认关闭。文字控件不能直接点击时，确认同一跳过文字连续两次位置稳定后，模拟点击文字中心一次。不会点击大容器或补点，但界面变化、遮挡或错误控件信息仍可能导致误触广告；发生误跳请关闭。",12,MUTED); panel.addView(tapInfo);
+        TextView warning = text("纯跳过兼容只对这个应用生效，也可能跳过教程或登录引导。两种防护方式都只在进入应用后15秒内处理可读取的跳过按钮。定位兼容有误触风险，可随时关闭。", 12, MUTED); panel.addView(warning);
         ScrollView scroll = new ScrollView(this); scroll.addView(panel);
         new AlertDialog.Builder(this).setTitle(label + " · 防护方式").setView(scroll)
             .setNegativeButton("取消", null).setPositiveButton("保存", (d,w) -> {
                 boolean only = modes.getCheckedRadioButtonId() == skipOnly.getId();
                 boolean networkChanged = Prefs.skipOnly(this, pkg) != only;
                 Prefs.skipOnly(this, pkg, only); Prefs.plainSkip(this, pkg, plain.isChecked());
+                Prefs.textTap(this,pkg,tap.isChecked());
                 if (networkChanged && Prefs.enabled(this)) applyChanges();
                 filter(); toast("已保存，请退出并重新打开目标应用");
             }).show();
@@ -283,6 +286,7 @@ public final class MainActivity extends Activity {
             + "\n曾读到广告标识：" + (record.getBoolean("ad", false) ? "是" : "否")
             + "\n扫描曾达到上限：" + (record.getBoolean("limited", false) ? "是" : "否")
             + "\n纯跳过兼容：" + (Prefs.plainSkip(this, pkg) ? "开启" : "关闭")
+            + "\n文字定位兼容：" + (Prefs.textTap(this,pkg) ? "开启" : "关闭")
             + "\n本次点击：" + record.getString("action", "旧版记录，请重新检测")
             + "\n点击目标：" + record.getString("target", "未发送点击")
             + "\n\n关键结果：" + record.getString("reason", "暂无结果")
