@@ -54,6 +54,13 @@ jobs:
           python3 tests/check_splash_safety.py
           java -cp build/core-checks cn.quietguard.app.UpdateChecks
           java -cp build/core-checks cn.quietguard.app.UpdateVpnChecks
+      - name: 规则包转换与验签检查
+        working-directory: quietguard
+        run: |
+          python3 -m unittest discover -s tools/rules -p 'test_*.py' -v
+          mkdir -p build/rules-checks
+          javac -encoding UTF-8 -d build/rules-checks app/src/main/java/cn/quietguard/app/rules/RuleBundleVerifier.java tools/rules/BundleChecks.java
+          java -cp build/rules-checks cn.quietguard.app.rules.BundleChecks
       - name: 构建并静态检查
         working-directory: quietguard
         run: |

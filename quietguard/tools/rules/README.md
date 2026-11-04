@@ -1,6 +1,6 @@
 # 离线规则编译与验证工具
 
-这些文件由 Codex 负责；VPN、Android 下载/存储适配与状态同步由 DeepSeek 接入。协议和交互规范见 `docs/rules-update-protocol.md`。当前没有把远程规则接入运行时，也没有发布新的 APK。
+这些文件由 Codex 负责；VPN、Android 下载/存储适配与状态同步由 DeepSeek 接入。协议和交互规范见 `docs/rules-update-protocol.md`。0.4.11 包含这些基础模块，当前没有把远程规则接入运行时，候选规则尚未启用。
 
 ## 编译
 
