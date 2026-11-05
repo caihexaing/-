@@ -43,7 +43,7 @@ jobs:
         working-directory: quietguard
         run: |
           mkdir -p build/core-checks
-          javac -encoding UTF-8 -d build/core-checks app/src/main/java/cn/quietguard/app/RuleSet.java app/src/main/java/cn/quietguard/app/DnsPacket.java app/src/main/java/cn/quietguard/app/UpdateVersion.java app/src/main/java/cn/quietguard/app/SplashPolicy.java app/src/main/java/cn/quietguard/app/SplashWindow.java app/src/main/java/cn/quietguard/app/SplashScanBudget.java app/src/main/java/cn/quietguard/app/ProtectionMode.java app/src/main/java/cn/quietguard/app/UpdateIntegrity.java app/src/main/java/cn/quietguard/app/UpdateVpnState.java app/src/main/java/cn/quietguard/app/SplashButton.java app/src/main/java/cn/quietguard/app/SplashDiagnostic.java app/src/main/java/cn/quietguard/app/SplashTextTap.java tests/TextTapChecks.java tests/ButtonChecks.java tests/CoreChecks.java app/src/main/java/cn/quietguard/app/AccessibilitySelection.java tests/AccessibilityChecks.java tests/VersionChecks.java tests/SplashChecks.java tests/RuntimeChecks.java tests/UpdateChecks.java tests/UpdateVpnChecks.java
+          javac -encoding UTF-8 -d build/core-checks app/src/main/java/cn/quietguard/app/RuleSet.java app/src/main/java/cn/quietguard/app/DnsPacket.java app/src/main/java/cn/quietguard/app/UpdateVersion.java app/src/main/java/cn/quietguard/app/SplashPolicy.java app/src/main/java/cn/quietguard/app/SplashWindow.java app/src/main/java/cn/quietguard/app/SplashScanBudget.java app/src/main/java/cn/quietguard/app/ProtectionMode.java app/src/main/java/cn/quietguard/app/UpdateIntegrity.java app/src/main/java/cn/quietguard/app/UpdateVpnState.java app/src/main/java/cn/quietguard/app/SplashButton.java app/src/main/java/cn/quietguard/app/SplashDiagnostic.java app/src/main/java/cn/quietguard/app/SplashTextTap.java tests/TextTapChecks.java tests/ButtonChecks.java tests/CoreChecks.java app/src/main/java/cn/quietguard/app/AccessibilitySelection.java tests/AccessibilityChecks.java tests/VersionChecks.java tests/SplashChecks.java tests/RuntimeChecks.java tests/UpdateChecks.java tests/UpdateVpnChecks.java app/src/main/java/cn/quietguard/app/ProtectionControl.java app/src/main/java/cn/quietguard/app/ProtectionStatus.java app/src/main/java/cn/quietguard/app/SelectionPlan.java tests/ControlChecks.java
           java -cp build/core-checks cn.quietguard.app.CoreChecks
           java -cp build/core-checks cn.quietguard.app.AccessibilityChecks
           java -cp build/core-checks cn.quietguard.app.VersionChecks
@@ -53,6 +53,7 @@ jobs:
           java -cp build/core-checks cn.quietguard.app.TextTapChecks
           python3 tests/check_splash_safety.py
           java -cp build/core-checks cn.quietguard.app.UpdateChecks
+          java -cp build/core-checks cn.quietguard.app.ControlChecks
           java -cp build/core-checks cn.quietguard.app.UpdateVpnChecks
       - name: 规则包转换与验签检查
         working-directory: quietguard

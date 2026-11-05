@@ -14,6 +14,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 public final class FilterVpnService extends VpnService {
     public static volatile boolean running;
+    public static volatile Set<String> filteredApps = Collections.emptySet();
     public static volatile String status = "过滤未运行";
     public static final AtomicLong queries = new AtomicLong(), blocked = new AtomicLong(), failed = new AtomicLong();
     public static final String STOP = "cn.quietguard.STOP";
@@ -42,6 +43,16 @@ public final class FilterVpnService extends VpnService {
     static void pauseForUpdate() {
         if (instance != null && instance.session != null) instance.enterUpdatePause();
     }
+    // A VPN can remain system-bound after stopService(), so close the tunnel explicitly.
+    static void stopFiltering(Context context, String reason) {
+        if (instance != null) {
+            instance.pausedForUpdate = false;
+            instance.stopFilter(reason);
+            instance.stopSelf();
+        }
+        context.stopService(new Intent(context, FilterVpnService.class));
+        status = reason;
+    }
     private void enterUpdatePause() {
         closeSession(); pausedForUpdate = true; status = "更新期间，净屏 VPN 已暂时断开";
         Notification n = notification(status);
@@ -49,7 +60,7 @@ public final class FilterVpnService extends VpnService {
         else startForeground(7, n);
     }
     static boolean resumeAfterUpdate() {
-        if (instance == null || !instance.pausedForUpdate) return false;
+        if (instance == null || !instance.pausedForUpdate || !Prefs.enabled(instance)) return false;
         instance.startFilter(); return true;
     }
     static void stopUpdatePause() {
@@ -58,6 +69,7 @@ public final class FilterVpnService extends VpnService {
         }
     }
     private void startFilter() {
+        if (!Prefs.enabled(this)) { stopFilter("防护已暂停"); stopSelf(); return; }
         Set<String> selected = Prefs.networkSelected(this);
         if (selected.isEmpty()) {
             pausedForUpdate = false; stopFilter("仅开屏跳过，未启用网络过滤"); stopSelf(); return;
@@ -76,29 +88,30 @@ public final class FilterVpnService extends VpnService {
                 .allowFamily(OsConstants.AF_INET).allowFamily(OsConstants.AF_INET6)
                 .setConfigureIntent(PendingIntent.getActivity(this, 0, new Intent(this, MainActivity.class), PendingIntent.FLAG_IMMUTABLE));
             if (Build.VERSION.SDK_INT >= 29) builder.setMetered(false);
-            int count = 0;
+            Set<String> applied = new HashSet<>();
             for (String pkg : selected) {
                 if (pkg.equals(getPackageName())) continue;
-                try { builder.addAllowedApplication(pkg); count++; } catch (android.content.pm.PackageManager.NameNotFoundException ignored) { }
+                try { builder.addAllowedApplication(pkg); applied.add(pkg); } catch (android.content.pm.PackageManager.NameNotFoundException ignored) { }
             }
-            if (count == 0) throw new IllegalStateException("选中的应用已卸载，请刷新列表");
+            if (applied.isEmpty()) throw new IllegalStateException("选中的应用已卸载，请刷新列表");
             ParcelFileDescriptor tunnel = builder.establish();
             if (tunnel == null) throw new IOException("系统未建立 VPN，请检查授权");
             String resolver = Prefs.get(this).getString("resolver", "223.5.5.5");
             if (!Arrays.asList("223.5.5.5", "119.29.29.29", "1.1.1.1").contains(resolver)) resolver = "223.5.5.5";
             try { session = new Session(tunnel, rules, resolver); } catch (Exception e) { tunnel.close(); throw e; }
             queries.set(0); blocked.set(0); failed.set(0);
-            running = true; status = "正在过滤 " + count + " 个应用";
+            filteredApps = Collections.unmodifiableSet(applied);
+            running = true; status = "网络过滤已连接 " + applied.size() + " 个应用";
             UpdateVpnPause.vpnStarted(this);
             getSystemService(NotificationManager.class).notify(7, notification(status));
             session.start();
         } catch (Exception e) { stopFilter("启动失败：" + readable(e)); stopSelf(); }
     }
     private static String readable(Exception e) { return e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(); }
-    private void closeSession() { running = false; if (session != null) { session.close(); session = null; } }
+    private void closeSession() { running = false; filteredApps = Collections.emptySet(); if (session != null) { session.close(); session = null; } }
     private void stopFilter(String text) { closeSession(); status = text; stopForeground(STOP_FOREGROUND_REMOVE); }
     @Override public void onRevoke() { stopFilter("VPN 授权已撤销或被其他 VPN 替换"); stopSelf(); super.onRevoke(); }
-    @Override public void onDestroy() { closeSession(); if (instance == this) instance = null; if (status.startsWith("正在过滤")) status = "过滤已停止"; super.onDestroy(); }
+    @Override public void onDestroy() { closeSession(); if (instance == this) instance = null; if (status.startsWith("网络过滤已连接")) status = "过滤已停止"; super.onDestroy(); }
 
     private final class Session implements AutoCloseable {
         final ParcelFileDescriptor tunnel;
