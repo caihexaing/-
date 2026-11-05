@@ -1,8 +1,11 @@
 package cn.quietguard.app;
 
 import android.accessibilityservice.AccessibilityService;
+import android.accessibilityservice.GestureDescription;
 import android.app.KeyguardManager;
 import android.content.Intent;
+import android.content.SharedPreferences;
+import android.graphics.Path;
 import android.graphics.Rect;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -21,6 +24,12 @@ public final class SplashSkipService extends AccessibilityService {
     private Handler handler;
     private final SplashScanBudget budget = new SplashScanBudget();
     private final SplashWindow window = new SplashWindow();
+    private final SplashTextTap textTap = new SplashTextTap();
+    private final Runnable verify = this::verifyTextTap;
+    private AndroidNode tapAnchor;
+    private long tapIdentity, sessionId;
+    private String pendingPkg = "";
+    private int pendingWindow;
     private final SplashDiagnostic diagnostic = new SplashDiagnostic();
     private boolean scanning, pollScheduled;
     private volatile boolean destroyed;
@@ -43,7 +52,7 @@ public final class SplashSkipService extends AccessibilityService {
     };
 
     @Override public void onCreate() {
-        super.onCreate(); Prefs.disableTextTap(this); scanThread.start(); handler = new Handler(scanThread.getLooper());
+        super.onCreate(); scanThread.start(); handler = new Handler(scanThread.getLooper());
     }
     @Override protected void onServiceConnected() { connected = true; handler.post(this::cancel); }
     @Override public void onAccessibilityEvent(AccessibilityEvent event) {
@@ -66,7 +75,9 @@ public final class SplashSkipService extends AccessibilityService {
     private void beginReport(String pkg) {
         budget.foreground(pkg, permitted(pkg), SystemClock.elapsedRealtime());
         if (pkg.equals(sessionPkg)) return;
-        window.reset(); sessionPkg = pkg; maxNodes = 0; limited = false; sawSkip = false; sawAd = false;
+        window.reset(); resetTextTap(); sessionId++;
+        handler.removeCallbacks(verify); pendingPkg = ""; pendingWindow = 0;
+        sessionPkg = pkg; maxNodes = 0; limited = false; sawSkip = false; sawAd = false;
         lastReason = ""; lastReport = 0; maxScanMs = 0; diagnostic.reset();
         getSharedPreferences("splash_diagnostic",MODE_PRIVATE).edit().remove("target").apply();
     }
@@ -110,7 +121,7 @@ public final class SplashSkipService extends AccessibilityService {
         List<Candidate> candidates = new ArrayList<>();
         try {
             String pkg = root.getPackageName() == null ? "" : root.getPackageName().toString();
-            if (!permitted(pkg)) { budget.foreground(pkg, false, SystemClock.elapsedRealtime()); window.reset(); sessionPkg = ""; return; }
+            if (!permitted(pkg)) { budget.foreground(pkg, false, SystemClock.elapsedRealtime()); window.reset(); resetTextTap(); sessionId++; sessionPkg = ""; return; }
             beginReport(pkg);
             long now = SystemClock.elapsedRealtime();
             if (!window.observe(pkg, true, true, now)) return;
@@ -248,17 +259,23 @@ public final class SplashSkipService extends AccessibilityService {
         if (!foregroundMatches(pkg,windowId)) {
             report("当前活动窗口变化，未发送点击",2); return false;
         }
+        SplashButton.Info screenBox = new SplashButton.Info();
+        screenBox.left=screen.left; screenBox.top=screen.top; screenBox.right=screen.right; screenBox.bottom=screen.bottom;
         SplashButton.Info bounds = new SplashButton.Info();
         bounds.left=screen.left; bounds.top=screen.top; bounds.right=screen.right; bounds.bottom=screen.bottom;
         try (AndroidNode source = new AndroidNode(AccessibilityNodeInfo.obtain(candidate.node));
              SplashButton.Result target = SplashButton.resolve(source,pkg,windowId,bounds,ad,plain,
                  getResources().getDisplayMetrics().density)) {
             if (target.node == null) {
-                report(target.textTapEligible
-                    ? target.reason + "；未发出坐标触摸"
-                    : target.reason,2);
+                // The SDK refused to expose ACTION_CLICK. Before 0.4.20 this fell back to a guarded
+                // coordinate tap; 0.4.20 deleted it and every self-drawn skip button stopped working.
+                if (target.textTapEligible && validTextTarget(source,screenBox,pkg,windowId,ad,plain))
+                    return tapText(source,pkg,windowId,screenBox,ad,plain,acted);
+                resetTextTap();
+                report(target.reason,2);
                 return false;
             }
+            resetTextTap();
             if (!foregroundMatches(pkg,windowId) || !enabled() || !permitted(pkg)) {
                 report("点击前应用或窗口变化，未发送点击",2); return false;
             }
@@ -284,8 +301,132 @@ public final class SplashSkipService extends AccessibilityService {
             }
         }
     }
-    private static final class AndroidNode implements SplashButton.Node {
-        final AccessibilityNodeInfo node;
+    /** Whether the labelled leaf itself may be tapped after the button path refused it. */
+    private boolean validTextTarget(AndroidNode source, SplashButton.Info screen, String pkg, int windowId,
+                                    boolean ad, boolean plain) {
+        if (destroyed || !enabled() || !permitted(pkg) || !unlocked()) return false;
+        android.accessibilityservice.AccessibilityServiceInfo info = getServiceInfo();
+        if (info == null || (info.getCapabilities()
+                & android.accessibilityservice.AccessibilityServiceInfo.CAPABILITY_CAN_PERFORM_GESTURES) == 0) {
+            report("系统尚未授予触摸能力，请在系统无障碍中关闭净屏后重新开启",2); return false;
+        }
+        if (getMagnificationController().getScale() != 1f) {
+            report("系统屏幕放大已开启，文字定位触摸已放弃",2); return false;
+        }
+        if (SplashTextTap.disabled(Prefs.get(this).getInt("text_tap_strikes_" + pkg, 0))) {
+            report("此应用此前两次坐标触摸后界面都没有变化，已退回只认公开点击动作",2); return false;
+        }
+        if (!Prefs.textTapEnabled(this, pkg)) {
+            report("此应用已关闭坐标触摸，只认公开点击动作",2); return false;
+        }
+        SplashButton.Info leaf = source.read();
+        float density = getResources().getDisplayMetrics().density;
+        if (source.children() != 0 || !SplashTextTap.valid(leaf,screen,pkg,windowId,ad,plain,density)) return false;
+        return SplashTextTap.evidence(leaf.text,leaf.description,plain);
+    }
+    /**
+     * Taps the centre of a leaf that only labels the skip control. Requires two scans of the same node at the
+     * same place, re-reads the foreground and window bounds immediately before input, and re-reads the label
+     * so a screen that swapped after the first scan cannot be tapped blind.
+     */
+    private boolean tapText(AndroidNode source, String pkg, int windowId, SplashButton.Info screen,
+                            boolean ad, boolean plain, Rect acted) {
+        float density = getResources().getDisplayMetrics().density;
+        SplashButton.Info info = source.read();
+        if (source.children() != 0 || !SplashTextTap.valid(info,screen,pkg,windowId,ad,plain,density)) {
+            resetTextTap(); report("文字定位要求明确、可见的小尺寸跳过文字，未发送触摸",2); return false;
+        }
+        if (tapAnchor == null || !tapAnchor.same(source)) {
+            resetTextTap();
+            if (tapAnchor != null) tapAnchor.close();
+            tapAnchor = (AndroidNode) source.copy(); tapIdentity++;
+        }
+        long identity = tapIdentity;
+        boolean stable = textTap.observe(info,screen,pkg,windowId,identity,enabled(),ad,plain,density,
+            SystemClock.elapsedRealtime());
+        if (!stable) { report("已读到跳过文字，等待下一轮确认同一位置稳定",1); return false; }
+        if (!foregroundMatches(pkg,windowId) || !sameScreen(pkg,windowId,screen) || !unlocked() || !permitted(pkg)
+                || !Prefs.textTapEnabled(this,pkg)) {
+            resetTextTap(); report("触摸前活动窗口变化，已放弃",2); return false;
+        }
+        SplashButton.Info fresh = source.read();
+        if (source.children() != 0 || !SplashTextTap.valid(fresh,screen,pkg,windowId,ad,plain,density)
+                || !SplashTextTap.evidence(fresh.text,fresh.description,plain)
+                || !textTap.matches(fresh,screen,pkg,windowId,identity)) {
+            resetTextTap(); report("触摸前跳过文字或位置变化，已放弃",2); return false;
+        }
+        if (!window.attempted(SystemClock.elapsedRealtime())) return false;
+        float x = fresh.left + (fresh.right - fresh.left) / 2f;
+        float y = fresh.top + (fresh.bottom - fresh.top) / 2f;
+        Path point = new Path(); point.moveTo(x,y);
+        GestureDescription gesture = new GestureDescription.Builder()
+            .addStroke(new GestureDescription.StrokeDescription(point,0,50)).build();
+        long id = sessionId;
+        acted.set(fresh.left,fresh.top,fresh.right,fresh.bottom);
+        getSharedPreferences("splash_diagnostic",MODE_PRIVATE).edit()
+            .putString("target","连续两次核对位置稳定的跳过文字中心（坐标触摸）").apply();
+        holdVerification(pkg,id);
+        resetTextTap();
+        boolean queued = dispatchGesture(gesture,new GestureResultCallback() {
+            private boolean current() { return !destroyed && id == sessionId && pkg.equals(sessionPkg); }
+            @Override public void onCompleted(GestureDescription ignored) {
+                if (current()) report("坐标触摸已执行；1.5 秒后核对界面是否变化，不补点",3);
+            }
+            @Override public void onCancelled(GestureDescription ignored) {
+                if (current()) { report("坐标触摸被系统取消；已停止，不补点",3); window.finish(); }
+            }
+        },handler);
+        if (!queued) { report("系统未接受这一次坐标触摸请求；已停止，不补点",3); window.finish(); }
+        return queued;
+    }
+    /** Remembers what the foreground looked like so the tap can be judged afterwards. */
+    private void holdVerification(String pkg, long id) {
+        handler.removeCallbacks(verify);
+        pendingPkg = pkg; pendingWindow = 0;
+        AccessibilityNodeInfo active = getRootInActiveWindow();
+        if (active != null) {
+            try { pendingWindow = active.getWindowId(); } finally { active.recycle(); }
+        }
+        handler.postDelayed(verify, SplashTextTap.VERIFY_MS);
+    }
+    /** A tap that left the foreground unchanged did not skip anything; enough misses retire the mode. */
+    private void verifyTextTap() {
+        String pkg = pendingPkg;
+        int window = pendingWindow;
+        pendingPkg = ""; pendingWindow = 0;
+        if (pkg.isEmpty() || destroyed) return;
+        boolean effective = false;
+        AccessibilityNodeInfo active = getRootInActiveWindow();
+        if (active != null) {
+            try {
+                String current = active.getPackageName() == null ? "" : active.getPackageName().toString();
+                effective = !pkg.equals(current) || active.getWindowId() != window;
+            } finally { active.recycle(); }
+        }
+        SharedPreferences prefs = Prefs.get(this);
+        String key = "text_tap_strikes_" + pkg;
+        int strikes = SplashTextTap.penalties(prefs.getInt(key,0), effective);
+        prefs.edit().putInt(key,strikes).apply();
+        if (SplashTextTap.disabled(strikes))
+            report("连续两次坐标触摸后界面没有变化，此应用已退回只认公开点击动作",3);
+        else if (effective) report("坐标触摸后界面已变化",3);
+        else report("坐标触摸后界面未变化，下次失效将退回只认公开点击动作",2);
+    }
+    private boolean sameScreen(String pkg, int windowId, SplashButton.Info screen) {
+        AccessibilityNodeInfo active = getRootInActiveWindow();
+        if (active == null) return false;
+        try {
+            Rect r = new Rect(); active.getBoundsInScreen(r);
+            return active.getWindowId() == windowId && active.getPackageName() != null
+                && pkg.contentEquals(active.getPackageName())
+                && r.left == screen.left && r.top == screen.top && r.right == screen.right && r.bottom == screen.bottom;
+        } finally { active.recycle(); }
+    }
+    private void resetTextTap() {
+        textTap.reset();
+        if (tapAnchor != null) { tapAnchor.close(); tapAnchor = null; }
+    }
+    private static final class AndroidNode implements SplashButton.Node {        final AccessibilityNodeInfo node;
         AndroidNode(AccessibilityNodeInfo node) { this.node=node; }
         @Override public SplashButton.Node copy() { return new AndroidNode(AccessibilityNodeInfo.obtain(node)); }
         @Override public SplashButton.Info read() {
@@ -314,12 +455,17 @@ public final class SplashSkipService extends AccessibilityService {
     }
     private void cancel() {
         handler.removeCallbacks(poll); pollScheduled = false; budget.reset(); window.reset();
-        sessionPkg = ""; eventPkg = ""; waitingUntil = 0;
+        if (tapAnchor != null) tapAnchor.close();
+        handler.post(this::resetTextTap);
+        handler.removeCallbacks(verify); pendingPkg = ""; pendingWindow = 0;
+        sessionId++; sessionPkg = ""; eventPkg = ""; waitingUntil = 0;
     }
     @Override public void onInterrupt() { handler.post(this::cancel); }
     @Override public boolean onUnbind(Intent intent) { connected = false; handler.post(this::cancel); return super.onUnbind(intent); }
     @Override public void onDestroy() {
-        connected = false; destroyed = true; handler.removeCallbacksAndMessages(null); scanThread.quitSafely(); super.onDestroy();
+        connected = false; destroyed = true; handler.removeCallbacksAndMessages(null);
+        if (tapAnchor != null) tapAnchor.close();
+        scanThread.quitSafely(); super.onDestroy();
     }
     private static final class Snapshot { boolean ad, limited, full; int visited, labelled; }
     private static final class NodeDepth {

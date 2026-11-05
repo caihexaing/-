@@ -14,13 +14,12 @@ public final class SplashPolicy {
     }
     public static boolean skipLabel(String text) { return SKIP.matcher(compact(text)).matches(); }
     public static boolean countdownLabel(String text) { return skipLabel(text) && compact(text).matches(".*[0-9].*"); }
-    /** Avoid early ad taps while allowing the final visible countdown tick. */
+    /**
+     * 0.4.24 waited for the countdown to reach 1, but most SDKs drop the last tick within a single frame,
+     * so the button was never tapped. Allow the tap from the first readable countdown instead.
+     */
     public static boolean readyToSkip(String text) {
-        if (!skipLabel(text)) return false;
-        String digits=compact(text).replaceAll("[^0-9]", "");
-        if (digits.isEmpty()) return true;
-        try { return Integer.parseInt(digits) <= 1; }
-        catch (NumberFormatException ignored) { return false; }
+        return skipLabel(text);
     }
     public static boolean explicitAdSkip(String text) {
         String s = compact(text);

@@ -53,7 +53,18 @@ final class Prefs {
         if (on) apps.add(pkg); else apps.remove(pkg);
         get(c).edit().putStringSet("skip_plain_apps", apps).apply();
     }
-    static void disableTextTap(Context c) { get(c).edit().remove("skip_text_tap_apps").apply(); }
+    /** Coordinate tapping is on per app; a plain skip label additionally needs the plain compatibility switch. */
+    static boolean textTapEnabled(Context c, String pkg) {
+        return !pkg.isEmpty() && !get(c).getBoolean("text_tap_off_" + pkg, false);
+    }
+    static void textTapEnabled(Context c, String pkg, boolean on) {
+        get(c).edit().putBoolean("text_tap_off_" + pkg, !on).remove("text_tap_strikes_" + pkg).apply();
+    }
+    static String textTapState(Context c, String pkg) {
+        if (!textTapEnabled(c, pkg)) return "关闭";
+        if (SplashTextTap.disabled(get(c).getInt("text_tap_strikes_" + pkg, 0))) return "已自动停用（两次未见效果）";
+        return "开启";
+    }
     static void select(Context c, String name, boolean on) {
         Set<String> apps = selected(c);
         if (on && exemptions(c).contains(name)) return;

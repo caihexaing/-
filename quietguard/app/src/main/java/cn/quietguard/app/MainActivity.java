@@ -35,7 +35,7 @@ public final class MainActivity extends Activity {
     private boolean showSystem, onlySelected, destroyed, scanning, checkingUpdate, resumed;
     private final Runnable ticker = new Runnable() { @Override public void run() { updateStatus(); handler.postDelayed(this, 1000); } };
     @Override public void onCreate(Bundle state) {
-        super.onCreate(state); Prefs.migrateModes(this); Prefs.disableTextTap(this);
+        super.onCreate(state); Prefs.migrateModes(this);
         if (state != null) pendingVpnRevision = state.getLong("pending_vpn_revision", -1);
         updater = new InAppUpdater(this); getWindow().setStatusBarColor(BG); getWindow().setNavigationBarColor(BG);
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
@@ -250,7 +250,7 @@ public final class MainActivity extends Activity {
         if (!destroyed && resumed && !isFinishing() && Prefs.enabled(this) && !Prefs.selected(this).isEmpty()
                 && !Prefs.get(this).getBoolean("skip_prompted", false)) showSkipSetup();
     }
-    private static final String ACCESSIBILITY_RISK = "无障碍权限可读取屏幕中可访问的界面内容并点击按钮。净屏只在已选应用进入前台后15秒内查找开屏跳过控件；系统授予的能力范围大于这一用途。\n\n净屏只点击应用公开了系统点击动作、且通过文字和边界核对的控件，不模拟屏幕坐标触摸。没有公开点击动作的按钮可能无法跳过；纯“跳过”兼容也可能误认教程入口。\n\n控件内容只在本机临时处理，不保存界面文字或截图、不上传；本机仅保存可清除的包名、时间、次数和固定诊断原因。暂停防护保留权限但停止处理；撤销权限请进入系统无障碍设置。";
+    private static final String ACCESSIBILITY_RISK = "无障碍权限可读取屏幕中可访问的界面内容并点击按钮。净屏只在已选应用进入前台后15秒内查找开屏跳过控件；系统授予的能力范围大于这一用途。\n\n净屏优先点击应用公开的系统点击动作。没有公开动作的自绘按钮，只能按核对过的跳过文字中心触摸：要求连续两轮读到同一位置、触摸前后核对窗口、每次进入只触摸一次，并带广告依据或倒计时。纯“跳过”兼容也可能误认教程入口；连续两次触摸界面没变化会自动停用该应用的坐标触摸。\n\n控件内容只在本机临时处理，不保存界面文字或截图、不上传；本机仅保存可清除的包名、时间、次数和固定诊断原因。暂停防护保留权限但停止处理；撤销权限请进入系统无障碍设置。";
     private void showSkipSetup() {
         Prefs.get(this).edit().putBoolean("skip_prompted", true).apply();
         if (skipDialog != null && skipDialog.isShowing()) return;
@@ -502,7 +502,8 @@ public final class MainActivity extends Activity {
         RadioButton skipOnly = new RadioButton(this); skipOnly.setId(View.generateViewId()); skipOnly.setText("仅开屏跳过（启动兼容）"); modes.addView(skipOnly);
         modes.check(Prefs.skipOnly(this, pkg) ? skipOnly.getId() : both.getId()); panel.addView(modes);
         CheckBox plain = new CheckBox(this); plain.setText("允许纯“跳过”按钮（跳过兼容）"); plain.setChecked(Prefs.plainSkip(this, pkg)); panel.addView(plain);
-        TextView tapInfo = text("文字定位触摸已停用：实测可能误入广告页。净屏只执行应用公开的按钮点击动作；如果按钮未提供该动作，将记录原因并跳过，不猜测屏幕坐标。",12,MUTED); panel.addView(tapInfo);
+        CheckBox tap = new CheckBox(this); tap.setText("允许坐标触摸（自绘跳过按钮）"); tap.setChecked(Prefs.textTapEnabled(this, pkg)); panel.addView(tap);
+        TextView tapInfo = text("部分广告 SDK 的跳过按钮没有公开点击动作，只能按按钮文字中心触摸。净屏要求两轮读到同一位置的跳过文字才触摸，前后核对窗口，每次进入只触摸一次；连续两次触摸界面都没变化会自动退回。触摸仍有误入广告页的可能，关闭后只使用公开点击动作。",12,MUTED); panel.addView(tapInfo);
         TextView warning = text("纯跳过兼容只对这个应用生效，也可能跳过教程或登录引导。防护只在进入应用后15秒内处理可读取的跳过按钮。", 12, MUTED); panel.addView(warning);
         ScrollView scroll = new ScrollView(this); scroll.addView(panel);
         new AlertDialog.Builder(this).setTitle(label + " · 防护方式").setView(scroll)
@@ -510,6 +511,7 @@ public final class MainActivity extends Activity {
                 boolean only = modes.getCheckedRadioButtonId() == skipOnly.getId();
                 boolean networkChanged = Prefs.skipOnly(this, pkg) != only;
                 Prefs.skipOnly(this, pkg, only); Prefs.plainSkip(this, pkg, plain.isChecked());
+                Prefs.textTapEnabled(this, pkg, tap.isChecked());
                 if (networkChanged && Prefs.enabled(this)) applyChanges();
                 filter(); toast("已保存，请退出并重新打开目标应用");
             }).show();
@@ -528,7 +530,7 @@ public final class MainActivity extends Activity {
             + "\n曾读到广告标识：" + (record.getBoolean("ad", false) ? "是" : "否")
             + "\n扫描曾达到上限：" + (record.getBoolean("limited", false) ? "是" : "否")
             + "\n纯跳过兼容：" + (Prefs.plainSkip(this, pkg) ? "开启" : "关闭")
-            + "\n文字定位触摸：已停用（仅执行系统公开的按钮点击动作）"
+            + "\n文字定位触摸：" + Prefs.textTapState(this, pkg)
             + "\n本次点击：" + record.getString("action", "旧版记录，请重新检测")
             + "\n点击目标：" + record.getString("target", "未发送点击")
             + "\n\n关键结果：" + record.getString("reason", "暂无结果")
