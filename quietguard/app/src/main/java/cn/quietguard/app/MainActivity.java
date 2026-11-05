@@ -98,7 +98,7 @@ public final class MainActivity extends Activity {
         enableAll.setOnClickListener(v -> enableAllApps());
         batch.addView(enableAll, new LinearLayout.LayoutParams(0, dp(48), 1));
         disableAll = button("一键关闭", false);
-        disableAll.setOnClickListener(v -> disableAllApps());
+        disableAll.setOnClickListener(v -> confirmDisableAllApps());
         batch.addView(disableAll, new LinearLayout.LayoutParams(0, dp(48), 1)); root.addView(batch);
         FrameLayout listArea = new FrameLayout(this); root.addView(listArea, new LinearLayout.LayoutParams(-1, 0, 1));
         ListView list = new ListView(this); list.setDivider(null); list.setVerticalScrollBarEnabled(false); list.setClipToPadding(false); list.setPadding(0, 0, 0, dp(16));
@@ -156,6 +156,12 @@ public final class MainActivity extends Activity {
                 Prefs.get(this).edit().putStringSet("apps", plan.selected).putStringSet("skip_only_apps", plan.skipOnly).apply();
                 filter(); requestStart();
             }).show();
+    }
+    private void confirmDisableAllApps() {
+        int count = Prefs.selected(this).size();
+        new AlertDialog.Builder(this).setTitle("一键关闭前确认")
+            .setMessage("将清空全部 " + count + " 个应用选择，并暂停网络过滤和开屏跳过。\n\n各应用的兼容设置和豁免名单会保留，但本次选择清单不会保留；一键开启会按当前应用和豁免规则重新选择。\n\n如果只是临时停用，请取消并使用首页的“暂停防护”，它会保留选择。")
+            .setNegativeButton("取消",null).setPositiveButton("确认关闭",(d,w) -> disableAllApps()).show();
     }
     private void disableAllApps() {
         // Clear the full selection, including hidden/system apps; retain compatibility settings.
@@ -385,8 +391,8 @@ public final class MainActivity extends Activity {
         EditText allow = new EditText(this); allow.setTextSize(14); allow.setHint("example.com"); allow.setMinLines(3); allow.setMaxLines(6);
         allow.setGravity(Gravity.TOP); allow.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE | android.text.InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
         allow.setText(Prefs.get(this).getString("exceptions", "")); panel.addView(allow);
-        int ruleCount = 0; try { ruleCount = new RuleSet(getAssets().open("ad-domains.txt"), "").size(); } catch (Exception ignored) { }
-        TextView details = text("内置 " + ruleCount + " 条精选域名规则 · v" + BuildConfig.VERSION_NAME + "\n\n若应用功能异常，可添加例外域名或关闭该应用的开关。\n\n系统“私人 DNS”建议设为关闭；应用自带加密 DNS 可能绕过过滤。本版处理 UDP DNS，不支持 TCP DNS 隧道。\n\nDNS 规则命中会重复计数，包含追踪请求；转发失败不代表广告漏拦。跳过点击次数仅表示系统接受了点击请求，无法证明广告消失。DNS 计数从启动或重新配置时开始，跳过点击次数在本机累计。\n\n暂停防护将同时停止过滤和自动跳过，保留应用选择和权限。手动暂停后不会由更新回调恢复；点击“恢复防护”才重新启用。无障碍服务连接与防护开关是两个独立状态。", 12, MUTED);
+        int ruleCount = builtInRuleCount();
+        TextView details = text((ruleCount < 0 ? "内置规则读取失败" : "内置 " + ruleCount + " 条精选域名规则") + " · v" + BuildConfig.VERSION_NAME + "\n\n若应用功能异常，可添加例外域名或关闭该应用的开关。\n\n系统“私人 DNS”建议设为关闭；应用自带加密 DNS 可能绕过过滤。本版处理 UDP DNS，不支持 TCP DNS 隧道。\n\nDNS 规则命中会重复计数，包含追踪请求；转发失败不代表广告漏拦。跳过点击次数仅表示系统接受了点击请求，无法证明广告消失。DNS 计数从启动或重新配置时开始，跳过点击次数在本机累计。\n\n暂停防护将同时停止过滤和自动跳过，保留应用选择和权限。手动暂停后不会由更新回调恢复；点击“恢复防护”才重新启用。无障碍服务连接与防护开关是两个独立状态。", 12, MUTED);
         details.setPadding(0, dp(16), 0, 0); panel.addView(details);
         ScrollView scroll = new ScrollView(this); scroll.addView(panel);
         AlertDialog dialog = new AlertDialog.Builder(this).setTitle("防护方式与网络").setView(scroll).setNegativeButton("取消", null).setNeutralButton("网络设置", (d,w) -> startActivity(new Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS))).setPositiveButton("保存", null).create();
@@ -399,13 +405,21 @@ public final class MainActivity extends Activity {
             if (Prefs.enabled(this)) applyChanges(); dialog.dismiss(); toast("设置已保存");
         })); dialog.show();
     }
+    private int builtInRuleCount() {
+        try { return new RuleSet(getAssets().open("ad-domains.txt"), "").size(); }
+        catch (Exception ignored) { return -1; }
+    }
     private void showHelp(boolean first) {
+        int ruleCount = builtInRuleCount();
+        String coverage = ruleCount < 0 ? "当前内置规则读取失败。" : "当前仅内置 " + ruleCount + " 条域名规则，覆盖范围有限。";
         String description = "净屏 v" + BuildConfig.VERSION_NAME + "（构建 " + BuildConfig.VERSION_CODE + "）\n本机 DNS 域名过滤与开屏按钮辅助跳过工具，不保证消除所有广告。\n\n"
             + "开始使用\n1. 首次安装不自动选择应用。先搜索并开启少量常用应用。\n2. 保守模式默认对新开启应用只做开屏跳过，不干预网络；长按应用可主动改成网络过滤+跳过。\n3. 开屏跳过需要单独授权无障碍。网络过滤需要系统 VPN 授权，与其他 VPN 互斥。\n\n"
-            + "暂停与豁免\n暂停保留应用开关，恢复由你手动执行；一键关闭会清空选择。应用登录、支付、下载异常时，进入“设置 → 应用豁免”选择应用即可豁免，之后一键开启也不会重新选中它。\n\n"
+            + "暂停与豁免\n暂停保留应用开关，恢复由你手动执行；一键关闭需确认后才清空全部选择，兼容设置和豁免保留；重新一键开启不等于恢复原选择清单。应用登录、支付、下载异常时，进入“设置 → 应用豁免”选择应用即可豁免，之后一键开启也不会重新选中它。\n\n"
             + "权限与隐私\n应用列表、选择、兼容设置及固定诊断记录只保存在本机。不解密 HTTPS，不保存或上传界面文字或截图。无障碍授权具备较广的界面读取与点击能力，误触可能影响广告、教程或登录引导。首次开启前单独说明，可在系统无障碍设置撤销。\n\n"
             + "网络访问\n网络过滤会把未拦截域名发送给你选定的公共 DNS，DNS 传输未加密。检查更新与 APK 下载连接 GitHub，服务器会收到常规网络连接信息；不上传应用列表。自动检查默认关闭。\n\n"
-            + "能力限制\n直接 IP、同域内容、缓存广告、应用自带 DoH 和严格私人 DNS 可能绕过域名过滤。无法保证页面内广告被去除或开屏零延迟。本版未启用远程规则更新。规则命中和点击请求次数不能视为清除广告数量。\n\n"
+            + "实际能做什么\n" + coverage + "本版未启用远程规则更新。DNS 过滤只能阻止发往命中规则域名的请求，不能直接删除 App 内广告 SDK 或广告控件。SDK 使用未命中域名、直连 IP、自带 DoH、同域内容或缓存素材时，广告仍可能出现；严格私人 DNS 也可能绕过过滤。\n\n"
+            + "开屏广告\nDNS 过滤不能保证关闭开屏广告。开屏跳过是单独的无障碍辅助功能，只会尝试点击可识别的跳过按钮；无权限、无法识别或不满足安全条件时不会点击，可能仍需等待广告结束，也不保证零延迟。\n\n"
+            + "怎样理解命中次数\n命中长期为 0～2 只表示本次命中规则的请求很少，不能证明没有广告。仅开屏跳过模式不做 DNS 过滤；命中请求也不等于成功去掉广告，点击请求不等于跳过成功。\n\n"
             + "数字说明\n列表显示数受搜索和筛选影响；已选是你的开关数量，分为仅跳过与网络+跳过。网络已连接数量来自实际建立的隧道；开屏已就绪表示服务可用，不代表每个应用都能识别成功。";
         AlertDialog.Builder builder = new AlertDialog.Builder(this).setTitle(first ? "欢迎使用净屏 · 请先了解" : "使用帮助、隐私与关于").setMessage(description);
         if (first) builder.setNegativeButton("稍后", null).setPositiveButton("开始选择应用", (d,w) -> Prefs.get(this).edit().putBoolean("onboarding_v1", true).apply());
@@ -415,11 +429,23 @@ public final class MainActivity extends Activity {
     private void showExemptPicker() {
         if (apps.isEmpty()) { new AlertDialog.Builder(this).setTitle("应用列表尚未就绪").setMessage("请等待应用扫描完成，或点击刷新后重试。").setPositiveButton("知道了",null).show(); return; }
         List<AppEntry> choices = new ArrayList<>(apps);
+        Set<String> selected = Prefs.selected(this), exempt = Prefs.exemptions(this);
+        Collator collator = Collator.getInstance(Locale.SIMPLIFIED_CHINESE);
+        choices.sort((a,b) -> {
+            int priority = Integer.compare(exemptionPriority(a,selected,exempt),exemptionPriority(b,selected,exempt));
+            if (priority != 0) return priority;
+            int name = collator.compare(a.label,b.label);
+            return name != 0 ? name : a.info.packageName.compareTo(b.info.packageName);
+        });
         List<String> labels = new ArrayList<>();
-        Set<String> exempt = Prefs.exemptions(this);
-        for (AppEntry app : choices) labels.add(app.label + "\n" + app.info.packageName + (exempt.contains(app.info.packageName) ? " · 已豁免，点击解除" : " · 点击豁免"));
+        for (AppEntry app : choices) {
+            String pkg = app.info.packageName;
+            boolean system = (app.info.flags & (ApplicationInfo.FLAG_SYSTEM | ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0;
+            String state = exempt.contains(pkg) ? "已豁免，点击解除" : selected.contains(pkg) ? "已开启，点击豁免" : "未开启，点击豁免";
+            labels.add(app.label + "\n" + pkg + (system ? " · 系统应用" : "") + " · " + state);
+        }
         LinearLayout panel = column(); panel.setPadding(dp(20),0,dp(20),0);
-        panel.addView(text("豁免后停止该应用的网络过滤和开屏点击，并排除在一键开启范围外。",12,MUTED));
+        panel.addView(text("已开启的普通应用优先，其次已豁免和其他普通应用；系统应用放在最后。可按名称或包名搜索。\n豁免后停止该应用的防护，且一键开启不会重新选中它。",12,MUTED));
         EditText query = new EditText(this); query.setSingleLine(true); query.setHint("搜索应用名称或包名"); panel.addView(query);
         ArrayAdapter<String> items = new ArrayAdapter<>(this,android.R.layout.simple_list_item_1,labels);
         ListView list = new ListView(this); list.setAdapter(items); panel.addView(list,new LinearLayout.LayoutParams(-1,dp(280)));
@@ -439,6 +465,11 @@ public final class MainActivity extends Activity {
                 .setPositiveButton("知道了",null).show();
         });
         dialog.show();
+    }
+    private int exemptionPriority(AppEntry app, Set<String> selected, Set<String> exempt) {
+        String pkg = app.info.packageName;
+        int system = (app.info.flags & (ApplicationInfo.FLAG_SYSTEM | ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0 ? 3 : 0;
+        return system + (selected.contains(pkg) ? 0 : exempt.contains(pkg) ? 1 : 2);
     }
     private String appLabel(String pkg) {
         try { return getPackageManager().getApplicationLabel(getPackageManager().getApplicationInfo(pkg, 0)).toString(); }
