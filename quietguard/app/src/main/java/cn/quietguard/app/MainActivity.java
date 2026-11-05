@@ -25,7 +25,7 @@ public final class MainActivity extends Activity {
     private final List<AppEntry> apps = new ArrayList<>(), visible = new ArrayList<>();
     private AppAdapter adapter;
     private TextView statusText, countText, statsText, empty, skipStatus;
-    private Button power, skipSetup, enableAll;
+    private Button power, skipSetup, enableAll, disableAll;
     private EditText search;
     private InAppUpdater updater;
     private boolean showSystem, onlySelected, destroyed, scanning, checkingUpdate, resumed;
@@ -68,12 +68,15 @@ public final class MainActivity extends Activity {
         system.setOnCheckedChangeListener((b, on) -> { showSystem = on; filter(); }); filters.addView(system);
         Space spacer = new Space(this); filters.addView(spacer, new LinearLayout.LayoutParams(0, 1, 1));
         TextView refresh = text("刷新", 13, GREEN); refresh.setPadding(dp(8), dp(16), 0, dp(16)); refresh.setOnClickListener(v -> scan()); filters.addView(refresh); root.addView(filters);
-        LinearLayout batch = row();
         countText = text("正在读取已安装应用…", 12, MUTED);
-        batch.addView(countText, new LinearLayout.LayoutParams(0, -2, 1));
+        root.addView(countText, new LinearLayout.LayoutParams(-1, -2));
+        LinearLayout batch = row();
         enableAll = button("一键开启", false); enableAll.setEnabled(false);
         enableAll.setOnClickListener(v -> enableAllApps());
-        batch.addView(enableAll, new LinearLayout.LayoutParams(-2, dp(48))); root.addView(batch);
+        batch.addView(enableAll, new LinearLayout.LayoutParams(0, dp(48), 1));
+        disableAll = button("一键关闭", false);
+        disableAll.setOnClickListener(v -> disableAllApps());
+        batch.addView(disableAll, new LinearLayout.LayoutParams(0, dp(48), 1)); root.addView(batch);
         FrameLayout listArea = new FrameLayout(this); root.addView(listArea, new LinearLayout.LayoutParams(-1, 0, 1));
         ListView list = new ListView(this); list.setDivider(null); list.setVerticalScrollBarEnabled(false); list.setClipToPadding(false); list.setPadding(0, 0, 0, dp(16));
         adapter = new AppAdapter(); list.setAdapter(adapter); listArea.addView(list, new FrameLayout.LayoutParams(-1, -1));
@@ -126,6 +129,14 @@ public final class MainActivity extends Activity {
         toast(added == 0 ? "全部普通应用已开启，兼容设置已保留" : "已新增开启 " + added + " 个普通应用，兼容设置已保留");
         requestStart();
     }
+    private void disableAllApps() {
+        // Clear the full selection, including hidden/system apps; retain compatibility settings.
+        Prefs.get(this).edit().putBoolean("protection_enabled", false)
+            .putStringSet("apps", new HashSet<String>()).apply();
+        stopFiltering();
+        filter();
+        toast("已关闭全部应用防护，兼容设置已保留");
+    }
     private void filter() {
         if (adapter == null) return; String q = search.getText().toString().trim().toLowerCase(Locale.ROOT); Set<String> selected = Prefs.selected(this);
         visible.clear(); for (AppEntry a : apps) {
@@ -169,6 +180,8 @@ public final class MainActivity extends Activity {
         super.onActivityResult(request, result, data); if (request == 31) { if (result == RESULT_OK) startFiltering(); else { toast("未授权 VPN，网络过滤未启动；开屏跳过可单独授权使用"); handler.postDelayed(this::offerSkipSetup, 500); } }
     }
     private void startFiltering() {
+        // A late VPN permission result must not reactivate an empty selection after bulk disable.
+        if (Prefs.selected(this).isEmpty()) { stopFiltering(); updateStatus(); return; }
         Prefs.enabled(this, true);
         if (Prefs.networkSelected(this).isEmpty()) {
             UpdateVpnPause.userDisabled(this); stopService(new Intent(this, FilterVpnService.class));
@@ -181,7 +194,7 @@ public final class MainActivity extends Activity {
         handler.postDelayed(this::updateStatus, 400);
         handler.postDelayed(this::offerSkipSetup, 900);
     }
-    private void stopFiltering() { Prefs.enabled(this, false); UpdateVpnPause.userDisabled(this); stopService(new Intent(this, FilterVpnService.class)); handler.postDelayed(this::updateStatus, 250); }
+    private void stopFiltering() { Prefs.enabled(this, false); UpdateVpnPause.userDisabled(this); stopService(new Intent(this, FilterVpnService.class)); FilterVpnService.status = "防护已暂停"; handler.postDelayed(this::updateStatus, 250); }
     private void applyChanges() { if (Prefs.selected(this).isEmpty()) stopFiltering(); else if (Prefs.enabled(this)) requestStart(); }
     private void offerSkipSetup() {
         if (!destroyed && resumed && !isFinishing() && Prefs.enabled(this) && !Prefs.selected(this).isEmpty()
