@@ -18,10 +18,12 @@ public final class CoreChecks {
         DnsPacket.put(b,20,54321); DnsPacket.put(b,22,53); DnsPacket.put(b,24,8 + dns.length); System.arraycopy(dns,0,b,28,dns.length); return b;
     }
     public static void main(String[] args) throws Exception {
-        RuleSet r = new RuleSet(new ByteArrayInputStream("# test\nads.example.com\ndoubleclick.net\n".getBytes(StandardCharsets.UTF_8)), "allowed.ads.example.com");
+        RuleSet r = new RuleSet(new ByteArrayInputStream("# test\nads.example.com\ndoubleclick.net\n!allowed.ads.example.com\n~g.doubleclick.net\n".getBytes(StandardCharsets.UTF_8)), "allowed2.ads.example.com");
         check(r.size()==2,"rule count"); check(r.blocks("ads.example.com"),"exact match"); check(r.blocks("A.ADS.EXAMPLE.COM."),"case and trailing dot");
         check(!r.blocks("badads.example.com"),"label boundary"); check(!r.blocks("ads.example.com.evil.test"),"suffix confusion");
-        check(!r.blocks("allowed.ads.example.com"),"exception"); check(!r.blocks("a.allowed.ads.example.com"),"exception subdomain");
+        check(!r.blocks("allowed.ads.example.com"),"asset exception"); check(!r.blocks("a.allowed.ads.example.com"),"asset exception subdomain");
+        check(!r.blocks("allowed2.ads.example.com"),"user exception"); check(!r.blocks("a.allowed2.ads.example.com"),"user exception subdomain");
+        check(!r.blocks("g.doubleclick.net"),"exact upstream exception"); check(r.blocks("x.g.doubleclick.net"),"exact exception does not cover subdomain");
         check(r.blocks("doubleclick.net"),"second rule"); check(!r.blocks("正常网页"),"invalid domain safe");
         boolean invalid = false; try { RuleSet.normalize("https://example.com/path"); } catch (IllegalArgumentException e) { invalid=true; } check(invalid,"URL rejected");
         byte[] q = query("ads.example.com"); check("ads.example.com".equals(DnsPacket.domain(q)),"domain parse");
@@ -35,6 +37,13 @@ public final class CoreChecks {
         check(DnsPacket.u16(reply,22)==54321,"reply destination port"); check(reply[15]==2 && reply[19]==1,"IP reversal");
         byte[] malformed=q.clone(); malformed[12]=(byte)0xc0; check(DnsPacket.domain(malformed)==null,"compressed/malformed query rejected");
         check(DnsPacket.domain(new byte[3])==null,"short DNS");
+        RuleSet expanded;
+        try (InputStream asset = new FileInputStream("app/src/main/assets/ad-domains.txt")) { expanded = new RuleSet(asset, ""); }
+        check(expanded.size()==987,"expanded DNS block count"); check(expanded.exceptionSize()==196,"upstream exceptions loaded");
+        for (String domain : new String[]{"ads.pangle.com", "gdt.qq.com", "mobads.baidu.com", "adkwai.com",
+            "mintegral.com", "applovin.com", "unityads.unity3d.com", "googlesyndication.com"})
+            check(expanded.blocks(domain), "SDK domain blocked: " + domain);
+        check(!expanded.blocks("a.applovin.com"),"exact app-specific exception retained");
         for (int n=0;n<p.length;n++) { byte[] shortP=Arrays.copyOf(p,n); check(DnsPacket.parse(shortP,n)==null,"truncated packet "+n); }
         p[9]=6; check(DnsPacket.parse(p,p.length)==null,"TCP excluded"); p[9]=17;
         p[6]=0x20; check(DnsPacket.parse(p,p.length)==null,"fragments rejected"); p[6]=0;

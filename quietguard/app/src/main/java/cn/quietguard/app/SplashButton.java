@@ -51,6 +51,15 @@ public final class SplashButton {
             && label.top - (long)control.top <= 16 * density
             && control.bottom - (long)label.bottom <= 16 * density;
     }
+    private static boolean semanticHitArea(Info control, Info label, Info screen, String text,
+                                           boolean ad, boolean plain, float density) {
+        if (!Float.isFinite(density) || density <= 0 || !inside(label,control)) return false;
+        if (!SplashPolicy.candidate(text,ad,plain,control.left,control.top,control.right,control.bottom,
+                screen.left,screen.top,screen.right,screen.bottom)) return false;
+        long horizontal=(long)(32*density), verticalBottom=(long)(32*density), verticalTop=(long)(80*density);
+        return label.left-(long)control.left<=horizontal && control.right-(long)label.right<=horizontal
+            && label.top-(long)control.top<=verticalTop && control.bottom-(long)label.bottom<=verticalBottom;
+    }
     public static Result resolve(Node source, String pkg, int window, Info screen,
                                  boolean ad, boolean plain, float density) {
         Info label = source.read();
@@ -61,17 +70,17 @@ public final class SplashButton {
                 screen.left,screen.top,screen.right,screen.bottom))
             return reject("跳过文字缺少广告依据或大小边界不符合条件");
         Node cursor = source.copy();
+        boolean oversizedWrapper = false;
         try {
             for (int level = 0; level <= 2; level++) {
                 Info info = cursor.read();
                 if (!basic(info, pkg, window)) return reject("跳过按钮失效或所属窗口变化");
                 if (!SplashPolicy.supportingLabel(info.text) || !SplashPolicy.supportingLabel(info.description))
                     return reject("跳过按钮外层含其他语义，已拒绝点击");
-                if (level > 0 && (!compact(info,label,density)
-                        || !SplashPolicy.candidate(text,ad,plain,info.left,info.top,info.right,info.bottom,
-                            screen.left,screen.top,screen.right,screen.bottom)))
-                    return new Result(null,false,"跳过文字外层过大或越界，已拒绝点击",true);
                 if (info.action) {
+                    // A larger SDK skip hit-area is valid only within bounds and with skip-only contents.
+                    if (level > 0 && !semanticHitArea(info,label,screen,text,ad,plain,density))
+                        return new Result(null,false,"跳过按钮区域越界或过大，已拒绝点击",true);
                     if (cursor.children() > 0 && !onlySkipContents(cursor,source,pkg,window,info))
                         return reject("跳过按钮内容不唯一、含其他入口或读取不完整，已拒绝点击");
                     if (level > 0 && cursor.children() == 0)
@@ -79,8 +88,19 @@ public final class SplashButton {
                     return new Result(cursor.copy(), level > 0, level > 0
                         ? "已核对仅含跳过文字的小按钮" : "已核对文字控件自身点击动作");
                 }
-                // Stop at a clickable-looking control that doesn't advertise ACTION_CLICK.
-                if (info.clickable) return new Result(null,false,"按钮未公开点击动作，未发送点击",true);
+                // Some SDK views report clickable without listing ACTION_CLICK. Only allow
+                // that inconsistency for a bounded, isolated ancestor containing skip UI alone.
+                if (info.clickable) {
+                    if (level > 0 && semanticHitArea(info,label,screen,text,ad,plain,density)
+                            && cursor.children() > 0
+                            && onlySkipContents(cursor,source,pkg,window,info))
+                        return new Result(cursor.copy(),true,"已核对仅含跳过文字的可点击区域",true);
+                    return new Result(null,false,"按钮未公开可验证的系统点击动作，未发送点击",true);
+                }
+                if (level > 0 && (!compact(info,label,density)
+                        || !SplashPolicy.candidate(text,ad,plain,info.left,info.top,info.right,info.bottom,
+                            screen.left,screen.top,screen.right,screen.bottom)))
+                    oversizedWrapper = true;
                 if (level == 2) break;
                 Node parent = cursor.parent();
                 if (parent == null) break;
@@ -88,7 +108,8 @@ public final class SplashButton {
                 cursor.close(); cursor = parent;
                 if (cycle) return reject("控件结构异常，未发送点击");
             }
-            return new Result(null,false,"跳过文字和两层内的小按钮均未提供点击动作",true);
+            return new Result(null,false,oversizedWrapper ? "两层父节点均未找到边界合规的可点击跳过区域"
+                : "跳过文字和两层内的小按钮均未提供点击动作",true);
         } finally { cursor.close(); }
     }
     private static boolean onlySkipContents(Node root, Node original, String pkg, int window, Info bounds) {

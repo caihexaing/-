@@ -6,7 +6,7 @@
 
 首个可验证候选选用 StevenBlack 默认 hosts：`https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts`。原因是明确域名格式适合当前 DNS 引擎。取源文件、许可证、哈希和归一化统计均保留。2026-11-04实际候选77,758条域名、1,587,195字节，尚未签名或启用。已检查 AdGuard DNS filter 原文，但其中存在当前转换器不支持的例外，转换器拒绝整份来源；不能直接当纯域名库，也不能丢弃例外后继续发布。
 
-规则包采用不可变目录，一版一目录：`rules.meta`、`rules.meta.sig`、`rules.txt`、`sources.json`、`LICENSE.upstream`。文本ASCII/LF、最后一个LF、按完整行字典顺序排序、不重复。每行一个域名，前缀 `!` 为允许域名；允许规则优先且覆盖子域名。域名最大253字符、标签最大63，不接受IP、路径、通配符、URL或范围修饰符。用户本地例外继续拥有优先级，不被下载覆盖。
+规则包采用不可变目录，一版一目录：`rules.meta`、`rules.meta.sig`、`rules.txt`、`sources.json`、`LICENSE.upstream`。文本ASCII/LF、最后一个LF、按完整行字典顺序排序、不重复。每行一个域名，前缀 `!` 为允许域名并覆盖其子域；前缀 `~` 为仅允许该精确主机。精确例外用于把上游按应用限定的豁免保守映射到不具备应用来源识别能力的 DNS 隧道。域名最大253字符、标签最大63，不接受IP、路径、通配符、URL或范围修饰符。用户本地例外继续拥有优先级，不被下载覆盖。
 
 v1只传全量快照，8MiB/500,000条上限，不使用压缩包，避免解压路径和压缩膨胀。增量更新不在v1能力内；未来必须带精确基线版本及SHA，重建完整包后走同一验签/内容检查，失败回退全量，不能直接修改正在使用的集合。
 
@@ -26,14 +26,14 @@ sourcesSha256=<sources.json的64位小写SHA256>
 
 说明中的尖括号是字段定义，不是可发布的示例值；编译器生成实际值。元数据最多1024字节，sources最多64KiB；正整数版本使用Java long且严格递增，minAppVersionCode使用int。签名是离线RSA(2048–4096)/SHA256withRSA PKCS#1 v1.5，对原始元数据字节签名，原始二进制最多512字节。RSA X.509 DER公钥固化在APP中，签名包不得携带可替换的信任根，不借用APK私钥。轮换公钥必须通过兼容签名的APP升级单独安排。
 
-`RuleBundleVerifier.verify(meta,sig,rules,sources,pinnedKey,highestAcceptedVersion,appCode)` 返回不可变字段 `version/entries/blockedText/allowedText`，失败抛IOException/GeneralSecurityException。它验证签名、格式、最小APP版本、字节数、两份内容哈希、域名语法、排序去重、条数及至少一条拦截规则。不会联网、写文件、切换规则或更改版本下限。生产密钥/有效签名没有配置时，不开启远程自动更新，继续使用已验证或内置规则。
+`RuleBundleVerifier.verify(meta,sig,rules,sources,pinnedKey,highestAcceptedVersion,appCode)` 返回不可变字段 `version/entries/blockedText/allowedText/exactAllowedText`，失败抛IOException/GeneralSecurityException。它验证签名、格式、最小APP版本、字节数、两份内容哈希、域名语法、排序去重、条数及至少一条拦截规则。不会联网、写文件、切换规则或更改版本下限。生产密钥/有效签名没有配置时，不开启远程自动更新，继续使用已验证或内置规则。
 
 ## Android集成和失败处理
 
 1. 用户同意规则更新联网后才访问固定HTTPS源。数据源不能由未验证元数据任意指定下载URL；固定源/固定路径，重定向逐跳仅允许HTTPS且在显式主机列表内，最多3跳。签名和证书错误不得通过忽略检查解决。
 2. 下载进私有缓存临时目录，按实际读到的字节数限制8MiB；不能只相信Content-Length。检查阶段15秒、单次完整下载60秒总期限，支持取消。没有有效Content-Length时显示已下载字节和不定进度，不伪造百分比；读取和校验在工作线程。
 3. 校验后先在内存构建新RuleSet，再原子提交版本目录/活动指针和最高接受版本。建议使用一个AtomicFile记录活动版本及版本下限，不能先覆盖旧文件再尝试校验。进程在任意阶段中断，重启应加载上一次完整有效版本。
-4. 既有 `RuleSet` 的适配方式：以 `blockedText` 构造UTF8 InputStream，允许列表为“用户例外 + allowedText”；不能把 `!` 行直接交给原构造函数。活动会话通过不可变RuleSet引用整体替换，读者要么看到旧集合，要么看到新集合；不逐行原地修改，也不为规则变化重建VPN或重置计数。不要更改allowedApplications。
+4. 既有 `RuleSet` 的适配方式：以 `blockedText` 构造UTF8 InputStream，子域允许列表为“用户例外 + allowedText”，精确主机例外由 `exactAllowedText` 加载；不能把 `!` 或 `~` 行直接交给原构造函数。活动会话通过不可变RuleSet引用整体替换，读者要么看到旧集合，要么看到新集合；不逐行原地修改，也不为规则变化重建VPN或重置计数。不要更改allowedApplications。
 5. 留存上一个验证过的完整包。用户可回退到该本地包，版本下限仍保持历史最高值，防止远程重放；不能将回退理解为允许下载任意旧版本。启动时当前包损坏，验证并回退本地上一版或内置规则；更新失败不停止正在工作的过滤。
 6. 不抢占其他VPN，不更改无障碍或所有应用的兼容模式。规则网络请求由净屏自己发起；现有窄路由将本包排除，不需要为规则更新另行关闭全局防护。若网络不可用，保留旧规则并说明失败原因。
 

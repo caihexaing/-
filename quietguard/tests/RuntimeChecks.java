@@ -34,6 +34,8 @@ public final class RuntimeChecks {
         check(b.delay(100)==200,"entry boost cooldown starts after completion");
         check(b.delay(299)==1,"entry events cannot bypass fast cooldown");
         check(b.delay(300)==0,"entry fast boundary allows scan");
+        b.completed(300);
+        check(b.delay(300)==SplashScanBudget.FAST_INTERVAL_MS,"semantic click scans keep the entry interval");
         b.foreground("residence",true,2900); b.completed(2900);
         check(b.delay(3000)==400,"same-app event cannot extend entry boost");
         b.foreground("launcher",false,3010);
@@ -52,7 +54,6 @@ public final class RuntimeChecks {
         b.foreground(null,true,15000); b.completed(15000);
         check(b.delay(15000)==500,"null foreground cannot receive boost");
         b.reset(); check(b.delay(0)==0,"reset removes prior completion and foreground");
-        check(SplashTextTap.MIN_STABLE_MS==350,"speed change preserves text stability threshold");
 
         Set<String> selected = new HashSet<>(Set.of("residence", "calendar"));
         Set<String> skipOnly = new HashSet<>();

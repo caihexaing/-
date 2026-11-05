@@ -39,6 +39,7 @@ final class Prefs {
     }
     static Set<String> exemptions(Context c) { return new HashSet<>(get(c).getStringSet("exempt_apps", new HashSet<>())); }
     static boolean conservative(Context c) { return get(c).getBoolean("conservative_new_apps", true); }
+    static boolean sniFiltering(Context c) { return android.os.Build.VERSION.SDK_INT >= 29 && get(c).getBoolean("sni_filtering", false); }
     static void exempt(Context c, String pkg, boolean on) {
         Set<String> exempt = exemptions(c), selected = selected(c);
         if (on) { exempt.add(pkg); selected.remove(pkg); } else exempt.remove(pkg);
@@ -52,14 +53,7 @@ final class Prefs {
         if (on) apps.add(pkg); else apps.remove(pkg);
         get(c).edit().putStringSet("skip_plain_apps", apps).apply();
     }
-    static boolean textTap(Context c,String pkg) {
-        return get(c).getStringSet("skip_text_tap_apps",new HashSet<>()).contains(pkg);
-    }
-    static void textTap(Context c,String pkg,boolean on) {
-        Set<String> apps=new HashSet<>(get(c).getStringSet("skip_text_tap_apps",new HashSet<>()));
-        if (on) apps.add(pkg); else apps.remove(pkg);
-        get(c).edit().putStringSet("skip_text_tap_apps",apps).apply();
-    }
+    static void disableTextTap(Context c) { get(c).edit().remove("skip_text_tap_apps").apply(); }
     static void select(Context c, String name, boolean on) {
         Set<String> apps = selected(c);
         if (on && exemptions(c).contains(name)) return;

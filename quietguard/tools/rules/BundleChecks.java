@@ -30,10 +30,11 @@ public final class BundleChecks {
     }
     public static void main(String[] args) throws Exception {
         KeyPairGenerator generator=KeyPairGenerator.getInstance("RSA"); generator.initialize(2048); key=generator.generateKeyPair();
-        byte[] r=bytes("!safe.ads.example.com\nads.example.com\n"), a=bytes("{}\n"), m=meta(r,a,2), s=sign(m);
+        byte[] r=bytes("!safe.ads.example.com\nads.example.com\n~exact.ads.example.com\n"), a=bytes("{}\n"), m=meta(r,a,3), s=sign(m);
         RuleBundleVerifier.Verified v=verify(m,s,r,a,0,17);
-        check(v.version==2026110401L && v.entries==2);
-        check(v.blockedText.equals("ads.example.com\n") && v.allowedText.equals("safe.ads.example.com\n"));
+        check(v.version==2026110401L && v.entries==3);
+        check(v.blockedText.equals("ads.example.com\n") && v.allowedText.equals("safe.ads.example.com\n")
+            && v.exactAllowedText.equals("exact.ads.example.com\n"));
         byte[] badM=m.clone(); badM[0]^=1; reject(()->verify(badM,s,r,a,0,17));
         byte[] badR=r.clone(); badR[1]^=1; reject(()->verify(m,s,badR,a,0,17));
         reject(()->verify(m,s,r,bytes("[]\n"),0,17));
@@ -44,9 +45,9 @@ public final class BundleChecks {
         reject(()->verify(null,s,r,a,0,17));
         reject(()->verify(m,s,new byte[RuleBundleVerifier.MAX_RULE_BYTES+1],a,0,17));
         reject(()->verify(m,s,r,new byte[65537],0,17));
-        byte[] wrongCount=meta(r,a,3); reject(()->verify(wrongCount,sign(wrongCount),r,a,0,17));
+        byte[] wrongCount=meta(r,a,4); reject(()->verify(wrongCount,sign(wrongCount),r,a,0,17));
         for(String text:new String[]{"ads.example.com\nads.example.com\n", "z.example.com\na.example.com\n",
-            "!safe.example.com\n", "127.0.0.1\n", "ads.example.com\r\n", "||ads.example.com^\n", "ads.example.com", "a..com\n"}) {
+            "!safe.example.com\n", "~bad..example.com\n", "127.0.0.1\n", "ads.example.com\r\n", "||ads.example.com^\n", "ads.example.com", "a..com\n"}) {
             byte[] invalid=bytes(text); int count=(int)text.chars().filter(c->c=='\n').count();
             byte[] metadata=meta(invalid,a,Math.max(1,count)); reject(()->verify(metadata,sign(metadata),invalid,a,0,17));
         }

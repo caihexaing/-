@@ -8,6 +8,10 @@ public final class SplashChecks {
     }
     public static void main(String[] args) {
         check(candidate("4s | 跳过",false,704,138,890,201), "screenshot countdown skip");
+        check(!SplashPolicy.readyToSkip("2s | 跳过"), "early countdown is not actionable");
+        check(SplashPolicy.readyToSkip("1s | 跳过"), "final countdown tick can be acted on");
+        check(SplashPolicy.readyToSkip("跳过"), "plain skip label is actionable after countdown");
+        check(SplashPolicy.readyToSkip("跳过广告"), "explicit ad skip is immediately actionable");
         check(candidate("4s｜跳过",false,704,138,890,201), "full width divider");
         check(candidate("跳过 (5秒)",false,704,138,890,201), "Chinese countdown suffix");
         check(candidate("Skip Ad 5s",false,704,138,890,201), "English countdown");

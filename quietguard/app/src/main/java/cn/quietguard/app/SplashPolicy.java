@@ -14,6 +14,14 @@ public final class SplashPolicy {
     }
     public static boolean skipLabel(String text) { return SKIP.matcher(compact(text)).matches(); }
     public static boolean countdownLabel(String text) { return skipLabel(text) && compact(text).matches(".*[0-9].*"); }
+    /** Avoid early ad taps while allowing the final visible countdown tick. */
+    public static boolean readyToSkip(String text) {
+        if (!skipLabel(text)) return false;
+        String digits=compact(text).replaceAll("[^0-9]", "");
+        if (digits.isEmpty()) return true;
+        try { return Integer.parseInt(digits) <= 1; }
+        catch (NumberFormatException ignored) { return false; }
+    }
     public static boolean explicitAdSkip(String text) {
         String s = compact(text);
         return s.equals("跳过广告") || s.equals("关闭广告") || s.equals("skipad");

@@ -1,11 +1,9 @@
 package cn.quietguard.app;
 
 import android.accessibilityservice.AccessibilityService;
-import android.accessibilityservice.GestureDescription;
 import android.app.KeyguardManager;
 import android.content.Intent;
 import android.graphics.Rect;
-import android.graphics.Path;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.SystemClock;
@@ -24,10 +22,6 @@ public final class SplashSkipService extends AccessibilityService {
     private final SplashScanBudget budget = new SplashScanBudget();
     private final SplashWindow window = new SplashWindow();
     private final SplashDiagnostic diagnostic = new SplashDiagnostic();
-    private final SplashTextTap textTap = new SplashTextTap();
-    private AndroidNode tapAnchor;
-    private long tapIdentity, sessionId;
-    private boolean gestureAction;
     private boolean scanning, pollScheduled;
     private volatile boolean destroyed;
     private volatile String latestEventPkg = "";
@@ -40,7 +34,6 @@ public final class SplashSkipService extends AccessibilityService {
         if (!enabled()) { cancel(); return; }
         String pkg = latestEventPkg;
         if (!pkg.equals(eventPkg)) {
-            resetTextTap();
             eventPkg = pkg;
             budget.foreground(pkg, permitted(pkg), SystemClock.elapsedRealtime());
             waitingUntil = permitted(pkg) ? SystemClock.elapsedRealtime() + SplashWindow.DURATION_MS : 0;
@@ -50,7 +43,7 @@ public final class SplashSkipService extends AccessibilityService {
     };
 
     @Override public void onCreate() {
-        super.onCreate(); scanThread.start(); handler = new Handler(scanThread.getLooper());
+        super.onCreate(); Prefs.disableTextTap(this); scanThread.start(); handler = new Handler(scanThread.getLooper());
     }
     @Override protected void onServiceConnected() { connected = true; handler.post(this::cancel); }
     @Override public void onAccessibilityEvent(AccessibilityEvent event) {
@@ -73,7 +66,7 @@ public final class SplashSkipService extends AccessibilityService {
     private void beginReport(String pkg) {
         budget.foreground(pkg, permitted(pkg), SystemClock.elapsedRealtime());
         if (pkg.equals(sessionPkg)) return;
-        window.reset(); resetTextTap(); sessionId++; gestureAction=false; sessionPkg = pkg; maxNodes = 0; limited = false; sawSkip = false; sawAd = false;
+        window.reset(); sessionPkg = pkg; maxNodes = 0; limited = false; sawSkip = false; sawAd = false;
         lastReason = ""; lastReport = 0; maxScanMs = 0; diagnostic.reset();
         getSharedPreferences("splash_diagnostic",MODE_PRIVATE).edit().remove("target").apply();
     }
@@ -90,8 +83,8 @@ public final class SplashSkipService extends AccessibilityService {
             .putInt("nodes", maxNodes).putBoolean("limited", limited)
             .putBoolean("skip", sawSkip).putBoolean("ad", sawAd)
             .putLong("max_scan_ms", maxScanMs)
-            .putString("action", window.hasAccepted() ? (gestureAction ? "文字定位触摸请求已提交" : "控件点击请求被接受")
-                : window.hasAttempted() ? (gestureAction ? "已尝试提交一次文字定位触摸请求" : "已发出一次控件点击请求") : "本次未发送点击请求")
+            .putString("action", window.hasAccepted() ? "控件点击请求被接受"
+                : window.hasAttempted() ? "已发出一次控件点击请求" : "本次未发送点击请求")
             .putLong("time", System.currentTimeMillis()).apply();
     }
     private void schedule() {
@@ -107,7 +100,6 @@ public final class SplashSkipService extends AccessibilityService {
         try { root = getRootInActiveWindow(); }
         catch (IllegalStateException | SecurityException e) { report("当前窗口读取被系统中断"); return; }
         if (root == null) {
-            resetTextTap();
             budget.completed(SystemClock.elapsedRealtime());
             if (SystemClock.elapsedRealtime() < waitingUntil && permitted(eventPkg)) {
                 beginReport(eventPkg); report("暂时无法读取当前窗口，正在重试"); schedule();
@@ -118,7 +110,7 @@ public final class SplashSkipService extends AccessibilityService {
         List<Candidate> candidates = new ArrayList<>();
         try {
             String pkg = root.getPackageName() == null ? "" : root.getPackageName().toString();
-            if (!permitted(pkg)) { budget.foreground(pkg, false, SystemClock.elapsedRealtime()); window.reset(); resetTextTap(); sessionId++; sessionPkg = ""; return; }
+            if (!permitted(pkg)) { budget.foreground(pkg, false, SystemClock.elapsedRealtime()); window.reset(); sessionPkg = ""; return; }
             beginReport(pkg);
             long now = SystemClock.elapsedRealtime();
             if (!window.observe(pkg, true, true, now)) return;
@@ -134,11 +126,11 @@ public final class SplashSkipService extends AccessibilityService {
             if (!window.observe(pkg, permitted(pkg), enabled(), now)) return;
             maxNodes = Math.max(maxNodes, snapshot.visited); limited |= snapshot.limited;
             sawSkip |= !candidates.isEmpty(); sawAd |= snapshot.ad;
-            if (candidates.size()!=1 || snapshot.limited || !Prefs.textTap(this,pkg)) resetTextTap();
-            boolean lacksEvidence = false, wrongBounds = false, originalStillReadable = false;
+            boolean lacksEvidence = false, wrongBounds = false, originalStillReadable = false, countdownPending = false;
             boolean rejected = false, sentNow = false;
             long actionDeadline = SystemClock.elapsedRealtime() + 120;
             for (Candidate candidate : candidates) {
+                if (!SplashPolicy.readyToSkip(candidate.label)) { countdownPending = true; continue; }
                 Rect r = new Rect(); candidate.node.getBoundsInScreen(r);
                 originalStillReadable |= window.hasAccepted() && window.matchesAcceptedTarget(r.left,r.top,r.right,r.bottom);
                 if (!SplashPolicy.candidate(candidate.label, snapshot.ad, plain, r.left,r.top,r.right,r.bottom,
@@ -153,13 +145,11 @@ public final class SplashSkipService extends AccessibilityService {
                     report("本轮按钮核对达到时间预算，等待下一轮",0); rejected = true; break;
                 }
                 Rect acted = new Rect();
-                if (click(candidate,pkg,root.getWindowId(),bounds,snapshot.ad,plain,acted,
-                        candidates.size()==1 && !snapshot.limited)) {
+                if (click(candidate,pkg,root.getWindowId(),bounds,snapshot.ad,plain,acted)) {
                     long n = Prefs.get(this).getLong("skip_clicks",0);
                     Prefs.get(this).edit().putLong("skip_clicks",n+1).apply();
                     window.accepted(acted.left,acted.top,acted.right,acted.bottom);
-                    report(gestureAction ? "已提交一次跳过文字中心触摸；不补点，不等同于已清除广告"
-                        : "已向核对后的跳过按钮发送一次点击；不补点，等待界面变化",3);
+                    report("已向核对后的跳过按钮发送一次点击；不补点，等待界面变化",3);
                     sentNow = true; break;
                 }
                 rejected = true;
@@ -172,7 +162,8 @@ public final class SplashSkipService extends AccessibilityService {
                     window.finish();
                 }
             } else if (!window.hasAttempted() && !rejected) {
-                if (lacksEvidence) report("读到跳过，但缺少可读取的倒计时或广告标识；可为此应用开启兼容识别",2);
+                if (countdownPending) report("跳过按钮仍在倒计时，等倒计时消失后再点击",1);
+                else if (lacksEvidence) report("读到跳过，但缺少可读取的倒计时或广告标识；可为此应用开启兼容识别",2);
                 else if (wrongBounds) report("读到跳过，但控件大小或边界不符合点击条件",2);
                 else if (snapshot.full && !snapshot.limited && snapshot.labelled == 0)
                     report("窗口没有可读取的文字；图片或自绘按钮暂不支持",1);
@@ -253,7 +244,7 @@ public final class SplashSkipService extends AccessibilityService {
         } finally { for (NodeDepth item : queue) item.node.recycle(); }
     }
     private boolean click(Candidate candidate, String pkg, int windowId, Rect screen,
-                          boolean ad, boolean plain, Rect acted, boolean unique) {
+                          boolean ad, boolean plain, Rect acted) {
         if (!foregroundMatches(pkg,windowId)) {
             report("当前活动窗口变化，未发送点击",2); return false;
         }
@@ -263,11 +254,11 @@ public final class SplashSkipService extends AccessibilityService {
              SplashButton.Result target = SplashButton.resolve(source,pkg,windowId,bounds,ad,plain,
                  getResources().getDisplayMetrics().density)) {
             if (target.node == null) {
-                if (unique && target.textTapEligible && Prefs.textTap(this,pkg))
-                    return tapText(source,pkg,windowId,bounds,ad,plain,acted);
-                resetTextTap(); report(target.reason,2); return false;
+                report(target.textTapEligible
+                    ? target.reason + "；未发出坐标触摸"
+                    : target.reason,2);
+                return false;
             }
-            resetTextTap();
             if (!foregroundMatches(pkg,windowId) || !enabled() || !permitted(pkg)) {
                 report("点击前应用或窗口变化，未发送点击",2); return false;
             }
@@ -292,76 +283,6 @@ public final class SplashSkipService extends AccessibilityService {
                 window.finish(); return false;
             }
         }
-    }
-    private void resetTextTap() {
-        textTap.reset();
-        if (tapAnchor!=null) { tapAnchor.close(); tapAnchor=null; }
-    }
-    private boolean sameScreen(String pkg,int windowId,SplashButton.Info screen) {
-        AccessibilityNodeInfo active=getRootInActiveWindow();
-        if (active==null) return false;
-        try {
-            Rect r=new Rect(); active.getBoundsInScreen(r);
-            return active.getWindowId()==windowId && active.getPackageName()!=null
-                && pkg.contentEquals(active.getPackageName()) && r.left==screen.left && r.top==screen.top
-                && r.right==screen.right && r.bottom==screen.bottom;
-        } finally { active.recycle(); }
-    }
-    private boolean tapText(AndroidNode source,String pkg,int windowId,SplashButton.Info screen,
-                            boolean ad,boolean plain,Rect acted) {
-        if (getServiceInfo()==null || (getServiceInfo().getCapabilities()
-                & android.accessibilityservice.AccessibilityServiceInfo.CAPABILITY_CAN_PERFORM_GESTURES)==0) {
-            resetTextTap(); report("系统尚未授予定位触摸能力，请在系统无障碍中关闭后重新开启净屏",2); return false;
-        }
-        if (getMagnificationController().getScale()!=1f) {
-            resetTextTap(); report("系统屏幕放大已开启，文字定位触摸已放弃",2); return false;
-        }
-        float density=getResources().getDisplayMetrics().density;
-        SplashButton.Info info=source.read();
-        // Only a leaf that labels the actual skip text is eligible, never its oversized parent.
-        if (source.children()!=0 || !SplashTextTap.valid(info,screen,pkg,windowId,ad,plain,density)) {
-            resetTextTap(); report("文字定位要求明确、可见的小尺寸跳过文字叶子，未发送触摸",2); return false;
-        }
-        if (tapAnchor==null || !tapAnchor.same(source)) {
-            resetTextTap(); tapAnchor=(AndroidNode)source.copy(); tapIdentity++;
-        }
-        long identity=tapIdentity;
-        if (!textTap.observe(info,screen,pkg,windowId,identity,Prefs.textTap(this,pkg),ad,plain,density,
-                SystemClock.elapsedRealtime())) {
-            report("文字定位已读到跳过，等待下一轮确认同一文字位置稳定",2); return false;
-        }
-        if (!permitted(pkg) || !unlocked() || !sameScreen(pkg,windowId,screen)) {
-            resetTextTap(); report("定位触摸前活动窗口变化，已放弃",2); return false;
-        }
-        SplashButton.Info fresh=source.read();
-        if (!Prefs.textTap(this,pkg) || source.children()!=0
-                || !SplashTextTap.valid(fresh,screen,pkg,windowId,ad,plain,density)
-                || !textTap.matches(fresh,screen,pkg,windowId,identity)) {
-            resetTextTap(); report("触摸前跳过文字或位置变化，已放弃",2); return false;
-        }
-        if (!permitted(pkg) || !unlocked() || !window.canAttempt(SystemClock.elapsedRealtime())) return false;
-        float x=fresh.left+(fresh.right-fresh.left)/2f, y=fresh.top+(fresh.bottom-fresh.top)/2f;
-        Path point=new Path(); point.moveTo(x,y);
-        GestureDescription gesture=new GestureDescription.Builder()
-            .addStroke(new GestureDescription.StrokeDescription(point,0,50)).build();
-        if (!window.attempted(SystemClock.elapsedRealtime())) return false;
-        gestureAction=true;
-        acted.set(fresh.left,fresh.top,fresh.right,fresh.bottom);
-        getSharedPreferences("splash_diagnostic",MODE_PRIVATE).edit()
-            .putString("target","连续两次位置稳定的跳过文字中心（定位兼容）").apply();
-        final long id=sessionId;
-        boolean queued=dispatchGesture(gesture,new GestureResultCallback() {
-            private boolean current() { return !destroyed && id==sessionId && pkg.equals(sessionPkg); }
-            @Override public void onCompleted(GestureDescription ignored) {
-                if (current()) report("系统报告定位触摸执行完成；不代表广告已清除，不补点",3);
-            }
-            @Override public void onCancelled(GestureDescription ignored) {
-                if (current()) { report("定位触摸被系统取消；已停止，不补点",3); window.finish(); }
-            }
-        },handler);
-        resetTextTap();
-        if (!queued) { report("系统未接受这一次定位触摸请求；已停止，不补点",3); window.finish(); }
-        return queued;
     }
     private static final class AndroidNode implements SplashButton.Node {
         final AccessibilityNodeInfo node;
@@ -392,13 +313,13 @@ public final class SplashSkipService extends AccessibilityService {
         @Override public void close() { node.recycle(); }
     }
     private void cancel() {
-        handler.removeCallbacks(poll); pollScheduled = false; budget.reset(); window.reset(); resetTextTap(); sessionId++;
+        handler.removeCallbacks(poll); pollScheduled = false; budget.reset(); window.reset();
         sessionPkg = ""; eventPkg = ""; waitingUntil = 0;
     }
     @Override public void onInterrupt() { handler.post(this::cancel); }
     @Override public boolean onUnbind(Intent intent) { connected = false; handler.post(this::cancel); return super.onUnbind(intent); }
     @Override public void onDestroy() {
-        connected = false; destroyed = true; handler.removeCallbacksAndMessages(null); handler.post(this::resetTextTap); scanThread.quitSafely(); super.onDestroy();
+        connected = false; destroyed = true; handler.removeCallbacksAndMessages(null); scanThread.quitSafely(); super.onDestroy();
     }
     private static final class Snapshot { boolean ad, limited, full; int visited, labelled; }
     private static final class NodeDepth {

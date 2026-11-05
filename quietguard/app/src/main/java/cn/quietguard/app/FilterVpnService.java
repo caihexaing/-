@@ -16,11 +16,12 @@ public final class FilterVpnService extends VpnService {
     public static volatile boolean running;
     public static volatile Set<String> filteredApps = Collections.emptySet();
     public static volatile String status = "过滤未运行";
-    public static final AtomicLong queries = new AtomicLong(), blocked = new AtomicLong(), failed = new AtomicLong();
+    public static final AtomicLong queries = new AtomicLong(), blocked = new AtomicLong(), failed = new AtomicLong(), sniBlocked = new AtomicLong(), quicBlocked = new AtomicLong();
     public static final String STOP = "cn.quietguard.STOP";
     private static FilterVpnService instance;
     private boolean pausedForUpdate;
     private Session session;
+    private SniTunnelSession sniSession;
     @Override public void onCreate() {
         super.onCreate(); instance = this;
         NotificationChannel channel = new NotificationChannel("filter", "广告过滤服务", NotificationManager.IMPORTANCE_LOW);
@@ -41,7 +42,7 @@ public final class FilterVpnService extends VpnService {
         startFilter(); return START_NOT_STICKY;
     }
     static void pauseForUpdate() {
-        if (instance != null && instance.session != null) instance.enterUpdatePause();
+        if (instance != null && (instance.session != null || instance.sniSession != null)) instance.enterUpdatePause();
     }
     // A VPN can remain system-bound after stopService(), so close the tunnel explicitly.
     static void stopFiltering(Context context, String reason) {
@@ -83,10 +84,13 @@ public final class FilterVpnService extends VpnService {
             closeSession();
             if (VpnService.prepare(this) != null) throw new IllegalStateException("VPN 授权已失效，请重新启动");
             RuleSet rules = new RuleSet(getAssets().open("ad-domains.txt"), Prefs.get(this).getString("exceptions", ""));
-            Builder builder = new Builder().setSession("净屏 · 按应用广告过滤").setMtu(32767)
-                .addAddress("10.77.0.1", 32).addDnsServer("10.77.0.2").addRoute("10.77.0.2", 32)
+            boolean sniEnabled = Prefs.sniFiltering(this);
+            Builder builder = new Builder().setSession(sniEnabled ? "净屏 · SNI 增强过滤" : "净屏 · 按应用广告过滤").setMtu(sniEnabled ? 1500 : 32767)
+                .addAddress("10.77.0.1", 32).addDnsServer("10.77.0.2")
                 .allowFamily(OsConstants.AF_INET).allowFamily(OsConstants.AF_INET6)
                 .setConfigureIntent(PendingIntent.getActivity(this, 0, new Intent(this, MainActivity.class), PendingIntent.FLAG_IMMUTABLE));
+            if (sniEnabled) builder.addAddress("fd77:77::1", 128).addRoute("0.0.0.0", 0).addRoute("::", 0);
+            else builder.addRoute("10.77.0.2", 32);
             if (Build.VERSION.SDK_INT >= 29) builder.setMetered(false);
             Set<String> applied = new HashSet<>();
             for (String pkg : selected) {
@@ -98,20 +102,44 @@ public final class FilterVpnService extends VpnService {
             if (tunnel == null) throw new IOException("系统未建立 VPN，请检查授权");
             String resolver = Prefs.get(this).getString("resolver", "223.5.5.5");
             if (!Arrays.asList("223.5.5.5", "119.29.29.29", "1.1.1.1").contains(resolver)) resolver = "223.5.5.5";
-            try { session = new Session(tunnel, rules, resolver); } catch (Exception e) { tunnel.close(); throw e; }
-            queries.set(0); blocked.set(0); failed.set(0);
-            filteredApps = Collections.unmodifiableSet(applied);
-            running = true; status = "网络过滤已连接 " + applied.size() + " 个应用";
-            UpdateVpnPause.vpnStarted(this);
-            getSystemService(NotificationManager.class).notify(7, notification(status));
-            session.start();
+            queries.set(0); blocked.set(0); failed.set(0); sniBlocked.set(0); quicBlocked.set(0);
+            if (sniEnabled) {
+                final Set<String> activeApps = Collections.unmodifiableSet(new HashSet<>(applied));
+                status = "SNI 增强隧道启动中…"; getSystemService(NotificationManager.class).notify(7, notification(status));
+                final SniTunnelSession[] createdRef = new SniTunnelSession[1];
+                SniTunnelSession created = new SniTunnelSession(this, tunnel, rules, resolver, new SniTunnelSession.Listener() {
+                    @Override public void onReady() {
+                        SniTunnelSession current = createdRef[0];
+                        if (sniSession != current || !Prefs.enabled(FilterVpnService.this)) { current.close(); return; }
+                        filteredApps = activeApps; running = true; status = "SNI 增强过滤已连接 " + activeApps.size() + " 个应用";
+                        UpdateVpnPause.vpnStarted(FilterVpnService.this);
+                        getSystemService(NotificationManager.class).notify(7, notification(status));
+                    }
+                    @Override public void onFailure(String reason) {
+                        if (sniSession == createdRef[0]) { stopFilter("SNI 增强启动失败：" + reason); stopSelf(); }
+                    }
+                });
+                createdRef[0] = created;
+                sniSession = created; created.start();
+            } else {
+                try { session = new Session(tunnel, rules, resolver); } catch (Exception e) { tunnel.close(); throw e; }
+                filteredApps = Collections.unmodifiableSet(applied);
+                running = true; status = "网络过滤已连接 " + applied.size() + " 个应用";
+                UpdateVpnPause.vpnStarted(this);
+                getSystemService(NotificationManager.class).notify(7, notification(status));
+                session.start();
+            }
         } catch (Exception e) { stopFilter("启动失败：" + readable(e)); stopSelf(); }
     }
     private static String readable(Exception e) { return e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(); }
-    private void closeSession() { running = false; filteredApps = Collections.emptySet(); if (session != null) { session.close(); session = null; } }
+    private void closeSession() {
+        running = false; filteredApps = Collections.emptySet();
+        if (sniSession != null) { sniSession.close(); sniSession = null; }
+        if (session != null) { session.close(); session = null; }
+    }
     private void stopFilter(String text) { closeSession(); status = text; stopForeground(STOP_FOREGROUND_REMOVE); }
     @Override public void onRevoke() { stopFilter("VPN 授权已撤销或被其他 VPN 替换"); stopSelf(); super.onRevoke(); }
-    @Override public void onDestroy() { closeSession(); if (instance == this) instance = null; if (status.startsWith("网络过滤已连接")) status = "过滤已停止"; super.onDestroy(); }
+    @Override public void onDestroy() { closeSession(); if (instance == this) instance = null; if (status.startsWith("网络过滤已连接") || status.startsWith("SNI 增强过滤已连接")) status = "过滤已停止"; super.onDestroy(); }
 
     private final class Session implements AutoCloseable {
         final ParcelFileDescriptor tunnel;

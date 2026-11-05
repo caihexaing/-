@@ -35,7 +35,7 @@ public final class MainActivity extends Activity {
     private boolean showSystem, onlySelected, destroyed, scanning, checkingUpdate, resumed;
     private final Runnable ticker = new Runnable() { @Override public void run() { updateStatus(); handler.postDelayed(this, 1000); } };
     @Override public void onCreate(Bundle state) {
-        super.onCreate(state); Prefs.migrateModes(this);
+        super.onCreate(state); Prefs.migrateModes(this); Prefs.disableTextTap(this);
         if (state != null) pendingVpnRevision = state.getLong("pending_vpn_revision", -1);
         updater = new InAppUpdater(this); getWindow().setStatusBarColor(BG); getWindow().setNavigationBarColor(BG);
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
@@ -196,7 +196,8 @@ public final class MainActivity extends Activity {
             : snapshot.updating ? "网络过滤：更新期间暂停，开屏跳过独立运行"
             : "网络过滤：已连接 " + snapshot.networkActiveCount + " / 配置 " + snapshot.networkCount + " 个");
         statsText.setText(getString(R.string.runtime_details, getString(R.string.dns_stats, FilterVpnService.queries.get(), FilterVpnService.blocked.get(), FilterVpnService.failed.get()),
-            Prefs.get(this).getLong("skip_clicks", 0), FilterVpnService.status));
+            Prefs.get(this).getLong("skip_clicks", 0), FilterVpnService.status)
+            + (Prefs.sniFiltering(this) ? "\nSNI 拦截 " + FilterVpnService.sniBlocked.get() + " · UDP/443 阻止 " + FilterVpnService.quicBlocked.get() : ""));
         power.setText(snapshot.action());
     }
     private void requestStart() {
@@ -249,7 +250,7 @@ public final class MainActivity extends Activity {
         if (!destroyed && resumed && !isFinishing() && Prefs.enabled(this) && !Prefs.selected(this).isEmpty()
                 && !Prefs.get(this).getBoolean("skip_prompted", false)) showSkipSetup();
     }
-    private static final String ACCESSIBILITY_RISK = "无障碍权限具备读取屏幕中可访问界面内容、执行点击和模拟触摸的能力。净屏按当前实现只在已选应用进入前台后15秒内读取控件并识别跳过按钮，但系统授予的能力范围大于这一个用途。\n\n默认不模拟触摸。单独开启“纯跳过”或“文字定位点击”可能误点广告、教程或登录引导，不能保证零误触。请只为必要应用开启，异常时暂停或豁免。\n\n控件内容只在本机临时处理，不保存界面文字或截图、不上传；本机仅保存可清除的包名、时间、次数和固定诊断原因。暂停防护保留权限但停止处理；撤销权限请进入系统无障碍设置。";
+    private static final String ACCESSIBILITY_RISK = "无障碍权限可读取屏幕中可访问的界面内容并点击按钮。净屏只在已选应用进入前台后15秒内查找开屏跳过控件；系统授予的能力范围大于这一用途。\n\n净屏只点击应用公开了系统点击动作、且通过文字和边界核对的控件，不模拟屏幕坐标触摸。没有公开点击动作的按钮可能无法跳过；纯“跳过”兼容也可能误认教程入口。\n\n控件内容只在本机临时处理，不保存界面文字或截图、不上传；本机仅保存可清除的包名、时间、次数和固定诊断原因。暂停防护保留权限但停止处理；撤销权限请进入系统无障碍设置。";
     private void showSkipSetup() {
         Prefs.get(this).edit().putBoolean("skip_prompted", true).apply();
         if (skipDialog != null && skipDialog.isShowing()) return;
@@ -387,12 +388,17 @@ public final class MainActivity extends Activity {
         dns.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, names));
         String saved = Prefs.get(this).getString("resolver", addresses[0]); for (int i = 0; i < addresses.length; i++) if (saved.equals(addresses[i])) dns.setSelection(i);
         panel.addView(dns, new LinearLayout.LayoutParams(-1, dp(48)));
+        CheckBox sni = new CheckBox(this); sni.setText("SNI 增强过滤（实验）"); sni.setTextSize(14); sni.setChecked(Prefs.sniFiltering(this));
+        sni.setEnabled(Build.VERSION.SDK_INT >= 29);
+        if (Build.VERSION.SDK_INT < 29) sni.setChecked(false);
+        panel.addView(sni);
+        TextView sniInfo = text(Build.VERSION.SDK_INT < 29 ? "SNI 增强模式需要 Android 10 及以上；此设备仍可使用基础 DNS 过滤和开屏跳过。" : "开启后，所选应用的完整 IPv4/IPv6 流量经本机隧道转发；检查 TCP/443 的可见 SNI，不解密 HTTPS。UDP/443 会被阻止以尝试触发 HTTP/3 回退，可能造成部分应用变慢或无法联网；ECH、DoH、直连 IP 和缓存内容仍可能绕过。",12,MUTED); panel.addView(sniInfo);
         TextView label = text("例外域名（每行一个，包含其子域名）", 14, INK); label.setPadding(0, dp(16), 0, dp(8)); panel.addView(label);
         EditText allow = new EditText(this); allow.setTextSize(14); allow.setHint("example.com"); allow.setMinLines(3); allow.setMaxLines(6);
         allow.setGravity(Gravity.TOP); allow.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE | android.text.InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
         allow.setText(Prefs.get(this).getString("exceptions", "")); panel.addView(allow);
         int ruleCount = builtInRuleCount();
-        TextView details = text((ruleCount < 0 ? "内置规则读取失败" : "内置 " + ruleCount + " 条精选域名规则") + " · v" + BuildConfig.VERSION_NAME + "\n\n若应用功能异常，可添加例外域名或关闭该应用的开关。\n\n系统“私人 DNS”建议设为关闭；应用自带加密 DNS 可能绕过过滤。本版处理 UDP DNS，不支持 TCP DNS 隧道。\n\nDNS 规则命中会重复计数，包含追踪请求；转发失败不代表广告漏拦。跳过点击次数仅表示系统接受了点击请求，无法证明广告消失。DNS 计数从启动或重新配置时开始，跳过点击次数在本机累计。\n\n暂停防护将同时停止过滤和自动跳过，保留应用选择和权限。手动暂停后不会由更新回调恢复；点击“恢复防护”才重新启用。无障碍服务连接与防护开关是两个独立状态。", 12, MUTED);
+        TextView details = text((ruleCount < 0 ? "内置规则读取失败" : "内置 " + ruleCount + " 条域名拦截规则 · " + builtInRuleExceptionCount() + " 条上游例外") + " · v" + BuildConfig.VERSION_NAME + "\n\n规则来自 AdGuard 移动广告过滤列表的纯域名子集，按 DNS 域名匹配。上游按应用限定的主机例外在净屏中按精确主机例外处理；少数无法映射的规则会跳过。\n\n若应用功能异常，可添加例外域名或关闭该应用的开关。\n\n系统“私人 DNS”建议设为关闭；应用自带加密 DNS 可能绕过过滤。基础模式处理 UDP DNS；可选 SNI 增强模式会接管所选应用的 IPv4/IPv6 流量，检查 TCP/443 可见主机名但不解密 HTTPS，并阻止 UDP/443以尝试触发 HTTP/3 回退。\n\nDNS 规则命中会重复计数，包含追踪请求；转发失败不代表广告漏拦。跳过点击次数仅表示系统接受了点击请求，无法证明广告消失。DNS 计数从启动或重新配置时开始，跳过点击次数在本机累计。\n\n暂停防护将同时停止过滤和自动跳过，保留应用选择和权限。手动暂停后不会由更新回调恢复；点击“恢复防护”才重新启用。无障碍服务连接与防护开关是两个独立状态。", 12, MUTED);
         details.setPadding(0, dp(16), 0, 0); panel.addView(details);
         ScrollView scroll = new ScrollView(this); scroll.addView(panel);
         AlertDialog dialog = new AlertDialog.Builder(this).setTitle("防护方式与网络").setView(scroll).setNegativeButton("取消", null).setNeutralButton("网络设置", (d,w) -> startActivity(new Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS))).setPositiveButton("保存", null).create();
@@ -401,23 +407,35 @@ public final class MainActivity extends Activity {
             try {
                 for (String domain : value.split("[\\s,，]+")) if (!domain.trim().isEmpty()) normalized.append(RuleSet.normalize(domain)).append('\n');
             } catch (IllegalArgumentException e) { allow.setError("仅填写域名，例如 example.com；不含 https:// 或路径"); return; }
-            Prefs.get(this).edit().putString("exceptions", normalized.toString()).putString("resolver", addresses[dns.getSelectedItemPosition()]).apply();
-            if (Prefs.enabled(this)) applyChanges(); dialog.dismiss(); toast("设置已保存");
+            Runnable save = () -> {
+                Prefs.get(this).edit().putString("exceptions", normalized.toString()).putString("resolver", addresses[dns.getSelectedItemPosition()])
+                    .putBoolean("sni_filtering", sni.isChecked()).apply();
+                if (Prefs.enabled(this)) applyChanges(); dialog.dismiss(); toast("设置已保存");
+            };
+            if (sni.isChecked() && !Prefs.sniFiltering(this)) {
+                new AlertDialog.Builder(this).setTitle("开启实验性 SNI 过滤")
+                    .setMessage("所选应用会切换到完整本地隧道；UDP/443 被阻止后，部分应用可能无法回退到 TCP。若联网异常，请回到这里关闭 SNI 增强过滤或豁免应用。")
+                    .setNegativeButton("取消",null).setPositiveButton("确认开启",(confirm,w) -> save.run()).show();
+            } else save.run();
         })); dialog.show();
     }
     private int builtInRuleCount() {
         try { return new RuleSet(getAssets().open("ad-domains.txt"), "").size(); }
         catch (Exception ignored) { return -1; }
     }
+    private int builtInRuleExceptionCount() {
+        try { return new RuleSet(getAssets().open("ad-domains.txt"), "").exceptionSize(); }
+        catch (Exception ignored) { return 0; }
+    }
     private void showHelp(boolean first) {
         int ruleCount = builtInRuleCount();
-        String coverage = ruleCount < 0 ? "当前内置规则读取失败。" : "当前仅内置 " + ruleCount + " 条域名规则，覆盖范围有限。";
+        String coverage = ruleCount < 0 ? "当前内置规则读取失败。" : "当前内置 " + ruleCount + " 条域名拦截规则和 " + builtInRuleExceptionCount() + " 条上游例外，覆盖范围有限。";
         String description = "净屏 v" + BuildConfig.VERSION_NAME + "（构建 " + BuildConfig.VERSION_CODE + "）\n本机 DNS 域名过滤与开屏按钮辅助跳过工具，不保证消除所有广告。\n\n"
             + "开始使用\n1. 首次安装不自动选择应用。先搜索并开启少量常用应用。\n2. 保守模式默认对新开启应用只做开屏跳过，不干预网络；长按应用可主动改成网络过滤+跳过。\n3. 开屏跳过需要单独授权无障碍。网络过滤需要系统 VPN 授权，与其他 VPN 互斥。\n\n"
             + "暂停与豁免\n暂停保留应用开关，恢复由你手动执行；一键关闭需确认后才清空全部选择，兼容设置和豁免保留；重新一键开启不等于恢复原选择清单。应用登录、支付、下载异常时，进入“设置 → 应用豁免”选择应用即可豁免，之后一键开启也不会重新选中它。\n\n"
             + "权限与隐私\n应用列表、选择、兼容设置及固定诊断记录只保存在本机。不解密 HTTPS，不保存或上传界面文字或截图。无障碍授权具备较广的界面读取与点击能力，误触可能影响广告、教程或登录引导。首次开启前单独说明，可在系统无障碍设置撤销。\n\n"
             + "网络访问\n网络过滤会把未拦截域名发送给你选定的公共 DNS，DNS 传输未加密。检查更新与 APK 下载连接 GitHub，服务器会收到常规网络连接信息；不上传应用列表。自动检查默认关闭。\n\n"
-            + "实际能做什么\n" + coverage + "本版未启用远程规则更新。DNS 过滤只能阻止发往命中规则域名的请求，不能直接删除 App 内广告 SDK 或广告控件。SDK 使用未命中域名、直连 IP、自带 DoH、同域内容或缓存素材时，广告仍可能出现；严格私人 DNS 也可能绕过过滤。\n\n"
+            + "实际能做什么\n" + coverage + "规则取自移动广告过滤列表可表达为域名的子集；带路径、通配符或站点条件的拦截规则不会直接套用。可在“设置 → 防护方式与网络”手动开启实验性 SNI 增强：它检查 TCP/443 可见主机名，不解密 HTTPS，并阻止 UDP/443尝试触发回退。ECH、应用自带 DoH、直连 IP、同域内容或缓存仍可能绕过；DNS 过滤也不能直接删除 App 内广告控件。\n\n"
             + "开屏广告\nDNS 过滤不能保证关闭开屏广告。开屏跳过是单独的无障碍辅助功能，只会尝试点击可识别的跳过按钮；无权限、无法识别或不满足安全条件时不会点击，可能仍需等待广告结束，也不保证零延迟。\n\n"
             + "怎样理解命中次数\n命中长期为 0～2 只表示本次命中规则的请求很少，不能证明没有广告。仅开屏跳过模式不做 DNS 过滤；命中请求也不等于成功去掉广告，点击请求不等于跳过成功。\n\n"
             + "数字说明\n列表显示数受搜索和筛选影响；已选是你的开关数量，分为仅跳过与网络+跳过。网络已连接数量来自实际建立的隧道；开屏已就绪表示服务可用，不代表每个应用都能识别成功。";
@@ -484,16 +502,14 @@ public final class MainActivity extends Activity {
         RadioButton skipOnly = new RadioButton(this); skipOnly.setId(View.generateViewId()); skipOnly.setText("仅开屏跳过（启动兼容）"); modes.addView(skipOnly);
         modes.check(Prefs.skipOnly(this, pkg) ? skipOnly.getId() : both.getId()); panel.addView(modes);
         CheckBox plain = new CheckBox(this); plain.setText("允许纯“跳过”按钮（跳过兼容）"); plain.setChecked(Prefs.plainSkip(this, pkg)); panel.addView(plain);
-        CheckBox tap = new CheckBox(this); tap.setText("文字定位点击（兼容，可能误触）"); tap.setChecked(Prefs.textTap(this,pkg)); panel.addView(tap);
-        TextView tapInfo = text("仅对本应用生效，默认关闭。文字控件不能直接点击时，确认同一跳过文字连续两次位置稳定后，模拟点击文字中心一次。不会点击大容器或补点，但界面变化、遮挡或错误控件信息仍可能导致误触广告；发生误跳请关闭。",12,MUTED); panel.addView(tapInfo);
-        TextView warning = text("纯跳过兼容只对这个应用生效，也可能跳过教程或登录引导。两种防护方式都只在进入应用后15秒内处理可读取的跳过按钮。定位兼容有误触风险，可随时关闭。", 12, MUTED); panel.addView(warning);
+        TextView tapInfo = text("文字定位触摸已停用：实测可能误入广告页。净屏只执行应用公开的按钮点击动作；如果按钮未提供该动作，将记录原因并跳过，不猜测屏幕坐标。",12,MUTED); panel.addView(tapInfo);
+        TextView warning = text("纯跳过兼容只对这个应用生效，也可能跳过教程或登录引导。防护只在进入应用后15秒内处理可读取的跳过按钮。", 12, MUTED); panel.addView(warning);
         ScrollView scroll = new ScrollView(this); scroll.addView(panel);
         new AlertDialog.Builder(this).setTitle(label + " · 防护方式").setView(scroll)
             .setNegativeButton("取消", null).setPositiveButton("保存", (d,w) -> {
                 boolean only = modes.getCheckedRadioButtonId() == skipOnly.getId();
                 boolean networkChanged = Prefs.skipOnly(this, pkg) != only;
                 Prefs.skipOnly(this, pkg, only); Prefs.plainSkip(this, pkg, plain.isChecked());
-                Prefs.textTap(this,pkg,tap.isChecked());
                 if (networkChanged && Prefs.enabled(this)) applyChanges();
                 filter(); toast("已保存，请退出并重新打开目标应用");
             }).show();
@@ -512,7 +528,7 @@ public final class MainActivity extends Activity {
             + "\n曾读到广告标识：" + (record.getBoolean("ad", false) ? "是" : "否")
             + "\n扫描曾达到上限：" + (record.getBoolean("limited", false) ? "是" : "否")
             + "\n纯跳过兼容：" + (Prefs.plainSkip(this, pkg) ? "开启" : "关闭")
-            + "\n文字定位兼容：" + (Prefs.textTap(this,pkg) ? "开启" : "关闭")
+            + "\n文字定位触摸：已停用（仅执行系统公开的按钮点击动作）"
             + "\n本次点击：" + record.getString("action", "旧版记录，请重新检测")
             + "\n点击目标：" + record.getString("target", "未发送点击")
             + "\n\n关键结果：" + record.getString("reason", "暂无结果")

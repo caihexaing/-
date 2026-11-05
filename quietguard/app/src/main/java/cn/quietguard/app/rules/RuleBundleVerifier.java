@@ -21,9 +21,9 @@ public final class RuleBundleVerifier {
     public static final class Verified {
         public final long version;
         public final int entries;
-        public final String blockedText, allowedText;
-        private Verified(long version,int entries,String blocked,String allowed) {
-            this.version=version; this.entries=entries; blockedText=blocked; allowedText=allowed;
+        public final String blockedText, allowedText, exactAllowedText;
+        private Verified(long version,int entries,String blocked,String allowed,String exactAllowed) {
+            this.version=version; this.entries=entries; blockedText=blocked; allowedText=allowed; exactAllowedText=exactAllowed;
         }
     }
     public static Verified verify(byte[] metadata,byte[] signature,byte[] rules,byte[] sources,
@@ -58,18 +58,19 @@ public final class RuleBundleVerifier {
         String[] lines=new String(rules,StandardCharsets.US_ASCII).split("\n",-1);
         if(lines.length-1!=entries) throw new IOException("Rule entry count mismatch");
         String previous="";
-        StringBuilder block=new StringBuilder(),allow=new StringBuilder();
+        StringBuilder block=new StringBuilder(),allow=new StringBuilder(),exactAllow=new StringBuilder();
         for(int n=0;n<entries;n++) {
             String line=lines[n];
             if(line.compareTo(previous)<=0) throw new IOException("Rules must be sorted and unique");
             previous=line;
-            boolean exception=line.startsWith("!");
+            boolean exception=line.startsWith("!") || line.startsWith("~");
+            boolean exact=line.startsWith("~");
             String domain=exception ? line.substring(1) : line;
             if(!domain(domain)) throw new IOException("Invalid DNS domain in rules");
-            (exception ? allow : block).append(domain).append('\n');
+            (exact ? exactAllow : exception ? allow : block).append(domain).append('\n');
         }
         if(block.length()==0) throw new IOException("Empty block set");
-        return new Verified(version,entries,block.toString(),allow.toString());
+        return new Verified(version,entries,block.toString(),allow.toString(),exactAllow.toString());
     }
     private static boolean domain(String value) {
         if(value.length()>253 || !value.contains(".") || value.endsWith(".") || value.matches("[0-9.]+")) return false;

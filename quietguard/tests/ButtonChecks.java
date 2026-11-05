@@ -52,6 +52,36 @@ public final class ButtonChecks {
         expect(l,l,false,true,"advertised action does not require redundant clickable flag");
         l=label(); Data p=button(l);
         expect(l,p,true,true,"nonclickable skip text resolves small button");
+        l=new Data("跳过",969,189,1216,273);
+        p=new Data(null,927,0,1258,329).action().add(l);
+        SplashButton.Info phone=new SplashButton.Info(); phone.left=0;phone.top=0;phone.right=1259;phone.bottom=2800;
+        try (Node node=new Node(l); SplashButton.Result result=SplashButton.resolve(node,"target",1,phone,true,false,3f)) {
+            check(result.node instanceof Node && ((Node)result.node).data==p,
+                "large isolated countdown skip hit-area resolves semantic action");
+            check(result.container,"large isolated skip area remains identified as container");
+        }
+        check(open==0,"large skip area node ownership");
+        l=new Data("跳过",969,189,1216,273);
+        p=new Data(null,927,0,1258,329); p.info.clickable=true; p.add(l);
+        try (Node node=new Node(l); SplashButton.Result result=SplashButton.resolve(node,"target",1,phone,true,false,3f)) {
+            check(result.node instanceof Node && ((Node)result.node).data==p,
+                "isolated clickable skip hit-area accepted when ACTION_CLICK is omitted from metadata");
+        }
+        check(open==0,"clickable skip area node ownership");
+        l=new Data("跳过",969,189,1216,273);
+        Data sdkWrapper=new Data(null,927,0,1258,329).add(l);
+        p=new Data(null,927,0,1258,329); p.info.clickable=true; p.add(sdkWrapper);
+        try (Node node=new Node(l); SplashButton.Result result=SplashButton.resolve(node,"target",1,phone,true,false,3f)) {
+            check(result.node instanceof Node && ((Node)result.node).data==p,
+                "oversized nonclickable SDK wrapper can lead to isolated skip action");
+        }
+        check(open==0,"wrapped skip area node ownership");
+        p.add(new Data("浏览",960,250,1200,310).action());
+        try (Node node=new Node(l); SplashButton.Result result=SplashButton.resolve(node,"target",1,phone,true,false,3f)) {
+            check(result.node==null,"skip area with another interactive destination is refused");
+        }
+        check(open==0,"mixed destination node ownership");
+        l=label(); p=button(l);
         p.add(new Data("5s",765,100,790,140));
         expect(l,p,true,true,"split countdown and skip button");
         l=label(); Data wrapper=new Data(null,795,95,885,145).add(l); p=button(wrapper);
@@ -103,8 +133,8 @@ public final class ButtonChecks {
         expect(l,null,false,true,"cyclic subtree refused");
         l=label(); l.parent=l;
         expect(l,null,false,true,"cyclic parent refused");
-        l=label(); p=button(l); p.info.action=false;
-        expect(l,null,false,true,"clickable flag alone never authorizes action");
+        l=label(); l.info.clickable=true;
+        expect(l,null,false,true,"clickable text without action or isolated parent is refused");
         l=label(); p=button(l);
         expect(l,null,false,false,"plain tutorial remains off by default");
         l.info.text="4s|跳过";
