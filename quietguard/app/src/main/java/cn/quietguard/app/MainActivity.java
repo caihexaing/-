@@ -26,11 +26,10 @@ public final class MainActivity extends Activity {
     private final List<AppEntry> apps = new ArrayList<>(), visible = new ArrayList<>();
     private AppAdapter adapter;
     private TextView statusText, countText, statsText, empty, skipStatus, scopeText, networkStatus, updateFeedback;
-    private LinearLayout statusDetails;
     private Button updateButton;
     private AlertDialog skipDialog, updateCheckDialog;
     private long pendingVpnRevision = -1;
-    private Button power, skipSetup, enableAll, disableAll;
+    private Button power, enableAll, disableAll;
     private EditText search;
     private InAppUpdater updater;
     private boolean showSystem, onlySelected, destroyed, scanning, checkingUpdate, resumed;
@@ -62,17 +61,8 @@ public final class MainActivity extends Activity {
         scopeText = text("", 12, INK); details.addView(scopeText);
         skipStatus = text("", 12, MUTED); details.addView(skipStatus);
         networkStatus = text("", 12, MUTED); details.addView(networkStatus);
-        skipSetup = button("开屏跳过设置", false); skipSetup.setOnClickListener(v -> showSkipSetup());
-        details.addView(skipSetup,new LinearLayout.LayoutParams(-1,dp(48)));
-        Button exemptions = button("应用异常 / 豁免管理",false); exemptions.setOnClickListener(v -> showExemptPicker());
-        details.addView(exemptions,new LinearLayout.LayoutParams(-1,dp(48)));
-        Button detailToggle = button("运行统计 ▾", false);
-        statusDetails = column(); statusDetails.setVisibility(View.GONE);
-        statsText = text("", 12, MUTED); statusDetails.addView(statsText);
-        TextView countNote = text("DNS 为本次网络会话计数；点击为本机累计请求数，均不代表广告清除数。", 11, MUTED); statusDetails.addView(countNote);
-        Button retry = button("重新连接网络过滤", false); retry.setOnClickListener(v -> requestStart()); statusDetails.addView(retry);
-        detailToggle.setOnClickListener(v -> { boolean open = statusDetails.getVisibility() != View.VISIBLE; statusDetails.setVisibility(open ? View.VISIBLE : View.GONE); detailToggle.setText(open ? "收起统计 ▴" : "运行统计 ▾"); });
-        details.addView(detailToggle,new LinearLayout.LayoutParams(-1,dp(48))); details.addView(statusDetails);
+        statsText = text("", 12, MUTED); statsText.setPadding(0,dp(8),0,0); details.addView(statsText);
+        details.addView(text("DNS 为本次网络会话计数；点击为本机累计请求数，均不代表广告清除数。",11,MUTED));
         detailScroll.addView(details);
         card.addView(detailScroll,new LinearLayout.LayoutParams(-1,Math.min(dp(220),getResources().getDisplayMetrics().heightPixels/4)));
         boolean expanded = Prefs.get(this).getBoolean("home_details_expanded",false);
@@ -85,7 +75,7 @@ public final class MainActivity extends Activity {
             Prefs.get(this).edit().putBoolean("home_details_expanded",open).apply();
         });
         LinearLayout.LayoutParams cardLp = new LinearLayout.LayoutParams(-1,-2); cardLp.bottomMargin=dp(8); root.addView(card,cardLp);
-        updateFeedback = text("", 12, INK); updateFeedback.setVisibility(View.GONE); root.addView(updateFeedback);
+        updateFeedback = text("", 12, INK); updateFeedback.setVisibility(View.GONE);
 
         search = new EditText(this); search.setSingleLine(true); search.setTextSize(14); search.setTextColor(INK);
         search.setHintTextColor(MUTED); search.setHint("搜索应用名称或包名"); search.setPadding(dp(16), 0, dp(16), 0); search.setBackground(shape(Color.WHITE, 14));
@@ -202,7 +192,6 @@ public final class MainActivity extends Activity {
         statsText.setText(getString(R.string.runtime_details, getString(R.string.dns_stats, FilterVpnService.queries.get(), FilterVpnService.blocked.get(), FilterVpnService.failed.get()),
             Prefs.get(this).getLong("skip_clicks", 0), FilterVpnService.status));
         power.setText(snapshot.action());
-        skipSetup.setText("开屏跳过设置");
     }
     private void requestStart() {
         if (Prefs.selected(this).isEmpty()) { toast("先打开至少一个应用右侧的开关"); return; }
@@ -260,11 +249,10 @@ public final class MainActivity extends Activity {
         if (skipDialog != null && skipDialog.isShowing()) return;
         LinearLayout panel = column(); panel.setPadding(dp(24), dp(8), dp(24), dp(8));
         panel.addView(text("服务：" + (SplashSkipService.connected ? "已连接" : "未连接") + "\n防护开关：" + (Prefs.enabled(this) ? "已开启" : "已暂停，设置权限不会自动恢复防护"),14,INK));
-        panel.addView(text(ACCESSIBILITY_RISK,12,MUTED));
-        Button enable = button(SplashSkipService.connected ? "重新确认用途与授权" : "阅读并开启开屏跳过",false);
-        enable.setOnClickListener(v -> requestSkipConsent()); panel.addView(enable);
-        Button system = button("打开系统无障碍设置（开启/撤销权限）",false);
-        system.setOnClickListener(v -> openAccessibilitySettings()); panel.addView(system);
+        panel.addView(text("无障碍权限可读取屏幕控件并执行点击，可能误触。开启前会展示完整用途与风险说明；你可随时在系统设置撤销权限。",12,MUTED));
+        panel.addView(text(AccessibilitySetup.authorized(this) ? "已具备快捷开启授权，可由净屏提交连接请求。" : "由系统设置确认权限，无需 Root 或连接电脑。",12,MUTED));
+        Button enable = button(SplashSkipService.connected ? "管理系统无障碍权限" : "开启开屏跳过",false);
+        enable.setOnClickListener(v -> { if (SplashSkipService.connected) openAccessibilitySettings(); else requestSkipConsent(); }); panel.addView(enable);
         Button diagnostic = button("查看最近跳过诊断",false); diagnostic.setOnClickListener(v -> showSkipDiagnostic()); panel.addView(diagnostic);
         ScrollView scroll = new ScrollView(this); scroll.addView(panel);
         skipDialog = new AlertDialog.Builder(this).setTitle("开屏跳过设置").setView(scroll).setPositiveButton("关闭",null).create(); skipDialog.show();
@@ -350,17 +338,22 @@ public final class MainActivity extends Activity {
         });
     }
     private void showSettings() {
-        LinearLayout panel = column(); panel.setPadding(dp(24), dp(8), dp(24), dp(8));
-        TextView setupGrant = text(AccessibilitySetup.authorized(this) ? "无障碍开启方式：可由净屏提交开启请求；你可随时在系统设置中撤销" : "无障碍开启方式：在系统设置中手动确认，无需 Root 或连接电脑",12,MUTED); panel.addView(setupGrant);
-        Switch conservative = new Switch(this); conservative.setText("保守模式：新开启应用默认仅开屏跳过"); conservative.setTextSize(13); conservative.setChecked(Prefs.conservative(this));
-        conservative.setOnCheckedChangeListener((b,on) -> Prefs.get(this).edit().putBoolean("conservative_new_apps",on).apply()); panel.addView(conservative);
-        panel.addView(text("不自动更改已有应用的防护方式。长按应用可主动开启网络过滤；新安装不会默认选中任何应用。",12,MUTED));
-        Button exemptions = button("应用异常 / 豁免管理",false); exemptions.setOnClickListener(v -> showExemptPicker()); panel.addView(exemptions);
-        Button help = button("使用帮助、隐私与关于",false); help.setOnClickListener(v -> showHelp(false)); panel.addView(help);
-        Button skip = button("开屏跳过设置与权限说明", false); skip.setOnClickListener(v -> showSkipSetup()); panel.addView(skip);
-        Button diagnostic = button("查看最近跳过诊断", false); diagnostic.setOnClickListener(v -> showSkipDiagnostic()); panel.addView(diagnostic);
-        TextView explanation = text("同一个应用开关控制 DNS 过滤和开屏跳过。跳过功能需要额外的系统无障碍授权。域名命中与跳过点击都不代表清除全部广告。", 12, MUTED);
-        panel.addView(explanation);
+        String[] items = {"开屏跳过与权限", "应用豁免", "防护方式与网络", "版本更新", "帮助与隐私"};
+        new AlertDialog.Builder(this).setTitle("设置").setItems(items,(d,which) -> {
+            switch (which) {
+                case 0: showSkipSetup(); break;
+                case 1: showExemptPicker(); break;
+                case 2: showNetworkSettings(); break;
+                case 3: showUpdateSettings(); break;
+                case 4: showHelp(false); break;
+                default: break;
+            }
+        }).setNegativeButton("关闭",null).show();
+    }
+    private void showUpdateSettings() {
+        LinearLayout panel = column(); panel.setPadding(dp(24),dp(8),dp(24),dp(8));
+        if (updateFeedback.getParent() instanceof ViewGroup) ((ViewGroup)updateFeedback.getParent()).removeView(updateFeedback);
+        panel.addView(updateFeedback);
         updateButton = button(checkingUpdate ? "正在检查更新…" : "检查更新 · 当前 v" + BuildConfig.VERSION_NAME, false);
         updateButton.setEnabled(!checkingUpdate); updateButton.setOnClickListener(v -> checkUpdate(true)); panel.addView(updateButton);
         TextView updatePrivacy = text("检查和下载前自动暂时断开净屏 VPN，结束、失败或取消后按原状态恢复；安装后再检查恢复。更新中手动暂停防护会保留你的选择。APP 内显示下载进度，安装由系统确认；仅访问 GitHub，不上传应用列表。", 12, MUTED);
@@ -369,6 +362,19 @@ public final class MainActivity extends Activity {
         autoUpdate.setChecked(Prefs.get(this).getBoolean("auto_update", false));
         autoUpdate.setOnCheckedChangeListener((b,on) -> { Prefs.get(this).edit().putBoolean("auto_update", on).apply(); if (on) checkUpdate(true); });
         panel.addView(autoUpdate);
+        ScrollView scroll = new ScrollView(this); scroll.addView(panel);
+        new AlertDialog.Builder(this).setTitle("版本更新").setView(scroll).setPositiveButton("关闭",null).show();
+    }
+    private void showNetworkSettings() {
+        LinearLayout panel = column(); panel.setPadding(dp(24),dp(8),dp(24),dp(8));
+        Switch conservative = new Switch(this); conservative.setText("保守模式：新开启应用默认仅开屏跳过"); conservative.setTextSize(13); conservative.setChecked(Prefs.conservative(this));
+        conservative.setOnCheckedChangeListener((b,on) -> Prefs.get(this).edit().putBoolean("conservative_new_apps",on).apply()); panel.addView(conservative);
+        panel.addView(text("不自动更改已有应用的防护方式。长按应用可主动开启网络过滤；新安装不会默认选中任何应用。",12,MUTED));
+        Button retry = button("重新连接网络过滤",false); retry.setOnClickListener(v -> {
+            if (!Prefs.enabled(this)) {
+                new AlertDialog.Builder(this).setTitle("防护已暂停").setMessage("回到首页点击“恢复防护”后，再重新连接网络过滤。").setPositiveButton("知道了",null).show();
+            } else requestStart();
+        }); panel.addView(retry);
         TextView info = text("DNS 上游", 15, INK); panel.addView(info);
         Spinner dns = new Spinner(this); String[] names = {"阿里公共 DNS · 223.5.5.5", "腾讯公共 DNS · 119.29.29.29", "Cloudflare · 1.1.1.1"};
         String[] addresses = {"223.5.5.5", "119.29.29.29", "1.1.1.1"};
@@ -383,7 +389,7 @@ public final class MainActivity extends Activity {
         TextView details = text("内置 " + ruleCount + " 条精选域名规则 · v" + BuildConfig.VERSION_NAME + "\n\n若应用功能异常，可添加例外域名或关闭该应用的开关。\n\n系统“私人 DNS”建议设为关闭；应用自带加密 DNS 可能绕过过滤。本版处理 UDP DNS，不支持 TCP DNS 隧道。\n\nDNS 规则命中会重复计数，包含追踪请求；转发失败不代表广告漏拦。跳过点击次数仅表示系统接受了点击请求，无法证明广告消失。DNS 计数从启动或重新配置时开始，跳过点击次数在本机累计。\n\n暂停防护将同时停止过滤和自动跳过，保留应用选择和权限。手动暂停后不会由更新回调恢复；点击“恢复防护”才重新启用。无障碍服务连接与防护开关是两个独立状态。", 12, MUTED);
         details.setPadding(0, dp(16), 0, 0); panel.addView(details);
         ScrollView scroll = new ScrollView(this); scroll.addView(panel);
-        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("过滤设置").setView(scroll).setNegativeButton("取消", null).setNeutralButton("网络设置", (d,w) -> startActivity(new Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS))).setPositiveButton("保存", null).create();
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("防护方式与网络").setView(scroll).setNegativeButton("取消", null).setNeutralButton("网络设置", (d,w) -> startActivity(new Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS))).setPositiveButton("保存", null).create();
         dialog.setOnShowListener(d -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
             String value = allow.getText().toString().trim(); StringBuilder normalized = new StringBuilder();
             try {
@@ -396,7 +402,7 @@ public final class MainActivity extends Activity {
     private void showHelp(boolean first) {
         String description = "净屏 v" + BuildConfig.VERSION_NAME + "（构建 " + BuildConfig.VERSION_CODE + "）\n本机 DNS 域名过滤与开屏按钮辅助跳过工具，不保证消除所有广告。\n\n"
             + "开始使用\n1. 首次安装不自动选择应用。先搜索并开启少量常用应用。\n2. 保守模式默认对新开启应用只做开屏跳过，不干预网络；长按应用可主动改成网络过滤+跳过。\n3. 开屏跳过需要单独授权无障碍。网络过滤需要系统 VPN 授权，与其他 VPN 互斥。\n\n"
-            + "暂停与豁免\n暂停保留应用开关，恢复由你手动执行；一键关闭会清空选择。应用登录、支付、下载异常时，首页点“应用异常”选择应用即可豁免，之后一键开启也不会重新选中它。\n\n"
+            + "暂停与豁免\n暂停保留应用开关，恢复由你手动执行；一键关闭会清空选择。应用登录、支付、下载异常时，进入“设置 → 应用豁免”选择应用即可豁免，之后一键开启也不会重新选中它。\n\n"
             + "权限与隐私\n应用列表、选择、兼容设置及固定诊断记录只保存在本机。不解密 HTTPS，不保存或上传界面文字或截图。无障碍授权具备较广的界面读取与点击能力，误触可能影响广告、教程或登录引导。首次开启前单独说明，可在系统无障碍设置撤销。\n\n"
             + "网络访问\n网络过滤会把未拦截域名发送给你选定的公共 DNS，DNS 传输未加密。检查更新与 APK 下载连接 GitHub，服务器会收到常规网络连接信息；不上传应用列表。自动检查默认关闭。\n\n"
             + "能力限制\n直接 IP、同域内容、缓存广告、应用自带 DoH 和严格私人 DNS 可能绕过域名过滤。无法保证页面内广告被去除或开屏零延迟。本版未启用远程规则更新。规则命中和点击请求次数不能视为清除广告数量。\n\n"
@@ -452,9 +458,7 @@ public final class MainActivity extends Activity {
         TextView warning = text("纯跳过兼容只对这个应用生效，也可能跳过教程或登录引导。两种防护方式都只在进入应用后15秒内处理可读取的跳过按钮。定位兼容有误触风险，可随时关闭。", 12, MUTED); panel.addView(warning);
         ScrollView scroll = new ScrollView(this); scroll.addView(panel);
         new AlertDialog.Builder(this).setTitle(label + " · 防护方式").setView(scroll)
-            .setNegativeButton("取消", null).setNeutralButton(Prefs.exemptions(this).contains(pkg) ? "解除豁免" : "豁免此应用", (d,w) -> {
-                Prefs.exempt(this,pkg,!Prefs.exemptions(this).contains(pkg)); applyChanges(); filter();
-            }).setPositiveButton("保存", (d,w) -> {
+            .setNegativeButton("取消", null).setPositiveButton("保存", (d,w) -> {
                 boolean only = modes.getCheckedRadioButtonId() == skipOnly.getId();
                 boolean networkChanged = Prefs.skipOnly(this, pkg) != only;
                 Prefs.skipOnly(this, pkg, only); Prefs.plainSkip(this, pkg, plain.isChecked());
@@ -485,7 +489,6 @@ public final class MainActivity extends Activity {
             + "\n\n只有状态记录保存在手机，不保存界面文字或截图、不上传；控件消失和点击请求次数都不等于确认广告清除。";
         AlertDialog.Builder builder = new AlertDialog.Builder(this).setTitle("最近跳过诊断").setMessage(detail)
             .setPositiveButton("关闭", null).setNegativeButton("清除记录", (d,w) -> record.edit().clear().apply());
-        if (!pkg.isEmpty() && Prefs.selected(this).contains(pkg)) builder.setNeutralButton("此应用兼容设置", (d,w) -> showPlainSkip(pkg, appLabel(pkg)));
         builder.show();
     }
     private final class AppAdapter extends BaseAdapter {
