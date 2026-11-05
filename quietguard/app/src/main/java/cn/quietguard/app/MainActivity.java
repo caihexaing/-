@@ -45,29 +45,46 @@ public final class MainActivity extends Activity {
         LinearLayout top = row(); TextView brand = text("净屏", 29, INK); brand.setTypeface(null, Typeface.BOLD);
         top.addView(brand, new LinearLayout.LayoutParams(0, dp(56), 1));
         Button settings = button("设置", false); settings.setOnClickListener(v -> showSettings()); top.addView(settings); root.addView(top);
-        TextView intro = text("给常用应用，少一点打扰。", 14, MUTED); intro.setPadding(0, 0, 0, dp(20)); root.addView(intro);
+        LinearLayout card = column(); card.setPadding(dp(12), dp(8), dp(12), dp(8)); card.setBackground(shape(0xffe3f1ec, 18));
+        LinearLayout summary = row();
+        statusText = text("过滤未运行", 18, INK); statusText.setTypeface(null, Typeface.BOLD); statusText.setMaxLines(2);
+        summary.addView(statusText, new LinearLayout.LayoutParams(0, -2, 1));
+        power = button("启动过滤", true); power.setTextSize(13); power.setPadding(dp(8),0,dp(8),0);
+        power.setOnClickListener(v -> { if (Prefs.enabled(this)) stopFiltering(); else requestStart(); });
+        summary.addView(power, new LinearLayout.LayoutParams(dp(100), dp(48)));
+        Button fold = button("展开 ▾", false); fold.setTextSize(13); fold.setMinWidth(0); fold.setPadding(dp(4),0,dp(4),0);
+        LinearLayout.LayoutParams foldLp = new LinearLayout.LayoutParams(dp(64),dp(48)); foldLp.leftMargin=dp(8); summary.addView(fold,foldLp);
+        card.addView(summary);
 
-        LinearLayout card = column(); card.setPadding(dp(20), dp(18), dp(20), dp(16)); card.setBackground(shape(0xffe3f1ec, 22));
-        TextView tag = text("LOCAL PROTECTION  /  本机过滤", 11, GREEN); tag.setLetterSpacing(.08f); card.addView(tag);
-        statusText = text("过滤未运行", 22, INK); statusText.setTypeface(null, Typeface.BOLD); statusText.setPadding(0, dp(12), 0, dp(8)); card.addView(statusText);
-        scopeText = text("", 12, INK); card.addView(scopeText);
-        skipStatus = text("", 12, MUTED); card.addView(skipStatus);
-        networkStatus = text("", 12, MUTED); card.addView(networkStatus);
-        Button detailToggle = button("运行详情 ▾", false);
+        // Keep expanded details bounded so the application list remains usable.
+        ScrollView detailScroll = new ScrollView(this);
+        LinearLayout details = column(); details.setPadding(0,dp(8),0,0);
+        scopeText = text("", 12, INK); details.addView(scopeText);
+        skipStatus = text("", 12, MUTED); details.addView(skipStatus);
+        networkStatus = text("", 12, MUTED); details.addView(networkStatus);
+        skipSetup = button("开屏跳过设置", false); skipSetup.setOnClickListener(v -> showSkipSetup());
+        details.addView(skipSetup,new LinearLayout.LayoutParams(-1,dp(48)));
+        Button exemptions = button("应用异常 / 豁免管理",false); exemptions.setOnClickListener(v -> showExemptPicker());
+        details.addView(exemptions,new LinearLayout.LayoutParams(-1,dp(48)));
+        Button detailToggle = button("运行统计 ▾", false);
         statusDetails = column(); statusDetails.setVisibility(View.GONE);
         statsText = text("", 12, MUTED); statusDetails.addView(statsText);
         TextView countNote = text("DNS 为本次网络会话计数；点击为本机累计请求数，均不代表广告清除数。", 11, MUTED); statusDetails.addView(countNote);
         Button retry = button("重新连接网络过滤", false); retry.setOnClickListener(v -> requestStart()); statusDetails.addView(retry);
-        detailToggle.setOnClickListener(v -> { boolean open = statusDetails.getVisibility() != View.VISIBLE; statusDetails.setVisibility(open ? View.VISIBLE : View.GONE); detailToggle.setText(open ? "收起详情 ▴" : "运行详情 ▾"); });
-        card.addView(detailToggle); card.addView(statusDetails);
-        power = button("启动过滤", true); power.setOnClickListener(v -> {
-            if (Prefs.enabled(this)) stopFiltering(); else requestStart();
+        detailToggle.setOnClickListener(v -> { boolean open = statusDetails.getVisibility() != View.VISIBLE; statusDetails.setVisibility(open ? View.VISIBLE : View.GONE); detailToggle.setText(open ? "收起统计 ▴" : "运行统计 ▾"); });
+        details.addView(detailToggle,new LinearLayout.LayoutParams(-1,dp(48))); details.addView(statusDetails);
+        detailScroll.addView(details);
+        card.addView(detailScroll,new LinearLayout.LayoutParams(-1,Math.min(dp(220),getResources().getDisplayMetrics().heightPixels/4)));
+        boolean expanded = Prefs.get(this).getBoolean("home_details_expanded",false);
+        detailScroll.setVisibility(expanded ? View.VISIBLE : View.GONE);
+        fold.setText(expanded ? "收起 ▴" : "展开 ▾"); fold.setContentDescription(expanded ? "收起防护详情" : "展开防护详情");
+        fold.setOnClickListener(v -> {
+            boolean open = detailScroll.getVisibility() != View.VISIBLE;
+            detailScroll.setVisibility(open ? View.VISIBLE : View.GONE);
+            fold.setText(open ? "收起 ▴" : "展开 ▾"); fold.setContentDescription(open ? "收起防护详情" : "展开防护详情");
+            Prefs.get(this).edit().putBoolean("home_details_expanded",open).apply();
         });
-        LinearLayout.LayoutParams powerLp = new LinearLayout.LayoutParams(-1, dp(48)); powerLp.topMargin = dp(12); card.addView(power, powerLp); root.addView(card);
-        skipSetup = button("开启开屏广告跳过", false); skipSetup.setOnClickListener(v -> showSkipSetup());
-        root.addView(skipSetup, new LinearLayout.LayoutParams(-1, dp(44)));
-        TextView note = text("应用异常？选择应用并豁免 ›", 12, GREEN); note.setPadding(0, dp(4), 0, dp(10));
-        note.setOnClickListener(v -> showExemptPicker()); root.addView(note);
+        LinearLayout.LayoutParams cardLp = new LinearLayout.LayoutParams(-1,-2); cardLp.bottomMargin=dp(8); root.addView(card,cardLp);
         updateFeedback = text("", 12, INK); updateFeedback.setVisibility(View.GONE); root.addView(updateFeedback);
 
         search = new EditText(this); search.setSingleLine(true); search.setTextSize(14); search.setTextColor(INK);
