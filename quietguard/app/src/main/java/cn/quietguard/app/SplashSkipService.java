@@ -51,6 +51,7 @@ public final class SplashSkipService extends AccessibilityService {
     private int ocrFrames, ocrProbes, ocrPass;
     private boolean ocrSawSkip;
     private long lastOcrDone;
+    private long sessionStartAt, ocrStartAt;
     private long lastOcrAt, lastOcrProbeAt;
     private String ocrStatus = "未运行";
     private final Runnable poll = () -> { pollScheduled = false; inspect(); };
@@ -69,7 +70,7 @@ public final class SplashSkipService extends AccessibilityService {
     @Override public void onCreate() {
         super.onCreate(); scanThread.start(); handler = new Handler(scanThread.getLooper()); ocr = new SplashOcr(this, handler);
     }
-    @Override protected void onServiceConnected() { connected = true; handler.post(this::cancel); }
+    @Override protected void onServiceConnected() { connected = true; handler.post(this::cancel); handler.post(ocr::warmUp); }
     @Override public void onAccessibilityEvent(AccessibilityEvent event) {
         // Package metadata can schedule retries; event text is never read.
         if (destroyed) return;
@@ -90,7 +91,7 @@ public final class SplashSkipService extends AccessibilityService {
     private void beginReport(String pkg) {
         budget.foreground(pkg, permitted(pkg), SystemClock.elapsedRealtime());
         if (pkg.equals(sessionPkg)) return;
-        window.reset(); resetTextTap(); sessionId++;
+        window.reset(); resetTextTap(); sessionId++; sessionStartAt = SystemClock.elapsedRealtime();
         handler.removeCallbacks(verify); pendingPkg = ""; pendingWindow = 0;
         sessionPkg = pkg; maxNodes = 0; limited = false; sawSkip = false; sawAd = false;
         ocrPolicy.clear(); ocrFrames = 0; ocrProbes = 0; ocrAdSeen = false; ocrPass = 0; lastOcrDone = 0; ocrSawSkip = false; ocrRetried = false;
@@ -317,7 +318,7 @@ public final class SplashSkipService extends AccessibilityService {
         // The first two captures always use the fast cadence: a splash ad often lives ~5s, and the
         // two-frame confirmation needs both frames inside SplashOcrPolicy.MAX_GAP_MS.
         if (ocrFrames >= 2 && !adContext && now - lastOcrProbeAt < SplashOcr.PROBE_GAP_MS) return false;
-        ocrInFlight = true; ocrFrames++; lastOcrAt = now;
+        ocrInFlight = true; ocrStartAt = SystemClock.elapsedRealtime(); ocrFrames++; lastOcrAt = now;
         if (!adContext) { ocrProbes++; lastOcrProbeAt = now; }
         ocrStatus = "正在读取当前窗口画面";
         long id = sessionId; Rect bounds = new Rect(screen);
@@ -332,6 +333,8 @@ public final class SplashSkipService extends AccessibilityService {
         long now = SystemClock.elapsedRealtime();
         long gap = lastOcrDone == 0 ? -1 : now - lastOcrDone;
         lastOcrDone = now;
+        getSharedPreferences("splash_diagnostic",MODE_PRIVATE).edit()
+            .putString("ocr_time", "screenshot+ocr=" + (now-ocrStartAt) + "ms since_entry=" + (now-sessionStartAt) + "ms").apply();
         if (!enabled() || !permitted(pkg) || !unlocked() || !window.observe(pkg, true, true, now)
                 || !foregroundMatches(pkg, windowId) || !sameScreen(pkg, windowId, toInfo(screen))) {
             ocrPolicy.clear(); ocrStatus = "截图后活动窗口变化，已放弃"; report(ocrStatus,2); return;

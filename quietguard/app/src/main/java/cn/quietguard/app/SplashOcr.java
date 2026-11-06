@@ -52,7 +52,9 @@ final class SplashOcr implements AutoCloseable {
         final List<Rect> countdownDigits = new ArrayList<>();
         boolean adMarker;
     }
-    private static final int MAX_IMAGE_EDGE = 1600;
+    // A "跳过" label is tens of dp wide, so a smaller scale still reads it and the recognizer
+    // finishes sooner; 5 second splashes cannot afford a full resolution pass.
+    private static final int MAX_IMAGE_EDGE = 1100;
     private final AccessibilityService service;
     private final Handler handler;
     private final Executor callbackExecutor;
@@ -67,6 +69,19 @@ final class SplashOcr implements AutoCloseable {
     }
 
     @SuppressLint("NewApi")
+    /** Loads the Chinese model while the service is idle so the first splash capture is not the slow one. */
+    void warmUp() {
+        try {
+            Bitmap tiny = Bitmap.createBitmap(32, 32, Bitmap.Config.ARGB_8888);
+            TextRecognizer zh = chinese;
+            if (zh == null) { zh = TextRecognition.getClient(new ChineseTextRecognizerOptions.Builder().build()); chinese = zh; }
+            InputImage image = InputImage.fromBitmap(tiny, 0);
+            zh.process(image).addOnCompleteListener(callbackExecutor, ignored -> {
+                if (!tiny.isRecycled()) tiny.recycle();
+            });
+        } catch (RuntimeException | LinkageError ignored) { }
+    }
+
     void capture(int windowId, Rect windowBounds, Callback callback) {
         if (closed) { callback.complete(null, "closed"); return; }
         if (Build.VERSION.SDK_INT < 30) { callback.complete(null, "unsupported"); return; }
