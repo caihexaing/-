@@ -407,7 +407,7 @@ public final class SplashSkipService extends AccessibilityService {
             getSharedPreferences("splash_diagnostic",MODE_PRIVATE).edit()
                 .putString("ocr_point", ((r.left+r.right)/2) + "," + ((r.top+r.bottom)/2)
                     + " box=" + r.left + "," + r.top + "," + r.right + "," + r.bottom)
-                .putString("target","两帧本机 OCR 确认的跳过文字中心").apply();
+                .putString("target","本机 OCR 读到跳过文字后直接点击的中心").apply();
             boolean queued = dispatchTextTouch((r.left+r.right)/2f,(r.top+r.bottom)/2f,pkg,id,true,
                 "OCR 触摸已执行；等待界面变化核验","系统取消 OCR 触摸；已停止","系统未接受 OCR 触摸请求；已停止");
             if (!queued) return;
