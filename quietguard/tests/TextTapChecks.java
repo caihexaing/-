@@ -29,8 +29,7 @@ public final class TextTapChecks {
         SplashTextTap tap = new SplashTextTap();
         check(!observe(tap, i, 1, false, 100), "disabled mode never authorizes");
         check(!observe(tap, i, 1, true, 100), "first scan never authorizes a tap");
-        check(!observe(tap, i, 1, true, 449), "too soon is not an independent confirmation");
-        check(observe(tap, i, 1, true, 450), "second scan after 350ms authorizes");
+        check(observe(tap, i, 1, true, 300), "next independent scan confirms without a 350ms delay");
         check(observe(tap, i, 1, true, 600), "500ms production interval is compatible");
         check(tap.matches(i, screen(), "target", 1, 1), "confirmed position is remembered");
         tap.reset();

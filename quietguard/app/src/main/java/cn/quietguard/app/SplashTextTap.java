@@ -2,7 +2,7 @@ package cn.quietguard.app;
 
 /**
  * Requires two independent scans of the same small, explicitly labelled node before a coordinate tap.
- * Restored in 0.4.25 after 0.4.20 removed it and lost every self-drawn skip button.
+ * Confirmation is scan-based; short countdown controls cannot wait for an extra stability delay.
  *
  * <p>Differences from the 0.4.7 original:
  * <ul>
@@ -14,7 +14,7 @@ package cn.quietguard.app;
  * No coordinates persist.
  */
 public final class SplashTextTap {
-    public static final long MIN_STABLE_MS = 350, MAX_GAP_MS = 1300, MAX_SPAN_MS = 4000;
+    public static final long MIN_STABLE_MS = 0, MAX_GAP_MS = 1300, MAX_SPAN_MS = 4000;
     /** Foreground must move away within this delay after a tap, otherwise the tap did nothing useful. */
     public static final long VERIFY_MS = 1500;
     /** Consecutive non-effective taps before coordinate tapping is disabled for that app. */
