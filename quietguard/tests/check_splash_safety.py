@@ -52,4 +52,10 @@ assert 'MAX_SPAN_MS' in tap, 'Stability window must be bounded'
 assert 'public static boolean evidence(' in tap, 'Bare skip labels need the plain compatibility opt-in'
 assert 'skip_text_tap_apps' in prefs, 'Legacy opt-ins must still be recognised'
 assert 'Prefs.disableTextTap(this)' not in service, 'Text tap must not be force-disabled at service start'
+# An advertised ACTION_CLICK that the ad SDK ignores must still allow one guarded coordinate fallback.
+assert 'private boolean tapInert(' in service, 'Inert clickable skip controls need a coordinate fallback'
+assert 'originalStillReadable && inertTapSession != sessionId' in service, 'Fallback must require a proven inert click'
+assert service.count('inertTapSession = sessionId;')==1, 'At most one inert-click fallback per launch'
+assert 'window.matchesAcceptedTarget(leaf.left, leaf.top, leaf.right, leaf.bottom)' in service, 'Fallback must re-check the accepted rectangle'
+assert 'this.inertTapSession' not in service.replace('private long inertTapSession',''), 'Fallback gate must stay session scoped'
 print('PASS: guarded text tap: single 50ms stroke on a stable labelled leaf, shared action quota, per-app off switch, auto-retire after two ineffective taps.')

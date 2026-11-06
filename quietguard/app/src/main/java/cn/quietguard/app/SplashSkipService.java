@@ -31,6 +31,8 @@ public final class SplashSkipService extends AccessibilityService {
     private final SplashOcrPolicy ocrPolicy = new SplashOcrPolicy();
     private final Runnable verify = this::verifyTextTap;
     private AndroidNode tapAnchor;
+    /** Session in which a clicked skip control proved inert and one coordinate fallback was spent. */
+    private long inertTapSession = -1;
     private long tapIdentity, sessionId;
     private String pendingPkg = "";
     private int pendingWindow;
@@ -162,7 +164,24 @@ public final class SplashSkipService extends AccessibilityService {
                     else wrongBounds = true;
                     continue;
                 }
-                if (window.hasAttempted()) continue;
+                if (window.hasAttempted()) {
+                    // WebView-hosted ad SDKs often publish a clickable skip control that silently ignores
+                    // ACTION_CLICK. Once a sent click provably left the same control in place, one guarded
+                    // coordinate touch at that same leaf is allowed, and only once per launch.
+                    if (originalStillReadable && inertTapSession != sessionId) {
+                        inertTapSession = sessionId;
+                        Rect fallback = new Rect();
+                        if (tapInert(new AndroidNode(AccessibilityNodeInfo.obtain(candidate.node)), pkg,
+                                root.getWindowId(), toInfo(bounds),
+                                snapshot.ad, plain, fallback)) {
+                            window.accepted(fallback.left, fallback.top, fallback.right, fallback.bottom);
+                            report("公开点击未生效，已改用坐标触摸同一个小按钮；不补点", 3);
+                            sentNow = true;
+                            break;
+                        }
+                    }
+                    continue;
+                }
                 if (SystemClock.elapsedRealtime() >= actionDeadline) {
                     report("本轮按钮核对达到时间预算，等待下一轮",0); rejected = true; break;
                 }
@@ -495,6 +514,55 @@ public final class SplashSkipService extends AccessibilityService {
             report(rejectedMessage,3); window.finish();
         }
         return queued;
+    }
+    /**
+     * Taps the centre of a skip leaf whose published click action already proved inert. The two-scan
+     * stability rule is satisfied without waiting again: the accepted rectangle was recorded when the
+     * click was sent, and this pass re-read the same leaf on a later scan at the very same place.
+     */
+    private boolean tapInert(AndroidNode source, String pkg, int windowId, SplashButton.Info screen,
+                             boolean ad, boolean plain, Rect acted) {
+        if (destroyed || !enabled() || !permitted(pkg) || !unlocked()) return false;
+        if (!window.hasAccepted()) return false;
+        android.accessibilityservice.AccessibilityServiceInfo info = getServiceInfo();
+        if (info == null || (info.getCapabilities()
+                & android.accessibilityservice.AccessibilityServiceInfo.CAPABILITY_CAN_PERFORM_GESTURES) == 0) {
+            report("公开点击未生效，但系统未授予触摸能力，无法改用坐标触摸", 2); return false;
+        }
+        if (SplashTextTap.disabled(Prefs.get(this).getInt("text_tap_strikes_" + pkg, 0))) {
+            report("此应用此前坐标触摸后界面都没有变化，已退回只认公开点击动作", 2); return false;
+        }
+        if (!Prefs.textTapEnabled(this, pkg)) {
+            report("此应用已关闭坐标触摸，只认公开点击动作", 2); return false;
+        }
+        try {
+            if (getMagnificationController().getScale() != 1f) {
+                report("公开点击未生效；系统屏幕放大已开启，坐标触摸已放弃", 2); return false;
+            }
+        } catch (RuntimeException e) {
+            report("公开点击未生效；无法核实屏幕缩放，坐标触摸已放弃", 2); return false;
+        }
+        SplashButton.Info leaf = source.read();
+        float density = getResources().getDisplayMetrics().density;
+        if (source.children() != 0 || !SplashTextTap.valid(leaf, screen, pkg, windowId, ad, plain, density)
+                || !SplashTextTap.evidence(leaf.text, leaf.description, plain)) {
+            report("公开点击未生效，但这个控件不是明确的跳过文字，未改用坐标触摸", 2); return false;
+        }
+        if (!window.matchesAcceptedTarget(leaf.left, leaf.top, leaf.right, leaf.bottom)) {
+            report("公开点击未生效，但控件位置已经改变，未改用坐标触摸", 2); return false;
+        }
+        if (!foregroundMatches(pkg, windowId) || !sameScreen(pkg, windowId, screen)
+                || !enabled() || !permitted(pkg) || !unlocked() || !Prefs.textTapEnabled(this, pkg)) {
+            report("触摸前应用或窗口变化，未改用坐标触摸", 2); return false;
+        }
+        float x = leaf.left + (leaf.right - leaf.left) / 2f;
+        float y = leaf.top + (leaf.bottom - leaf.top) / 2f;
+        acted.set(leaf.left, leaf.top, leaf.right, leaf.bottom);
+        getSharedPreferences("splash_diagnostic", MODE_PRIVATE).edit()
+            .putString("target", "公开点击未生效后改用坐标触摸的跳过文字中心").apply();
+        return dispatchTextTouch(x, y, pkg, sessionId, false,
+            "坐标触摸已执行；1.5 秒后核对界面是否变化，不补点",
+            "坐标触摸被系统取消；已停止，不补点", "系统未接受这一次坐标触摸请求；已停止，不补点");
     }
     /** Remembers what the foreground looked like so the tap can be judged afterwards. */
     private void holdVerification(String pkg, long id) {
