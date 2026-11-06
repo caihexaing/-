@@ -247,10 +247,12 @@ public final class MainActivity extends Activity {
     private void stopFiltering() { Prefs.enabled(this, false); UpdateVpnPause.userDisabled(this); FilterVpnService.stopFiltering(this, "防护已暂停"); updateStatus(); handler.postDelayed(this::updateStatus, 250); }
     private void applyChanges() { if (Prefs.selected(this).isEmpty()) stopFiltering(); else if (Prefs.enabled(this)) requestStart(); }
     private void offerSkipSetup() {
-        if (!destroyed && resumed && !isFinishing() && Prefs.enabled(this) && !Prefs.selected(this).isEmpty()
-                && !Prefs.get(this).getBoolean("skip_prompted", false)) showSkipSetup();
+        if (destroyed || !resumed || isFinishing() || !Prefs.enabled(this) || Prefs.selected(this).isEmpty()) return;
+        if (Prefs.get(this).getBoolean("skip_consent", false) && !Prefs.screenshotOcrConsent(this)
+                && !Prefs.get(this).getBoolean("splash_ocr_prompted", false)) { showOcrConsent(); return; }
+        if (!Prefs.get(this).getBoolean("skip_prompted", false)) showSkipSetup();
     }
-    private static final String ACCESSIBILITY_RISK = "无障碍权限可读取屏幕中可访问的界面内容并点击按钮。净屏只在已选应用进入前台后15秒内查找开屏跳过控件；系统授予的能力范围大于这一用途。\n\n净屏优先点击应用公开的系统点击动作。没有公开动作的自绘按钮，只能按核对过的跳过文字中心触摸：要求连续两轮读到同一位置、触摸前后核对窗口、每次进入只触摸一次，并带广告依据或倒计时。纯“跳过”兼容也可能误认教程入口；连续两次触摸界面没变化会自动停用该应用的坐标触摸。\n\n控件内容只在本机临时处理，不保存界面文字或截图、不上传；本机仅保存可清除的包名、时间、次数和固定诊断原因。暂停防护保留权限但停止处理；撤销权限请进入系统无障碍设置。";
+    private static final String ACCESSIBILITY_RISK = "无障碍权限可读取屏幕中可访问的界面内容并点击按钮。净屏只在已选应用进入前台后15秒内查找开屏跳过控件；系统授予的能力范围大于这一用途。\n\n净屏优先点击应用公开的系统点击动作。没有公开动作的自绘按钮，只能按核对过的跳过文字中心触摸：要求连续两轮读到同一位置、触摸前后核对窗口、每次进入只触摸一次，并带广告依据或倒计时。纯“跳过”兼容也可能误认教程入口；连续两次触摸界面没变化会自动停用该应用的坐标触摸。\n\n可选的本机截图 OCR 只用于控件树读不到跳过字的情况，仅处理已选择应用进入后的短时画面。截图与文字只在本机内存临时处理，不保存、不上传；本机仅保存可清除的包名、时间、次数和固定诊断原因。暂停防护保留权限但停止处理；撤销权限请进入系统无障碍设置。";
     private void showSkipSetup() {
         Prefs.get(this).edit().putBoolean("skip_prompted", true).apply();
         if (skipDialog != null && skipDialog.isShowing()) return;
@@ -260,6 +262,19 @@ public final class MainActivity extends Activity {
         panel.addView(text(AccessibilitySetup.authorized(this) ? "已具备快捷开启授权，可由净屏提交连接请求。" : "由系统设置确认权限，无需 Root 或连接电脑。",12,MUTED));
         Button enable = button(SplashSkipService.connected ? "管理系统无障碍权限" : "开启开屏跳过",false);
         enable.setOnClickListener(v -> { if (SplashSkipService.connected) openAccessibilitySettings(); else requestSkipConsent(); }); panel.addView(enable);
+        Button ocrSetting = button(Build.VERSION.SDK_INT < 30 ? "本机截图 OCR · 需要 Android 11+"
+            : Prefs.screenshotOcrConsent(this) ? "关闭本机截图 OCR" : "开启本机截图 OCR",false);
+        ocrSetting.setEnabled(Build.VERSION.SDK_INT >= 30);
+        ocrSetting.setOnClickListener(v -> {
+            if (skipDialog != null) skipDialog.dismiss();
+            if (!Prefs.screenshotOcrConsent(this)) showOcrConsent();
+            else new AlertDialog.Builder(this).setTitle("关闭本机截图 OCR")
+                .setMessage("关闭后仍会使用无障碍控件树识别可读取的跳过按钮。")
+                .setNegativeButton("取消",null).setPositiveButton("关闭 OCR",(d,w) -> {
+                    Prefs.screenshotOcrConsent(this,false); Prefs.get(this).edit().putBoolean("splash_ocr_prompted",true).apply();
+                    toast("本机截图 OCR 已关闭"); updateStatus();
+                }).show();
+        }); panel.addView(ocrSetting);
         Button diagnostic = button("查看最近跳过诊断",false); diagnostic.setOnClickListener(v -> showSkipDiagnostic()); panel.addView(diagnostic);
         ScrollView scroll = new ScrollView(this); scroll.addView(panel);
         skipDialog = new AlertDialog.Builder(this).setTitle("开屏跳过设置").setView(scroll).setPositiveButton("关闭",null).create(); skipDialog.show();
@@ -268,9 +283,20 @@ public final class MainActivity extends Activity {
         new AlertDialog.Builder(this).setTitle("授权前请了解屏幕读取与点击风险")
             .setMessage(ACCESSIBILITY_RISK)
             .setNegativeButton("暂不开启",null).setPositiveButton("了解风险并继续",(d,w) -> {
-                Prefs.get(this).edit().putBoolean("skip_consent",true).putInt("skip_disclosure_version",2).apply();
+                Prefs.get(this).edit().putBoolean("skip_consent",true).putBoolean("splash_ocr_consent",false)
+                    .putBoolean("splash_ocr_prompted",false).putInt("skip_disclosure_version",3).apply();
                 enableSkip();
             }).show();
+    }
+    private void showOcrConsent() {
+        if (destroyed || !resumed || isFinishing() || Build.VERSION.SDK_INT < 30) return;
+        new AlertDialog.Builder(this).setTitle("启用本机截图 OCR？")
+            .setMessage("只在控件树读不到跳过文字时使用；限已选择应用进入前台后的15秒内。截图与识别文字仅在手机内存中短暂处理，不保存、不上传。识别到明确跳过按钮、两帧位置一致且前台窗口未变时，才最多触摸一次；识别不清或截图失败就不点击。开启会增加无障碍服务的屏幕读取能力。")
+            .setNegativeButton("暂不开启",(d,w) -> Prefs.get(this).edit().putBoolean("splash_ocr_prompted",true).apply())
+            .setPositiveButton("同意并开启",(d,w) -> {
+                Prefs.get(this).edit().putBoolean("splash_ocr_consent",true).putBoolean("splash_ocr_prompted",true).apply();
+                toast("本机截图 OCR 已开启"); updateStatus();
+            }).setOnCancelListener(d -> Prefs.get(this).edit().putBoolean("splash_ocr_prompted",true).apply()).show();
     }
     private void openAccessibilitySettings() {
         try { startActivity(new Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)); }
@@ -433,7 +459,7 @@ public final class MainActivity extends Activity {
         String description = "净屏 v" + BuildConfig.VERSION_NAME + "（构建 " + BuildConfig.VERSION_CODE + "）\n本机 DNS 域名过滤与开屏按钮辅助跳过工具，不保证消除所有广告。\n\n"
             + "开始使用\n1. 首次安装不自动选择应用。先搜索并开启少量常用应用。\n2. 保守模式默认对新开启应用只做开屏跳过，不干预网络；长按应用可主动改成网络过滤+跳过。\n3. 开屏跳过需要单独授权无障碍。网络过滤需要系统 VPN 授权，与其他 VPN 互斥。\n\n"
             + "暂停与豁免\n暂停保留应用开关，恢复由你手动执行；一键关闭需确认后才清空全部选择，兼容设置和豁免保留；重新一键开启不等于恢复原选择清单。应用登录、支付、下载异常时，进入“设置 → 应用豁免”选择应用即可豁免，之后一键开启也不会重新选中它。\n\n"
-            + "权限与隐私\n应用列表、选择、兼容设置及固定诊断记录只保存在本机。不解密 HTTPS，不保存或上传界面文字或截图。无障碍授权具备较广的界面读取与点击能力，误触可能影响广告、教程或登录引导。首次开启前单独说明，可在系统无障碍设置撤销。\n\n"
+            + "权限与隐私\n应用列表、选择、兼容设置及固定诊断记录只保存在本机。不解密 HTTPS。经你同意后，截图 OCR 仅在已选应用启动阶段于本机内存短暂处理，不保存或上传截图、识别文字或坐标。无障碍授权具备较广的界面读取与点击能力，误触可能影响广告、教程或登录引导。可在净屏设置关闭 OCR，也可在系统无障碍设置撤销服务。\n\n"
             + "网络访问\n网络过滤会把未拦截域名发送给你选定的公共 DNS，DNS 传输未加密。检查更新与 APK 下载连接 GitHub，服务器会收到常规网络连接信息；不上传应用列表。自动检查默认关闭。\n\n"
             + "实际能做什么\n" + coverage + "规则取自移动广告过滤列表可表达为域名的子集；带路径、通配符或站点条件的拦截规则不会直接套用。可在“设置 → 防护方式与网络”手动开启实验性 SNI 增强：它检查 TCP/443 可见主机名，不解密 HTTPS，并阻止 UDP/443尝试触发回退。ECH、应用自带 DoH、直连 IP、同域内容或缓存仍可能绕过；DNS 过滤也不能直接删除 App 内广告控件。\n\n"
             + "开屏广告\nDNS 过滤不能保证关闭开屏广告。开屏跳过是单独的无障碍辅助功能，只会尝试点击可识别的跳过按钮；无权限、无法识别或不满足安全条件时不会点击，可能仍需等待广告结束，也不保证零延迟。\n\n"
@@ -503,8 +529,8 @@ public final class MainActivity extends Activity {
         modes.check(Prefs.skipOnly(this, pkg) ? skipOnly.getId() : both.getId()); panel.addView(modes);
         CheckBox plain = new CheckBox(this); plain.setText("允许纯“跳过”按钮（跳过兼容）"); plain.setChecked(Prefs.plainSkip(this, pkg)); panel.addView(plain);
         CheckBox tap = new CheckBox(this); tap.setText("允许坐标触摸（自绘跳过按钮）"); tap.setChecked(Prefs.textTapEnabled(this, pkg)); panel.addView(tap);
-        TextView tapInfo = text("部分广告 SDK 的跳过按钮没有公开点击动作，只能按按钮文字中心触摸。净屏要求两轮读到同一位置的跳过文字才触摸，前后核对窗口，每次进入只触摸一次；连续两次触摸界面都没变化会自动退回。触摸仍有误入广告页的可能，关闭后只使用公开点击动作。",12,MUTED); panel.addView(tapInfo);
-        TextView warning = text("纯跳过兼容只对这个应用生效，也可能跳过教程或登录引导。防护只在进入应用后15秒内处理可读取的跳过按钮。", 12, MUTED); panel.addView(warning);
+        TextView tapInfo = text("部分广告 SDK 的跳过按钮没有公开点击动作。开启本机截图 OCR 后，控件树读不到文字时会在本机临时识别画面；两帧确认同一处明确跳过文字后才触摸，前后复核窗口，每次进入只触摸一次。连续两次触摸界面都没变化会自动退回。触摸仍有误入广告页的可能，关闭后只使用公开点击动作。",12,MUTED); panel.addView(tapInfo);
+        TextView warning = text("纯跳过兼容只对这个应用生效，也可能跳过教程或登录引导。防护只在进入应用后15秒内处理可读取或本机 OCR 识别的跳过按钮。", 12, MUTED); panel.addView(warning);
         ScrollView scroll = new ScrollView(this); scroll.addView(panel);
         new AlertDialog.Builder(this).setTitle(label + " · 防护方式").setView(scroll)
             .setNegativeButton("取消", null).setPositiveButton("保存", (d,w) -> {
@@ -531,11 +557,13 @@ public final class MainActivity extends Activity {
             + "\n扫描曾达到上限：" + (record.getBoolean("limited", false) ? "是" : "否")
             + "\n纯跳过兼容：" + (Prefs.plainSkip(this, pkg) ? "开启" : "关闭")
             + "\n文字定位触摸：" + Prefs.textTapState(this, pkg)
+            + "\n本机截图 OCR：" + record.getString("ocr_status", "未运行")
+            + "（本次处理 " + record.getInt("ocr_frames", 0) + " 帧）"
             + "\n本次点击：" + record.getString("action", "旧版记录，请重新检测")
             + "\n点击目标：" + record.getString("target", "未发送点击")
             + "\n\n关键结果：" + record.getString("reason", "暂无结果")
             + "\n最近状态：" + record.getString("status", "旧版记录")
-            + "\n\n只有状态记录保存在手机，不保存界面文字或截图、不上传；控件消失和点击请求次数都不等于确认广告清除。";
+            + "\n\n截图和识别文字只在本机内存临时处理，不保存、不上传；诊断只存状态，不存 OCR 文字或坐标。控件消失和点击请求次数都不等于确认广告清除。";
         AlertDialog.Builder builder = new AlertDialog.Builder(this).setTitle("最近跳过诊断").setMessage(detail)
             .setPositiveButton("关闭", null).setNegativeButton("清除记录", (d,w) -> record.edit().clear().apply());
         builder.show();

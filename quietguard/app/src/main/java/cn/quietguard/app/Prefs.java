@@ -57,6 +57,10 @@ final class Prefs {
     static boolean textTapEnabled(Context c, String pkg) {
         return !pkg.isEmpty() && !get(c).getBoolean("text_tap_off_" + pkg, false);
     }
+    static boolean screenshotOcrConsent(Context c) { return get(c).getBoolean("splash_ocr_consent", false); }
+    static void screenshotOcrConsent(Context c, boolean on) {
+        get(c).edit().putBoolean("splash_ocr_consent", on).apply();
+    }
     static void textTapEnabled(Context c, String pkg, boolean on) {
         get(c).edit().putBoolean("text_tap_off_" + pkg, !on).remove("text_tap_strikes_" + pkg).apply();
     }

@@ -5,6 +5,7 @@
     android:accessibilityFlags="flagIncludeNotImportantViews"
     android:canRetrieveWindowContent="true"
     android:canPerformGestures="true"
+    android:canTakeScreenshot="true"
     android:isAccessibilityTool="false"
     android:description="@string/splash_service_description"
     android:settingsActivity="cn.quietguard.app.MainActivity" />

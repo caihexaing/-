@@ -13,8 +13,8 @@ assert 'performGlobalAction' not in service, 'No global back or home actions'
 assert service.count('.getParent(')==1, 'Only bounded semantic resolver may read ancestors'
 assert 'SplashButton.resolve(' in service
 assert re.findall(r'\.performAction\s*\(([^)]*)\)',service)==['AccessibilityNodeInfo.ACTION_CLICK']
-# Both paths consume the same per-entry quota, so a coordinate tap can never add a second action.
-assert service.count('if (!window.attempted(SystemClock.elapsedRealtime())) return false;')==2, 'Shared action quota'
+# Semantic and both text paths consume the same per-entry quota, so OCR cannot add a second action.
+assert service.count('window.attempted(')==3, 'Shared action quota for semantic, tree-text and OCR paths'
 # Exactly one coordinate stroke, 1:1 with the shared action quota, never a swipe or a repeat dispatch.
 assert service.count('dispatchGesture(')==1, 'One dispatch site only'
 assert service.count('new GestureDescription.Builder()')==1
@@ -35,6 +35,18 @@ assert 'sameScreen(pkg,windowId,screen)' in service, 'Input requires unchanged w
 assert 'Prefs.textTapEnabled(this,pkg)' in service, 'Per-app off switch must be honoured before input'
 assert 'SplashTextTap.disabled(' in service, 'Auto-retire after ineffective taps must be honoured'
 assert 'holdVerification(' in service and 'VERIFY_MS' in tap, 'Ineffective taps must be verified'
+assert 'ocrPolicy.observe(' in service and 'CAPABILITY_CAN_TAKE_SCREENSHOT' in service, 'OCR requires stable text and screenshot capability'
+assert 'Prefs.screenshotOcrConsent(this)' in service and 'Prefs.textTapEnabled(this,pkg)' in service, 'OCR requires both user consent and the per-app touch option'
+ocr=(project/'app/src/main/java/cn/quietguard/app/SplashOcr.java').read_text(encoding='utf-8')
+main=(project/'app/src/main/java/cn/quietguard/app/MainActivity.java').read_text(encoding='utf-8')
+config=(project/'app/src/main/res/xml/splash_accessibility.xml').read_text(encoding='utf-8')
+assert 'takeScreenshotOfWindow(windowId' in ocr and 'takeScreenshot(Display.DEFAULT_DISPLAY' in ocr, 'Prefer target-window capture and retain the Android 11-13 fallback'
+assert 'MAX_FRAMES = 12' in ocr and 'PROBE_GAP_MS = 2500' in ocr, 'Bound screenshot frequency and total frames'
+assert 'frame.recycle()' in ocr and 'buffer.close()' in ocr, 'Release screenshot buffers after in-memory OCR'
+assert 'putBoolean("splash_ocr_consent",false)' in main, 'Screenshot OCR needs its separate opt-in'
+assert 'canTakeScreenshot="true"' in config, 'Screenshot capability must be declared to Android'
+gradle=(project/'app/build.gradle').read_text(encoding='utf-8')
+assert "abiFilters 'armeabi-v7a', 'arm64-v8a'" in gradle, 'Universal APK should include only phone ARM ABIs'
 assert 'static int penalties(' in tap and 'MAX_PENALTIES' in tap
 assert 'MAX_SPAN_MS' in tap, 'Stability window must be bounded'
 assert 'public static boolean evidence(' in tap, 'Bare skip labels need the plain compatibility opt-in'

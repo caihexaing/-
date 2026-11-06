@@ -13,9 +13,16 @@ android {
             }
         }
     }
-    defaultConfig { applicationId 'cn.quietguard.app'; minSdk 26; targetSdk 35; versionCode 32; versionName '0.4.26' }
+    defaultConfig {
+        applicationId 'cn.quietguard.app'; minSdk 26; targetSdk 35; versionCode 33; versionName '0.4.27'
+        ndk { abiFilters 'armeabi-v7a', 'arm64-v8a' }
+    }
     compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
     buildTypes { release { minifyEnabled false } }
 }
 
-dependencies { implementation files('libs/hev-socks5-tunnel-2.19.3.aar') }
+dependencies {
+    implementation files('libs/hev-socks5-tunnel-2.19.3.aar')
+    implementation 'com.google.mlkit:text-recognition:16.0.1'
+    implementation 'com.google.mlkit:text-recognition-chinese:16.0.1'
+}
