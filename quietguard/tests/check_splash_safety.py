@@ -19,7 +19,7 @@ assert service.count('window.attempted(')==3, 'Shared action quota for semantic,
 assert service.count('dispatchGesture(')==1, 'One dispatch site only'
 assert service.count('new GestureDescription.Builder()')==1
 assert service.count('.addStroke(')==1
-assert re.findall(r'new GestureDescription\.StrokeDescription\(([^)]*)\)',service)==['point,0,50']
+assert re.findall(r'new GestureDescription\.StrokeDescription\(([^)]*)\)',service)==['point,0,80']
 assert service.count('.performGlobalAction(')==0
 assert 'target.textTapEligible' in service and 'target.reason' in service
 # The tap must be reachable only from the button refusal branch, and gated by stability, foreground and evidence.

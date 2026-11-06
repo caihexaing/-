@@ -33,6 +33,9 @@ public final class SplashSkipService extends AccessibilityService {
     private AndroidNode tapAnchor;
     /** Session in which a clicked skip control proved inert and one coordinate fallback was spent. */
     private long inertTapSession = -1;
+    /** The one retry allowed after an OCR touch produced no visible change. */
+    private boolean ocrRetried;
+    private float lastTouchX, lastTouchY;
     private long tapIdentity, sessionId;
     private String pendingPkg = "";
     private int pendingWindow;
@@ -45,7 +48,9 @@ public final class SplashSkipService extends AccessibilityService {
     private int maxNodes;
     private boolean limited, sawSkip, sawAd;
     private boolean ocrInFlight, ocrAdSeen;
-    private int ocrFrames, ocrProbes;
+    private int ocrFrames, ocrProbes, ocrPass;
+    private boolean ocrSawSkip;
+    private long lastOcrDone;
     private long lastOcrAt, lastOcrProbeAt;
     private String ocrStatus = "未运行";
     private final Runnable poll = () -> { pollScheduled = false; inspect(); };
@@ -88,7 +93,7 @@ public final class SplashSkipService extends AccessibilityService {
         window.reset(); resetTextTap(); sessionId++;
         handler.removeCallbacks(verify); pendingPkg = ""; pendingWindow = 0;
         sessionPkg = pkg; maxNodes = 0; limited = false; sawSkip = false; sawAd = false;
-        ocrPolicy.clear(); ocrFrames = 0; ocrProbes = 0; ocrAdSeen = false;
+        ocrPolicy.clear(); ocrFrames = 0; ocrProbes = 0; ocrAdSeen = false; ocrPass = 0; lastOcrDone = 0; ocrSawSkip = false; ocrRetried = false;
         lastOcrAt = 0; lastOcrProbeAt = 0; ocrStatus = Prefs.screenshotOcrConsent(this) ? "等待控件树扫描" : "未授权";
         lastReason = ""; lastReport = 0; maxScanMs = 0; diagnostic.reset();
         getSharedPreferences("splash_diagnostic",MODE_PRIVATE).edit().remove("target").apply();
@@ -304,9 +309,14 @@ public final class SplashSkipService extends AccessibilityService {
         }
         long now = SystemClock.elapsedRealtime();
         if (!window.canAttempt(now) || now > waitingUntil || ocrFrames >= SplashOcr.MAX_FRAMES) return false;
-        boolean adContext = treeAd || ocrAdSeen;
+        // Once OCR has read a skip word this splash, keep capturing at the fast cadence: the two-frame
+        // confirmation needs a second frame inside SplashOcrPolicy.MAX_GAP_MS, and the slow probe cadence
+        // can never produce one.
+        boolean adContext = treeAd || ocrAdSeen || ocrSawSkip;
         if (ocrFrames > 0 && now - lastOcrAt < SplashOcr.MIN_CAPTURE_GAP_MS) return false;
-        if (ocrFrames > 0 && !adContext && now - lastOcrProbeAt < SplashOcr.PROBE_GAP_MS) return false;
+        // The first two captures always use the fast cadence: a splash ad often lives ~5s, and the
+        // two-frame confirmation needs both frames inside SplashOcrPolicy.MAX_GAP_MS.
+        if (ocrFrames >= 2 && !adContext && now - lastOcrProbeAt < SplashOcr.PROBE_GAP_MS) return false;
         ocrInFlight = true; ocrFrames++; lastOcrAt = now;
         if (!adContext) { ocrProbes++; lastOcrProbeAt = now; }
         ocrStatus = "正在读取当前窗口画面";
@@ -320,6 +330,8 @@ public final class SplashSkipService extends AccessibilityService {
         ocrInFlight = false;
         if (destroyed || id != sessionId || !pkg.equals(sessionPkg)) return;
         long now = SystemClock.elapsedRealtime();
+        long gap = lastOcrDone == 0 ? -1 : now - lastOcrDone;
+        lastOcrDone = now;
         if (!enabled() || !permitted(pkg) || !unlocked() || !window.observe(pkg, true, true, now)
                 || !foregroundMatches(pkg, windowId) || !sameScreen(pkg, windowId, toInfo(screen))) {
             ocrPolicy.clear(); ocrStatus = "截图后活动窗口变化，已放弃"; report(ocrStatus,2); return;
@@ -335,12 +347,38 @@ public final class SplashSkipService extends AccessibilityService {
         boolean plain = Prefs.plainSkip(this, pkg), recognized = false;
         float density = getResources().getDisplayMetrics().density;
         for (SplashOcr.Match match : result.skips) {
-            Rect r = match.bounds;
-            if (!SplashOcrPolicy.valid(match.label, ad, plain, r.left,r.top,r.right,r.bottom,
-                    screen.left,screen.top,screen.right,screen.bottom,density)) continue;
-            sawSkip = true; recognized = true;
-            if (!ocrPolicy.observe(match.label, ad, plain, r.left,r.top,r.right,r.bottom,
-                    screen.left,screen.top,screen.right,screen.bottom,pkg,windowId,density,now)) {
+            Rect r = new Rect(match.bounds);
+            // Some ad SDKs draw "跳过" and the countdown digit as two separate elements. Fold a digit that
+            // sits flush against the word into one target so the small word alone is not rejected as too thin.
+            boolean joined = false;
+            int wordWidth = match.wordWidth;
+            for (Rect digit : result.countdownDigits) {
+                if (digit.width() >= r.width()) continue;
+                if (!SplashOcrPolicy.beside(r.left, r.top, r.right, r.bottom,
+                        digit.left, digit.top, digit.right, digit.bottom, density)) continue;
+                joined = true;
+                // The merged box is wider than the word: measure against the original word width.
+                if (wordWidth <= 0) wordWidth = r.width();
+                r.union(digit);
+                break;
+            }
+            if (!SplashOcrPolicy.valid(match.label, ad, plain, r.left,r.top,r.right,r.bottom, wordWidth,
+                    screen.left,screen.top,screen.right,screen.bottom, joined, joined, density)) {
+                // Diagnostics record geometry only, never recognized text.
+                getSharedPreferences("splash_diagnostic",MODE_PRIVATE).edit()
+                    .putString("ocr_reject", "w=" + (r.width()/density) + "dp h=" + (r.height()/density)
+                        + "dp word=" + (wordWidth/density) + "dp joined=" + joined
+                        + " digit=" + result.countdownDigits.size()
+                        + " skips=" + result.skips.size()).apply();
+                continue;
+            }
+            sawSkip = true; recognized = true; ocrSawSkip = true;
+            if (!ocrPolicy.observe(match.label, ad, plain, r.left,r.top,r.right,r.bottom, wordWidth,
+                    screen.left,screen.top,screen.right,screen.bottom, joined, joined, pkg,windowId,density,now, r.left)) {
+                ocrPass++;
+                getSharedPreferences("splash_diagnostic",MODE_PRIVATE).edit()
+                    .putString("ocr_wait", "gap=" + gap + "ms pass=" + ocrPass
+                        + " w=" + (r.width()/density) + "dp h=" + (r.height()/density) + "dp").apply();
                 ocrStatus = "OCR 已读到跳过，等待第二帧确认同一位置"; continue;
             }
             if (window.hasAttempted() || !Prefs.textTapEnabled(this,pkg)
@@ -361,6 +399,8 @@ public final class SplashSkipService extends AccessibilityService {
             if (!window.attempted(now)) { ocrPolicy.clear(); return; }
             ocrPolicy.clear(); ocrStatus = "已提交一次 OCR 触摸请求";
             getSharedPreferences("splash_diagnostic",MODE_PRIVATE).edit()
+                .putString("ocr_point", ((r.left+r.right)/2) + "," + ((r.top+r.bottom)/2)
+                    + " box=" + r.left + "," + r.top + "," + r.right + "," + r.bottom)
                 .putString("target","两帧本机 OCR 确认的跳过文字中心").apply();
             boolean queued = dispatchTextTouch((r.left+r.right)/2f,(r.top+r.bottom)/2f,pkg,id,true,
                 "OCR 触摸已执行；等待界面变化核验","系统取消 OCR 触摸；已停止","系统未接受 OCR 触摸请求；已停止");
@@ -496,9 +536,10 @@ public final class SplashSkipService extends AccessibilityService {
     }
     private boolean dispatchTextTouch(float x, float y, String pkg, long id, boolean ocrAction,
                                       String completedMessage, String cancelledMessage, String rejectedMessage) {
-        Path point = new Path(); point.moveTo(x,y);
+        lastTouchX = x; lastTouchY = y;
+        Path point = new Path(); point.moveTo(x,y); point.lineTo(x+1f,y+1f);
         GestureDescription gesture = new GestureDescription.Builder()
-            .addStroke(new GestureDescription.StrokeDescription(point,0,50)).build();
+            .addStroke(new GestureDescription.StrokeDescription(point,0,80)).build();
         holdVerification(pkg,id); resetTextTap();
         boolean queued = dispatchGesture(gesture,new GestureResultCallback() {
             private boolean current() { return !destroyed && id == sessionId && pkg.equals(sessionPkg); }
@@ -588,6 +629,16 @@ public final class SplashSkipService extends AccessibilityService {
                 effective = !pkg.equals(current) || active.getWindowId() != window;
             } finally { active.recycle(); }
         }
+        if (!effective && !ocrRetried && pkg.equals(sessionPkg)) {
+            // The H5 splash layer silently drops injected gestures now and then, so one same-spot retry
+            // is allowed before the miss is counted against this app.
+            ocrRetried = true;
+            dispatchTextTouch(lastTouchX, lastTouchY, pkg, sessionId, false,
+                "第一次坐标触摸未生效，已在同一位置补发一次", "补发的坐标触摸被系统取消；已停止，不补点",
+                "系统未接受补发的坐标触摸；已停止，不补点");
+            report("坐标触摸后界面未变化，已在同一位置补发一次", 3);
+            return;
+        }
         SharedPreferences prefs = Prefs.get(this);
         String key = "text_tap_strikes_" + pkg;
         int strikes = SplashTextTap.penalties(prefs.getInt(key,0), effective);
@@ -640,7 +691,7 @@ public final class SplashSkipService extends AccessibilityService {
     }
     private void cancel() {
         handler.removeCallbacks(poll); pollScheduled = false; budget.reset(); window.reset();
-        ocrPolicy.clear(); ocrAdSeen = false; ocrFrames = 0; ocrProbes = 0; lastOcrAt = 0; lastOcrProbeAt = 0;
+        ocrPolicy.clear(); ocrAdSeen = false; ocrFrames = 0; ocrProbes = 0; lastOcrAt = 0; lastOcrProbeAt = 0; ocrPass = 0; lastOcrDone = 0; ocrSawSkip = false;
         if (tapAnchor != null) tapAnchor.close();
         handler.post(this::resetTextTap);
         handler.removeCallbacks(verify); pendingPkg = ""; pendingWindow = 0;

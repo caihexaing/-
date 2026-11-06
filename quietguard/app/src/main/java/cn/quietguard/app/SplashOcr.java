@@ -27,15 +27,29 @@ import java.util.concurrent.Executor;
 /** Captures one active app window and recognizes text locally without retaining its image. */
 final class SplashOcr implements AutoCloseable {
     static final int MAX_FRAMES = 12;
-    static final long MIN_CAPTURE_GAP_MS = 1000, PROBE_GAP_MS = 2500;
+    // A splash ad often lives ~5s. Capturing at a 1s floor left no room for the confirming second frame,
+    // so the floor is short and MAX_FRAMES still caps the total screenshots per launch.
+    static final long MIN_CAPTURE_GAP_MS = 400, PROBE_GAP_MS = 2500;
     interface Callback { void complete(Result result, String failure); }
+    /**
+     * One recognized line of text. {@code text} is the whole OCR line ("5s | 跳过"); {@code label} is what
+     * {@link SplashPolicy#skipLabel} accepted. The extra geometry lets the policy join a "跳过" element with
+     * the countdown digit the SDK draws beside it, instead of demanding one wide single box.
+     */
     static final class Match {
         final String label;
         final Rect bounds;
-        Match(String label, Rect bounds) { this.label = label; this.bounds = new Rect(bounds); }
+        /** Width of the plain skip word inside this box, or 0 when the box is the whole label. */
+        final int wordWidth;
+        Match(String label, Rect bounds) { this(label, bounds, bounds.width()); }
+        Match(String label, Rect bounds, int wordWidth) {
+            this.label = label; this.bounds = new Rect(bounds); this.wordWidth = wordWidth;
+        }
     }
     static final class Result {
         final List<Match> skips = new ArrayList<>();
+        /** Bounds of a countdown digit drawn as its own element, e.g. the "5" in "跳过 5". */
+        final List<Rect> countdownDigits = new ArrayList<>();
         boolean adMarker;
     }
     private static final int MAX_IMAGE_EDGE = 1600;
@@ -161,20 +175,50 @@ final class SplashOcr implements AutoCloseable {
         }
     }
 
+    /** Countdown digits on ad skip controls are 1-2 characters, e.g. "5", "08", "5s". */
+    static boolean countdownText(String text) { return SplashOcrPolicy.countdownText(text); }
+
     private static void addLine(String text, Rect box, Bitmap frame, Rect screenBounds, Result out) {
         if (SplashPolicy.adMarker(text)) out.adMarker = true;
-        if (box == null || !SplashPolicy.skipLabel(text)) return;
-        Rect screen = new Rect(
-            screenBounds.left + Math.round(box.left * screenBounds.width() / (float) frame.getWidth()),
-            screenBounds.top + Math.round(box.top * screenBounds.height() / (float) frame.getHeight()),
-            screenBounds.left + Math.round(box.right * screenBounds.width() / (float) frame.getWidth()),
-            screenBounds.top + Math.round(box.bottom * screenBounds.height() / (float) frame.getHeight()));
+        if (box == null) return;
+        Rect screen = map(box, frame, screenBounds);
+        if (countdownText(text) && screen.width() < screenBounds.width()) {
+            for (Rect digit : out.countdownDigits) if (digit.equals(screen)) return;
+            out.countdownDigits.add(screen);
+        }
+        if (!SplashPolicy.skipLabel(text)) return;
+        int word = mapWidth(wordOf(text, box), frame, screenBounds);
         for (Match match : out.skips) {
             Rect overlap = new Rect(match.bounds);
             if (overlap.intersect(screen) && overlap.width() * 2 >= screen.width()
                     && overlap.height() * 2 >= screen.height()) return;
         }
-        out.skips.add(new Match(text, screen));
+        out.skips.add(new Match(text, screen, word));
+    }
+
+    /** Pixel width of the skip word itself, so "跳过 3" reads as a 27dp word, not a 60dp box. */
+    private static Rect wordOf(String text, Rect box) {
+        String compact = text == null ? "" : text.replaceAll("[\\s\u00a0]", "");
+        String digits = compact.replaceAll("[^0-9]", "");
+        if (digits.isEmpty() || box.width() <= 0) return box;
+        // Drop the countdown share of the box so the guard measures the skip word.
+        float share = digits.length() / (float) Math.max(compact.length(), 1);
+        int keep = Math.max(1, Math.round(box.width() * (1f - share)));
+        return new Rect(box.left, box.top, box.left + keep, box.bottom);
+    }
+
+    private static Rect map(Rect box, Bitmap frame, Rect screenBounds) {
+        if (frame.getWidth() <= 0 || frame.getHeight() <= 0) return new Rect(box);
+        return new Rect(
+            screenBounds.left + Math.round(box.left * screenBounds.width() / (float) frame.getWidth()),
+            screenBounds.top + Math.round(box.top * screenBounds.height() / (float) frame.getHeight()),
+            screenBounds.left + Math.round(box.right * screenBounds.width() / (float) frame.getWidth()),
+            screenBounds.top + Math.round(box.bottom * screenBounds.height() / (float) frame.getHeight()));
+    }
+
+    private static int mapWidth(Rect box, Bitmap frame, Rect screenBounds) {
+        if (frame.getWidth() <= 0) return box.width();
+        return Math.round(box.width() * screenBounds.width() / (float) frame.getWidth());
     }
 
     @Override public void close() {
