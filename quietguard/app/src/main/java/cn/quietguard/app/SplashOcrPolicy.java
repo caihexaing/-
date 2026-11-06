@@ -76,6 +76,24 @@ public final class SplashOcrPolicy {
     }
 
     /**
+     * Single-frame decision used once the window already shows an ad marker: a five second splash leaves no
+     * room for a second read, and waiting made the app enter late. Geometry limits and the tap-time re-check
+     * still guard the touch.
+     */
+    public boolean first(String text, boolean ad, boolean plain,
+                         int left, int top, int right, int bottom, int wordWidth,
+                         int screenLeft, int screenTop, int screenRight, int screenBottom,
+                         boolean joined, boolean adjacentDigit,
+                         String pkg, int window, float density, long now) {
+        if (pkg == null || pkg.isEmpty() || !valid(text, ad, plain, left, top, right, bottom, wordWidth,
+                screenLeft, screenTop, screenRight, screenBottom, joined, adjacentDigit, density)) {
+            reset(); return false;
+        }
+        remember(text, left, top, right, bottom, screenLeft, screenTop, screenRight, screenBottom, pkg, window, now, false);
+        return true;
+    }
+
+    /**
      * Two-frame confirmation that keeps the recorded rectangle. When {@code keepLeft >= 0} the caller passed a
      * merged box (skip word + adjacent digit); the tap should land on that whole merged box.
      */

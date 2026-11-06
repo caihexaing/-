@@ -145,19 +145,32 @@ final class SplashOcr implements AutoCloseable {
             TextRecognizer en = latin;
             if (zh == null) { zh = TextRecognition.getClient(new ChineseTextRecognizerOptions.Builder().build()); chinese = zh; }
             if (en == null) { en = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS); latin = en; }
+            final TextRecognizer latinClient = en;
             InputImage image = InputImage.fromBitmap(frame, 0);
-            Task<Text> chineseTask = zh.process(image), latinTask = en.process(image);
+            // Chinese first: it reads "跳过" and most Latin labels too, and the Latin model is only worth its
+            // round trip when the Chinese pass found nothing. Running both in parallel doubled the wait and
+            // made the app enter late on five second splashes.
             Bitmap ownedFrame = frame;
-            Tasks.whenAllComplete(chineseTask, latinTask).addOnCompleteListener(callbackExecutor, ignored -> {
-                try {
-                    if (closed) return;
-                    Result result = new Result();
-                    if (chineseTask.isSuccessful()) consume(chineseTask.getResult(), ownedFrame, windowBounds, result);
-                    if (latinTask.isSuccessful()) consume(latinTask.getResult(), ownedFrame, windowBounds, result);
-                    if (!chineseTask.isSuccessful() && !latinTask.isSuccessful()) callback.complete(null, "recognition_failed");
-                    else callback.complete(result, null);
-                } catch (RuntimeException e) { callback.complete(null, "recognition_failed"); }
-                finally { if (!ownedFrame.isRecycled()) ownedFrame.recycle(); }
+            zh.process(image).addOnCompleteListener(callbackExecutor, chineseDone -> {
+                Result result = new Result();
+                boolean chineseSuccess = chineseDone.isSuccessful();
+                if (chineseSuccess) {
+                    try { if (!closed) consume(chineseDone.getResult(), ownedFrame, windowBounds, result); }
+                    catch (RuntimeException e) { chineseSuccess = false; }
+                }
+                final boolean chineseOk = chineseSuccess;
+                if (!chineseOk || !result.skips.isEmpty() || closed) {
+                    if (!chineseOk) { if (!ownedFrame.isRecycled()) ownedFrame.recycle(); callback.complete(null, "recognition_failed"); }
+                    else { if (!ownedFrame.isRecycled()) ownedFrame.recycle(); callback.complete(result, null); }
+                    return;
+                }
+                latinClient.process(image).addOnCompleteListener(callbackExecutor, latinDone -> {
+                    try {
+                        if (!closed && latinDone.isSuccessful()) consume(latinDone.getResult(), ownedFrame, windowBounds, result);
+                        callback.complete(result, null);
+                    } catch (RuntimeException e) { callback.complete(result, null); }
+                    finally { if (!ownedFrame.isRecycled()) ownedFrame.recycle(); }
+                });
             });
         } catch (RuntimeException | LinkageError e) {
             if (!frame.isRecycled()) frame.recycle();

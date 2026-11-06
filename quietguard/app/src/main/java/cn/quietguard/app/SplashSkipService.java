@@ -373,8 +373,14 @@ public final class SplashSkipService extends AccessibilityService {
                 continue;
             }
             sawSkip = true; recognized = true; ocrSawSkip = true;
-            if (!ocrPolicy.observe(match.label, ad, plain, r.left,r.top,r.right,r.bottom, wordWidth,
-                    screen.left,screen.top,screen.right,screen.bottom, joined, joined, pkg,windowId,density,now, r.left)) {
+            // With an ad marker on screen the first read is enough: a second frame used to arrive after the
+            // splash had already timed out, which made the app enter late and left some ads untouched.
+            boolean confirmed = ad
+                ? ocrPolicy.first(match.label, ad, plain, r.left,r.top,r.right,r.bottom, wordWidth,
+                    screen.left,screen.top,screen.right,screen.bottom, joined, joined, pkg,windowId,density,now)
+                : ocrPolicy.observe(match.label, ad, plain, r.left,r.top,r.right,r.bottom, wordWidth,
+                    screen.left,screen.top,screen.right,screen.bottom, joined, joined, pkg,windowId,density,now, r.left);
+            if (!confirmed) {
                 ocrPass++;
                 getSharedPreferences("splash_diagnostic",MODE_PRIVATE).edit()
                     .putString("ocr_wait", "gap=" + gap + "ms pass=" + ocrPass
