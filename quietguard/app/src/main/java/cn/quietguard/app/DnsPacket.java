@@ -35,6 +35,67 @@ public final class DnsPacket {
         }
         return s.toString();
     }
+    /** End offset of the possibly compressed name starting at {@code at}, or -1. */
+    public static int nameEnd(byte[] d, int at) {
+        int i = at, labels = 0;
+        while (i >= 0 && i < d.length && labels++ < 128) {
+            int n = d[i] & 255;
+            if (n == 0) return i + 1;
+            if ((n & 0xc0) == 0xc0) return i + 2 <= d.length ? i + 2 : -1;
+            if (n > 63 || i + 1 + n > d.length) return -1;
+            i += 1 + n;
+        }
+        return -1;
+    }
+    /** Resolves a name at {@code at}, following compression pointers; null if malformed. */
+    public static String name(byte[] d, int at) {
+        StringBuilder s = new StringBuilder(); int i = at, jumps = 0;
+        while (i >= 0 && i < d.length && jumps++ < 64) {
+            int n = d[i] & 255;
+            if (n == 0) return s.length() == 0 ? null : s.toString();
+            if ((n & 0xc0) == 0xc0) {
+                if (i + 1 >= d.length) return null;
+                int ptr = ((n & 0x3f) << 8) | (d[i + 1] & 255);
+                if (ptr < 12 || ptr >= d.length) return null;
+                i = ptr; continue;
+            }
+            if (n > 63 || i + 1 + n > d.length) return null;
+            if (s.length() > 0) s.append('.');
+            for (int k = 0; k < n; k++) {
+                int c = d[i + 1 + k] & 255;
+                if (c < 33 || c > 126) return null;
+                s.append((char)c);
+            }
+            if (s.length() > 253) return null;
+            i += 1 + n;
+        }
+        return null;
+    }
+    /** CNAME targets in the answer section, in order, at most {@code limit}. */
+    public static String[] cnameTargets(byte[] reply, int limit) {
+        int end = questionEnd(reply);
+        if (end < 0 || reply.length < 12) return new String[0];
+        int answers = u16(reply, 6), i = end, found = 0;
+        String[] out = new String[Math.min(limit, Math.max(0, answers))];
+        for (int n = 0; n < answers && n < 64 && found < out.length; n++) {
+            i = nameEnd(reply, i);
+            if (i < 0 || i + 10 > reply.length) break;
+            int type = u16(reply, i), size = u16(reply, i + 8), data = i + 10;
+            if (data + size > reply.length) break;
+            if (type == 5) { String target = name(reply, data); if (target != null) out[found++] = target; }
+            i = data + size;
+        }
+        if (found == out.length) return out;
+        String[] trimmed = new String[found];
+        System.arraycopy(out, 0, trimmed, 0, found);
+        return trimmed;
+    }
+    /** First CNAME target in {@code reply} that the rule set would block, or null. */
+    public static String blockedAlias(RuleSet rules, byte[] reply) {
+        if (rules == null || reply == null || reply.length < 12) return null;
+        for (String target : cnameTargets(reply, 16)) if (rules.blocks(target)) return target;
+        return null;
+    }
     public static byte[] error(byte[] query, int rcode) {
         int end = questionEnd(query); if (end < 0) return null;
         byte[] d = Arrays.copyOf(query, end);

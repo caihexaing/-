@@ -6,7 +6,13 @@ import java.util.*;
 
 public final class RuleSet {
     private final Set<String> blocked = new HashSet<>(), exceptions = new HashSet<>(), exactExceptions = new HashSet<>();
-    public RuleSet(InputStream input, String allow) throws IOException {
+    public RuleSet(InputStream input, String allow) throws IOException { this(new InputStream[]{input}, allow); }
+    /** Merges several rule streams; later inputs cannot weaken earlier exceptions. */
+    public RuleSet(InputStream[] inputs, String allow) throws IOException {
+        for (InputStream input : inputs) load(input);
+        for (String s : allow.split("[\\s,，]+")) if (!s.trim().isEmpty()) exceptions.add(normalize(s));
+    }
+    private void load(InputStream input) throws IOException {
         try (BufferedReader r = new BufferedReader(new InputStreamReader(input, java.nio.charset.StandardCharsets.UTF_8))) {
             String line; while ((line = r.readLine()) != null) {
                 line = line.trim();
@@ -16,7 +22,6 @@ public final class RuleSet {
                 else blocked.add(normalize(line));
             }
         }
-        for (String s : allow.split("[\\s,，]+")) if (!s.trim().isEmpty()) exceptions.add(normalize(s));
     }
     public static String normalize(String s) {
         s = s.trim().toLowerCase(Locale.ROOT);

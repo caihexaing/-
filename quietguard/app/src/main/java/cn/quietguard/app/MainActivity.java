@@ -14,6 +14,8 @@ import android.text.*;
 import android.view.*;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.*;
+import java.io.IOException;
+import java.io.InputStream;
 import java.text.Collator;
 import java.util.*;
 import java.util.concurrent.*;
@@ -197,7 +199,10 @@ public final class MainActivity extends Activity {
             : "网络过滤：已连接 " + snapshot.networkActiveCount + " / 配置 " + snapshot.networkCount + " 个");
         statsText.setText(getString(R.string.runtime_details, getString(R.string.dns_stats, FilterVpnService.queries.get(), FilterVpnService.blocked.get(), FilterVpnService.failed.get()),
             Prefs.get(this).getLong("skip_clicks", 0), FilterVpnService.status)
-            + (Prefs.sniFiltering(this) ? "\nSNI 拦截 " + FilterVpnService.sniBlocked.get() + " · UDP/443 阻止 " + FilterVpnService.quicBlocked.get() : ""));
+            + (Prefs.sniFiltering(this) ? "\nSNI 拦截 " + FilterVpnService.sniBlocked.get() + " · UDP/443 阻止 " + FilterVpnService.quicBlocked.get()
+                + " · HTTP Host 拦截 " + FilterVpnService.httpBlocked.get() + " · 目标主机拦截 " + FilterVpnService.hostBlocked.get() : "")
+            + (Prefs.get(this).getBoolean("dns_bypass_off", false) ? "" : "\n自带解析器拦截 " + FilterVpnService.bypassBlocked.get())
+            + "\n别名（CNAME）伪装拦截 " + FilterVpnService.aliased.get());
         power.setText(snapshot.action());
     }
     private void requestStart() {
@@ -418,13 +423,16 @@ public final class MainActivity extends Activity {
         sni.setEnabled(Build.VERSION.SDK_INT >= 29);
         if (Build.VERSION.SDK_INT < 29) sni.setChecked(false);
         panel.addView(sni);
-        TextView sniInfo = text(Build.VERSION.SDK_INT < 29 ? "SNI 增强模式需要 Android 10 及以上；此设备仍可使用基础 DNS 过滤和开屏跳过。" : "开启后，所选应用的完整 IPv4/IPv6 流量经本机隧道转发；检查 TCP/443 的可见 SNI，不解密 HTTPS。UDP/443 会被阻止以尝试触发 HTTP/3 回退，可能造成部分应用变慢或无法联网；ECH、DoH、直连 IP 和缓存内容仍可能绕过。",12,MUTED); panel.addView(sniInfo);
+        TextView sniInfo = text(Build.VERSION.SDK_INT < 29 ? "SNI 增强模式需要 Android 10 及以上；此设备仍可使用基础 DNS 过滤和开屏跳过。" : "开启后，所选应用的完整 IPv4/IPv6 流量经本机隧道转发；检查 TCP/443 的可见 SNI 与 TCP/80 的 Host，不解密 HTTPS。UDP/443 会被阻止以尝试触发 HTTP/3 回退，可能造成部分应用变慢或无法联网；ECH、DoH、直连 IP 和缓存内容仍可能绕过。",12,MUTED); panel.addView(sniInfo);
+        CheckBox bypass = new CheckBox(this); bypass.setText("阻断应用自带加密 DNS（推荐）"); bypass.setTextSize(14);
+        bypass.setChecked(!Prefs.get(this).getBoolean("dns_bypass_off", false)); panel.addView(bypass);
+        panel.addView(text("应用把广告域名交给自己的 DoH/HTTPDNS 解析时，这台手机的 DNS 过滤就看不到请求，规则再好也拦不住。开启后分两层处理：一是这些解析接口的域名被按广告同样处理（返回 NXDOMAIN），解析退回本机过滤；二是公共解析器的地址（如 1.1.1.1、8.8.8.8、223.5.5.5）被单独路由进隧道，明文 UDP/53 照常按规则过滤，加密的 DoH/DoT/DoQ 因内容不可见而直接丢弃。基础模式同样生效，不需要开 SNI 增强。副作用：某些应用若写死了自己的解析器，首次解析可能变慢或失败；若某个应用因此无法联网，先关掉这一项再试。",12,MUTED));
         TextView label = text("例外域名（每行一个，包含其子域名）", 14, INK); label.setPadding(0, dp(16), 0, dp(8)); panel.addView(label);
         EditText allow = new EditText(this); allow.setTextSize(14); allow.setHint("example.com"); allow.setMinLines(3); allow.setMaxLines(6);
         allow.setGravity(Gravity.TOP); allow.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE | android.text.InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
         allow.setText(Prefs.get(this).getString("exceptions", "")); panel.addView(allow);
         int ruleCount = builtInRuleCount();
-        TextView details = text((ruleCount < 0 ? "内置规则读取失败" : "内置 " + ruleCount + " 条域名拦截规则 · " + builtInRuleExceptionCount() + " 条上游例外") + " · v" + BuildConfig.VERSION_NAME + "\n\n规则来自 AdGuard 移动广告过滤列表的纯域名子集，按 DNS 域名匹配。上游按应用限定的主机例外在净屏中按精确主机例外处理；少数无法映射的规则会跳过。\n\n若应用功能异常，可添加例外域名或关闭该应用的开关。\n\n系统“私人 DNS”建议设为关闭；应用自带加密 DNS 可能绕过过滤。基础模式处理 UDP DNS；可选 SNI 增强模式会接管所选应用的 IPv4/IPv6 流量，检查 TCP/443 可见主机名但不解密 HTTPS，并阻止 UDP/443以尝试触发 HTTP/3 回退。\n\nDNS 规则命中会重复计数，包含追踪请求；转发失败不代表广告漏拦。跳过点击次数仅表示系统接受了点击请求，无法证明广告消失。DNS 计数从启动或重新配置时开始，跳过点击次数在本机累计。\n\n暂停防护将同时停止过滤和自动跳过，保留应用选择和权限。手动暂停后不会由更新回调恢复；点击“恢复防护”才重新启用。无障碍服务连接与防护开关是两个独立状态。", 12, MUTED);
+        TextView details = text((ruleCount < 0 ? "内置规则读取失败" : "内置 " + ruleCount + " 条域名拦截规则 · " + builtInRuleExceptionCount() + " 条上游例外") + " · v" + BuildConfig.VERSION_NAME + "\n\n规则来自四份 DNS 专用广告过滤列表（AdGuard DNS、OISD、anti-AD、AdRules）与净屏自建清单，只保留能表达为域名的部分，按 DNS 域名匹配（含子域名）。另外会检查 DNS 应答里的 CNAME 别名，若最终别名落在拦截清单内同样按 NXDOMAIN 处理，用于对付用自有域名做 CNAME 伪装、把请求指到广告域的 SDK。带路径、通配符、站点或应用条件的规则无法映射到 DNS，会被跳过。\n\n若应用功能异常，可添加例外域名或关闭该应用的开关。\n\n系统“私人 DNS”建议设为关闭；应用自带加密 DNS 可能绕过过滤。基础模式处理 UDP DNS；可选 SNI 增强模式会接管所选应用的 IPv4/IPv6 流量，检查 TCP/443 可见主机名但不解密 HTTPS，并阻止 UDP/443以尝试触发 HTTP/3 回退。\n\nDNS 规则命中会重复计数，包含追踪请求；转发失败不代表广告漏拦。跳过点击次数仅表示系统接受了点击请求，无法证明广告消失。DNS 计数从启动或重新配置时开始，跳过点击次数在本机累计。\n\n暂停防护将同时停止过滤和自动跳过，保留应用选择和权限。手动暂停后不会由更新回调恢复；点击“恢复防护”才重新启用。无障碍服务连接与防护开关是两个独立状态。", 12, MUTED);
         details.setPadding(0, dp(16), 0, 0); panel.addView(details);
         ScrollView scroll = new ScrollView(this); scroll.addView(panel);
         AlertDialog dialog = new AlertDialog.Builder(this).setTitle("防护方式与网络").setView(scroll).setNegativeButton("取消", null).setNeutralButton("网络设置", (d,w) -> startActivity(new Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS))).setPositiveButton("保存", null).create();
@@ -435,7 +443,7 @@ public final class MainActivity extends Activity {
             } catch (IllegalArgumentException e) { allow.setError("仅填写域名，例如 example.com；不含 https:// 或路径"); return; }
             Runnable save = () -> {
                 Prefs.get(this).edit().putString("exceptions", normalized.toString()).putString("resolver", addresses[dns.getSelectedItemPosition()])
-                    .putBoolean("sni_filtering", sni.isChecked()).apply();
+                    .putBoolean("sni_filtering", sni.isChecked()).putBoolean("dns_bypass_off", !bypass.isChecked()).apply();
                 if (Prefs.enabled(this)) applyChanges(); dialog.dismiss(); toast("设置已保存");
             };
             if (sni.isChecked() && !Prefs.sniFiltering(this)) {
@@ -446,12 +454,14 @@ public final class MainActivity extends Activity {
         })); dialog.show();
     }
     private int builtInRuleCount() {
-        try { return new RuleSet(getAssets().open("ad-domains.txt"), "").size(); }
-        catch (Exception ignored) { return -1; }
+        return ruleStats().blocked;
     }
     private int builtInRuleExceptionCount() {
-        try { return new RuleSet(getAssets().open("ad-domains.txt"), "").exceptionSize(); }
-        catch (Exception ignored) { return 0; }
+        return Math.max(0, ruleStats().exceptions);
+    }
+    private RuleStats ruleStats() {
+        try { return RuleStats.parse(getAssets().open("ad-domains.counts")); }
+        catch (IOException ignored) { return RuleStats.parse(null); }
     }
     private void showHelp(boolean first) {
         int ruleCount = builtInRuleCount();
@@ -461,7 +471,7 @@ public final class MainActivity extends Activity {
             + "暂停与豁免\n暂停保留应用开关，恢复由你手动执行；一键关闭需确认后才清空全部选择，兼容设置和豁免保留；重新一键开启不等于恢复原选择清单。应用登录、支付、下载异常时，进入“设置 → 应用豁免”选择应用即可豁免，之后一键开启也不会重新选中它。\n\n"
             + "权限与隐私\n应用列表、选择、兼容设置及固定诊断记录只保存在本机。不解密 HTTPS。经你同意后，截图 OCR 仅在已选应用启动阶段于本机内存短暂处理，不保存或上传截图、识别文字或坐标。无障碍授权具备较广的界面读取与点击能力，误触可能影响广告、教程或登录引导。可在净屏设置关闭 OCR，也可在系统无障碍设置撤销服务。\n\n"
             + "网络访问\n网络过滤会把未拦截域名发送给你选定的公共 DNS，DNS 传输未加密。检查更新与 APK 下载连接 GitHub，服务器会收到常规网络连接信息；不上传应用列表。自动检查默认关闭。\n\n"
-            + "实际能做什么\n" + coverage + "规则取自移动广告过滤列表可表达为域名的子集；带路径、通配符或站点条件的拦截规则不会直接套用。可在“设置 → 防护方式与网络”手动开启实验性 SNI 增强：它检查 TCP/443 可见主机名，不解密 HTTPS，并阻止 UDP/443尝试触发回退。ECH、应用自带 DoH、直连 IP、同域内容或缓存仍可能绕过；DNS 过滤也不能直接删除 App 内广告控件。\n\n"
+            + "实际能做什么\n" + coverage + "规则取自四份 DNS 专用广告过滤列表可表达为域名的子集（约 28 万个域名，含 CNAME 别名检查）；带路径、通配符或站点条件的拦截规则不会直接套用。可在“设置 → 防护方式与网络”手动开启实验性 SNI 增强：它检查 TCP/443 可见主机名，不解密 HTTPS，并阻止 UDP/443尝试触发回退。ECH、应用自带 DoH、直连 IP、同域内容或缓存仍可能绕过；广告与业务内容混用同一域名、或直接由 IP 提供的广告也无法在网络层区分。DNS 过滤能拦住广告素材与接口请求，但不保证清除每一个广告位。\n\n"
             + "开屏广告\nDNS 过滤不能保证关闭开屏广告。开屏跳过是单独的无障碍辅助功能，只会尝试点击可识别的跳过按钮；无权限、无法识别或不满足安全条件时不会点击，可能仍需等待广告结束，也不保证零延迟。\n\n"
             + "怎样理解命中次数\n命中长期为 0～2 只表示本次命中规则的请求很少，不能证明没有广告。仅开屏跳过模式不做 DNS 过滤；命中请求也不等于成功去掉广告，点击请求不等于跳过成功。\n\n"
             + "数字说明\n列表显示数受搜索和筛选影响；已选是你的开关数量，分为仅跳过与网络+跳过。网络已连接数量来自实际建立的隧道；开屏已就绪表示服务可用，不代表每个应用都能识别成功。";

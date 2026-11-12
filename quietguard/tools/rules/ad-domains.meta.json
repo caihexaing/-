@@ -1,0 +1,59 @@
+{
+  "blocked": 280602,
+  "bytes": 5776345,
+  "detail": {
+    "adrulesdns.txt": {
+      "blocked": 241656,
+      "cosmetic": 0,
+      "exceptions": 197,
+      "invalid": 54,
+      "modifier": 0,
+      "pathOrWildcard": 0,
+      "pattern": 0
+    },
+    "agdns.txt": {
+      "blocked": 189937,
+      "cosmetic": 0,
+      "exceptions": 204,
+      "invalid": 158,
+      "modifier": 5,
+      "pathOrWildcard": 412,
+      "pattern": 29
+    },
+    "antiad.txt": {
+      "blocked": 95281,
+      "cosmetic": 0,
+      "exceptions": 108,
+      "invalid": 0,
+      "modifier": 2,
+      "pathOrWildcard": 67,
+      "pattern": 0
+    },
+    "oisd.txt": {
+      "blocked": 62161,
+      "cosmetic": 0,
+      "exceptions": 0,
+      "invalid": 0,
+      "modifier": 0,
+      "pathOrWildcard": 0,
+      "pattern": 0
+    },
+    "quietguard-seed-domains.txt": {
+      "blocked": 81,
+      "cosmetic": 0,
+      "exceptions": 0,
+      "invalid": 0,
+      "modifier": 0,
+      "pathOrWildcard": 0,
+      "pattern": 0
+    }
+  },
+  "exceptions": 339,
+  "sources": {
+    "adrulesdns.txt": "https://raw.githubusercontent.com/217heidai/adblockfilters/main/rules/adblockdns.txt",
+    "agdns.txt": "https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt",
+    "antiad.txt": "https://anti-ad.net/easylist.txt",
+    "oisd.txt": "https://small.oisd.nl/domainswild2",
+    "quietguard-seed-domains.txt": "curated"
+  }
+}

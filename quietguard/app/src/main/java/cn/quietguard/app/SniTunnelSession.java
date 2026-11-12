@@ -14,6 +14,7 @@ final class SniTunnelSession implements AutoCloseable {
     private final ParcelFileDescriptor tunnel;
     private final RuleSet rules;
     private final String resolver;
+    private final boolean blockDnsBypass;
     private final Listener listener;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final AtomicBoolean alive = new AtomicBoolean(true);
@@ -23,12 +24,12 @@ final class SniTunnelSession implements AutoCloseable {
     private volatile boolean startReturned;
     private volatile long startReturnTime;
 
-    SniTunnelSession(VpnService service, ParcelFileDescriptor tunnel, RuleSet rules, String resolver, Listener listener) {
-        this.service=service; this.tunnel=tunnel; this.rules=rules; this.resolver=resolver; this.listener=listener;
+    SniTunnelSession(VpnService service, ParcelFileDescriptor tunnel, RuleSet rules, String resolver, boolean blockDnsBypass, Listener listener) {
+        this.service=service; this.tunnel=tunnel; this.rules=rules; this.resolver=resolver; this.blockDnsBypass=blockDnsBypass; this.listener=listener;
     }
     void start() {
         try {
-            proxy = new EnhancedSocks5Proxy(service, rules, resolver);
+            proxy = new EnhancedSocks5Proxy(service, rules, resolver, blockDnsBypass);
             config = new File(service.getCacheDir(), "quietguard-sni-tunnel.yaml");
             String yaml = "tunnel:\n  name: tun0\n  mtu: 1500\n  ipv4: 10.77.0.1\n  ipv6: 'fd77:77::1'\n  icmp: 'off'\nsocks5:\n  address: 127.0.0.1\n  port: " + proxy.port() + "\n  udp: 'udp'\n";
             try (Writer writer = new OutputStreamWriter(new FileOutputStream(config), java.nio.charset.StandardCharsets.UTF_8)) { writer.write(yaml); }

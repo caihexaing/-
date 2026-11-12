@@ -16,7 +16,7 @@ public final class FilterVpnService extends VpnService {
     public static volatile boolean running;
     public static volatile Set<String> filteredApps = Collections.emptySet();
     public static volatile String status = "过滤未运行";
-    public static final AtomicLong queries = new AtomicLong(), blocked = new AtomicLong(), failed = new AtomicLong(), sniBlocked = new AtomicLong(), quicBlocked = new AtomicLong();
+    public static final AtomicLong queries = new AtomicLong(), blocked = new AtomicLong(), failed = new AtomicLong(), sniBlocked = new AtomicLong(), quicBlocked = new AtomicLong(), aliased = new AtomicLong(), httpBlocked = new AtomicLong(), hostBlocked = new AtomicLong(), bypassBlocked = new AtomicLong();
     public static final String STOP = "cn.quietguard.STOP";
     private static FilterVpnService instance;
     private boolean pausedForUpdate;
@@ -83,14 +83,29 @@ public final class FilterVpnService extends VpnService {
             else startForeground(7, n);
             closeSession();
             if (VpnService.prepare(this) != null) throw new IllegalStateException("VPN 授权已失效，请重新启动");
-            RuleSet rules = new RuleSet(getAssets().open("ad-domains.txt"), Prefs.get(this).getString("exceptions", ""));
+            // Encrypted DNS and in-app HTTPDNS are the main way apps step around DNS filtering:
+            // the client never asks us, so nothing can be matched. Blocking the endpoint names
+            // makes those resolvers unreachable by name and lets resolution fall back to us.
+            boolean blockDnsBypass = !Prefs.get(this).getBoolean("dns_bypass_off", false);
+            java.io.InputStream bypass = null;
+            if (blockDnsBypass) bypass = getAssets().open("dns-bypass-domains.txt");
+            RuleSet rules = bypass == null
+                ? new RuleSet(getAssets().open("ad-domains.txt"), Prefs.get(this).getString("exceptions", ""))
+                : new RuleSet(new java.io.InputStream[]{getAssets().open("ad-domains.txt"), bypass}, Prefs.get(this).getString("exceptions", ""));
             boolean sniEnabled = Prefs.sniFiltering(this);
             Builder builder = new Builder().setSession(sniEnabled ? "净屏 · SNI 增强过滤" : "净屏 · 按应用广告过滤").setMtu(sniEnabled ? 1500 : 32767)
                 .addAddress("10.77.0.1", 32).addDnsServer("10.77.0.2")
                 .allowFamily(OsConstants.AF_INET).allowFamily(OsConstants.AF_INET6)
                 .setConfigureIntent(PendingIntent.getActivity(this, 0, new Intent(this, MainActivity.class), PendingIntent.FLAG_IMMUTABLE));
             if (sniEnabled) builder.addAddress("fd77:77::1", 128).addRoute("0.0.0.0", 0).addRoute("::", 0);
-            else builder.addRoute("10.77.0.2", 32);
+            else {
+                builder.addRoute("10.77.0.2", 32);
+                // In DNS-only mode nothing else enters the tunnel, so an app that hardcodes its
+                // own resolver — plain UDP/53 or DoH/DoT by IP — reaches the network unfiltered
+                // and no rule can ever match. Routing just those /32s pulls the traffic in where
+                // it is filtered (UDP/53) or dropped (anything else).
+                if (blockDnsBypass) for (String address : DnsEndpoint.addresses()) builder.addRoute(address, 32);
+            }
             if (Build.VERSION.SDK_INT >= 29) builder.setMetered(false);
             Set<String> applied = new HashSet<>();
             for (String pkg : selected) {
@@ -102,12 +117,12 @@ public final class FilterVpnService extends VpnService {
             if (tunnel == null) throw new IOException("系统未建立 VPN，请检查授权");
             String resolver = Prefs.get(this).getString("resolver", "223.5.5.5");
             if (!Arrays.asList("223.5.5.5", "119.29.29.29", "1.1.1.1").contains(resolver)) resolver = "223.5.5.5";
-            queries.set(0); blocked.set(0); failed.set(0); sniBlocked.set(0); quicBlocked.set(0);
+            queries.set(0); blocked.set(0); failed.set(0); sniBlocked.set(0); quicBlocked.set(0); aliased.set(0); httpBlocked.set(0); hostBlocked.set(0); bypassBlocked.set(0);
             if (sniEnabled) {
                 final Set<String> activeApps = Collections.unmodifiableSet(new HashSet<>(applied));
                 status = "SNI 增强隧道启动中…"; getSystemService(NotificationManager.class).notify(7, notification(status));
                 final SniTunnelSession[] createdRef = new SniTunnelSession[1];
-                SniTunnelSession created = new SniTunnelSession(this, tunnel, rules, resolver, new SniTunnelSession.Listener() {
+                SniTunnelSession created = new SniTunnelSession(this, tunnel, rules, resolver, blockDnsBypass, new SniTunnelSession.Listener() {
                     @Override public void onReady() {
                         SniTunnelSession current = createdRef[0];
                         if (sniSession != current || !Prefs.enabled(FilterVpnService.this)) { current.close(); return; }
@@ -122,7 +137,7 @@ public final class FilterVpnService extends VpnService {
                 createdRef[0] = created;
                 sniSession = created; created.start();
             } else {
-                try { session = new Session(tunnel, rules, resolver); } catch (Exception e) { tunnel.close(); throw e; }
+                try { session = new Session(tunnel, rules, resolver, blockDnsBypass); } catch (Exception e) { tunnel.close(); throw e; }
                 filteredApps = Collections.unmodifiableSet(applied);
                 running = true; status = "网络过滤已连接 " + applied.size() + " 个应用";
                 UpdateVpnPause.vpnStarted(this);
@@ -147,11 +162,13 @@ public final class FilterVpnService extends VpnService {
         final FileOutputStream output;
         final RuleSet rules;
         final InetAddress resolver;
+        final boolean blockDnsBypass;
         final Set<DatagramSocket> sockets = ConcurrentHashMap.newKeySet();
         final ThreadPoolExecutor pool = new ThreadPoolExecutor(4, 4, 0, TimeUnit.SECONDS, new ArrayBlockingQueue<>(64));
         volatile boolean alive = true;
-        Session(ParcelFileDescriptor fd, RuleSet rules, String resolver) throws Exception {
+        Session(ParcelFileDescriptor fd, RuleSet rules, String resolver, boolean blockDnsBypass) throws Exception {
             this.tunnel = fd; this.rules = rules; this.resolver = InetAddress.getByName(resolver);
+            this.blockDnsBypass = blockDnsBypass;
             input = new FileInputStream(fd.getFileDescriptor()); output = new FileOutputStream(fd.getFileDescriptor());
         }
         void start() { Thread reader = new Thread(this::readLoop, "quietguard-tun"); reader.setDaemon(true); reader.start(); }
@@ -162,6 +179,14 @@ public final class FilterVpnService extends VpnService {
                 while (alive) {
                     if (Os.poll(new StructPollfd[]{poll}, 250) <= 0 || (poll.revents & OsConstants.POLLIN) == 0) continue;
                     int n = input.read(buffer); if (n <= 0) continue;
+                    // An app that ignores the resolver we hand it and dials DoH/DoT/DoQ by IP is
+                    // dropped here: the payload is inside TLS, so there is nothing left to match.
+                    if (blockDnsBypass && DnsEndpoint.encryptedAttempt(buffer, n)) {
+                        bypassBlocked.incrementAndGet();
+                        byte[] reset = DnsEndpoint.reject(buffer, n);
+                        if (reset != null) writeRaw(reset);
+                        continue;
+                    }
                     DnsPacket packet = DnsPacket.parse(buffer, n); if (packet == null) continue;
                     String domain = DnsPacket.domain(packet.dns); if (domain == null) continue;
                     queries.incrementAndGet();
@@ -187,13 +212,42 @@ public final class FilterVpnService extends VpnService {
                     byte[] answer = new byte[32000]; DatagramPacket reply = new DatagramPacket(answer, answer.length); socket.receive(reply);
                     byte[] dns = Arrays.copyOf(answer, reply.getLength());
                     if (!DnsPacket.validReply(packet.dns, dns)) throw new IOException("无效 DNS 响应");
+                    // A CNAME pointing at a blocked host defeats plain name matching.
+                    if (DnsPacket.blockedAlias(rules, dns) != null) { aliased.incrementAndGet(); send(packet, DnsPacket.error(packet.dns, 3)); return; }
+                    // A truncated UDP reply makes the client retry over TCP/53, which this
+                    // tunnel does not carry; fetch the full answer ourselves instead.
+                    if ((dns[2] & 0x02) != 0) {
+                        byte[] full = tcpQuery(packet.dns);
+                        if (full != null) dns = full;
+                    }
                     send(packet, dns);
                 } finally { sockets.remove(socket); }
             } catch (Exception e) { if (alive) { failed.incrementAndGet(); send(packet, DnsPacket.error(packet.dns, 2)); } }
         }
+        /** Full answer over TCP/53 for a query whose UDP reply was truncated. */
+        private byte[] tcpQuery(byte[] query) {
+            try (Socket upstream = new Socket()) {
+                if (!protect(upstream)) return null;
+                upstream.connect(new InetSocketAddress(resolver, 53), 5000);
+                upstream.setSoTimeout(3500);
+                DataOutputStream out = new DataOutputStream(upstream.getOutputStream());
+                out.writeShort(query.length); out.write(query); out.flush();
+                DataInputStream in = new DataInputStream(upstream.getInputStream());
+                int size = in.readUnsignedShort();
+                if (size < 12 || size > 4096) return null;
+                byte[] answer = new byte[size]; in.readFully(answer);
+                if (!DnsPacket.validReply(query, answer)) return null;
+                if (DnsPacket.blockedAlias(rules, answer) != null) { aliased.incrementAndGet(); return null; }
+                return answer;
+            } catch (Exception e) { return null; }
+        }
         synchronized void send(DnsPacket packet, byte[] dns) {
             if (!alive || dns == null) return;
             try { output.write(packet.response(dns)); } catch (IOException ignored) { }
+        }
+        synchronized void writeRaw(byte[] packet) {
+            if (!alive) return;
+            try { output.write(packet); } catch (IOException ignored) { }
         }
         @Override public void close() {
             alive = false; pool.shutdownNow(); for (DatagramSocket socket : sockets) socket.close();

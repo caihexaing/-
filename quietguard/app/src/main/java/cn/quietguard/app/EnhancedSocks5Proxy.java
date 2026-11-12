@@ -21,9 +21,11 @@ final class EnhancedSocks5Proxy implements AutoCloseable {
         new ArrayBlockingQueue<>(128), r -> { Thread t = new Thread(r, "quietguard-socks-worker"); t.setDaemon(true); return t; });
     private final ServerSocket server;
     private final int port;
+    private final boolean blockDnsBypass;
 
-    EnhancedSocks5Proxy(VpnService vpn, RuleSet rules, String resolverAddress) throws Exception {
+    EnhancedSocks5Proxy(VpnService vpn, RuleSet rules, String resolverAddress, boolean blockDnsBypass) throws Exception {
         this.vpn = vpn; this.rules = rules; resolver = InetAddress.getByName(resolverAddress);
+        this.blockDnsBypass = blockDnsBypass;
         server = new ServerSocket(0, 64, InetAddress.getByName("127.0.0.1")); port = server.getLocalPort();
         Thread accept = new Thread(this::acceptLoop, "quietguard-socks-accept"); accept.setDaemon(true); accept.start();
     }
@@ -58,12 +60,26 @@ final class EnhancedSocks5Proxy implements AutoCloseable {
             if (host == null || targetPort <= 0) { socksReply(out, 8); return; }
             socksReply(out, 0);
             if (targetPort == 53) { dnsTcp(client, host); return; }
-            byte[] prefix = targetPort == 443 ? readTlsPrefix(client) : new byte[0];
+            // The request already names the destination, so a blocked name is dead on any port —
+            // including custom ports and TLS with ECH, where neither DNS nor SNI can see it.
+            if (rules.blocks(host)) { FilterVpnService.hostBlocked.incrementAndGet(); return; }
+            // DoH addressed by IP literal carries no SNI and never touches our DNS.
+            if (blockDnsBypass && DnsEndpoint.encryptedDns(host, targetPort)) {
+                FilterVpnService.sniBlocked.incrementAndGet(); return;
+            }
+            boolean plainHttp = targetPort == 80 || targetPort == 8080 || targetPort == 8008 || targetPort == 8888;
+            byte[] prefix = targetPort == 443 || plainHttp ? readPrefix(client, plainHttp ? 80 : 443) : new byte[0];
             if (prefix == null) return;
             if (targetPort == 443) {
                 SniClientHello.Result hello = SniClientHello.inspect(prefix, prefix.length);
                 if (hello.state == SniClientHello.FOUND_SNI && rules.blocks(hello.host)) {
                     FilterVpnService.sniBlocked.incrementAndGet(); return;
+                }
+            } else if (plainHttp) {
+                // Cleartext HTTP carries the destination in its Host header.
+                HttpHost.Result plain = HttpHost.inspect(prefix, prefix.length);
+                if (plain.state == HttpHost.FOUND && rules.blocks(plain.host)) {
+                    FilterVpnService.httpBlocked.incrementAndGet(); return;
                 }
             }
             try (Socket upstream = new Socket()) {
@@ -77,8 +93,13 @@ final class EnhancedSocks5Proxy implements AutoCloseable {
         finally { if (admitted) permits.release(); closeSocket(client); }
     }
 
-    private byte[] readTlsPrefix(Socket client) throws IOException {
-        byte[] buffer = new byte[MAX_TLS_HELLO]; int used = 0;
+    /**
+     * Reads just enough of the client's first bytes for the protocol parser to decide.
+     * The bytes are replayed upstream verbatim, so nothing is consumed or rewritten.
+     */
+    private byte[] readPrefix(Socket client, int port) throws IOException {
+        int limit = port == 80 ? HttpHost.MAX_HEAD : MAX_TLS_HELLO;
+        byte[] buffer = new byte[limit]; int used = 0;
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(4);
         InputStream in = client.getInputStream();
         while (used < buffer.length && alive.get() && System.nanoTime() < deadline) {
@@ -88,8 +109,10 @@ final class EnhancedSocks5Proxy implements AutoCloseable {
             catch (SocketTimeoutException e) { continue; }
             if (n < 0) break;
             used += n;
-            SniClientHello.Result result = SniClientHello.inspect(buffer, used);
-            if (result.state != SniClientHello.NEED_MORE) break;
+            int state = port == 80
+                ? HttpHost.inspect(buffer, used).state
+                : SniClientHello.inspect(buffer, used).state;
+            if (state != SniClientHello.NEED_MORE) break;
         }
         client.setSoTimeout(0);
         return Arrays.copyOf(buffer, used);
@@ -118,6 +141,7 @@ final class EnhancedSocks5Proxy implements AutoCloseable {
                     int responseSize = dnsIn.readUnsignedShort(); if (responseSize < 12 || responseSize > 4096) throw new IOException("Invalid DNS/TCP response");
                     answer = new byte[responseSize]; dnsIn.readFully(answer);
                     if (!DnsPacket.validReply(query, answer)) throw new IOException("DNS/TCP response mismatch");
+                    if (DnsPacket.blockedAlias(rules, answer) != null) { FilterVpnService.aliased.incrementAndGet(); answer = DnsPacket.error(query, 3); }
                 }
                 clientOut.writeShort(answer.length); clientOut.write(answer); clientOut.flush();
             }
@@ -170,6 +194,7 @@ final class EnhancedSocks5Proxy implements AutoCloseable {
             byte[] result = Arrays.copyOf(bytes, answer.getLength());
             if (dns && DnsPacket.domain(request.payload) != null && !DnsPacket.validReply(request.payload, result))
                 throw new IOException("DNS/UDP response mismatch");
+            if (dns && DnsPacket.blockedAlias(rules, result) != null) { FilterVpnService.aliased.incrementAndGet(); return DnsPacket.error(request.payload, 3); }
             return result;
         } catch (Exception e) { if (alive.get()) FilterVpnService.failed.incrementAndGet(); return null; }
         finally { datagrams.removeIf(DatagramSocket::isClosed); }
